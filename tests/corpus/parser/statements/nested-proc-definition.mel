@@ -1,0 +1,11 @@
+global proc outerEntry() {
+    proc int helper(string $name) {
+        return 1;
+    }
+
+    global proc nestedEntry() {
+        helper("cube");
+    }
+
+    nestedEntry;
+}

@@ -1,0 +1,1 @@
+string $scenesPass = startString($path, (size($path)-size($sceneName)));

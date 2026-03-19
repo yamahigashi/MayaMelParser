@@ -1,0 +1,18 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"parser/proc/missing-proc-param-name.mel\",\ninclude_str!(\"../../../tests/corpus/parser/proc/missing-proc-param-name.mel\"),)"
+---
+source: parser/proc/missing-proc-param-name.mel
+encoding: utf-8
+items: 1
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 1
+semantic diagnostics: 0
+[31mError:[0m parse: expected '$' before proc parameter name
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m parser/proc/missing-proc-param-name.mel:1:31 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m1 │[0m [38;5;249mg[0m[38;5;249ml[0m[38;5;249mo[0m[38;5;249mb[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249mr[0m[38;5;249mo[0m[38;5;249mc[0m[38;5;249m [0m[38;5;249mf[0m[38;5;249ml[0m[38;5;249mo[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mq[0m[38;5;249mu[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249m([0m[38;5;249mf[0m[38;5;249ml[0m[38;5;249mo[0m[38;5;249ma[0m[38;5;249mt[0m[31m)[0m[38;5;249m [0m[38;5;249m{[0m
+ [38;5;240m  │[0m                               [31m┬[0m  
+ [38;5;240m  │[0m                               [31m╰[0m[31m─[0m[31m─[0m expected '$' before proc parameter name
+[38;5;246m───╯[0m

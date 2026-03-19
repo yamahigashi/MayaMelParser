@@ -1,0 +1,1 @@
+connectAttr ($layer + ".index") LayerRegistry.layerSlot[$index;

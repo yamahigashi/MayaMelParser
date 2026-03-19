@@ -1,0 +1,5 @@
+global proc string hello(string $name) {
+    print ("hello " + $name);
+}
+
+`ls -sl`;

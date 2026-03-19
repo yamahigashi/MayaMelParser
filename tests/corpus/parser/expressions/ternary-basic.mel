@@ -1,0 +1,3 @@
+$value = $flag ? 1 : 0;
+$label = $ready ? "yes" : "no";
+$path = $useCurrent ? `workspace -q -rd` : "fallback";

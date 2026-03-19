@@ -1,0 +1,2 @@
+// leading comment
+foo /* middle comment */ ;

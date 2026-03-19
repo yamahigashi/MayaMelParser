@@ -1,0 +1,3 @@
+global proc float square(float) {
+    return 1.0;
+}

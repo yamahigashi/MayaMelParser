@@ -1,0 +1,9 @@
+switch ($mode) {
+    default:
+        print("other");
+        break;
+    case 1:
+    case 2:
+        print("match");
+        break;
+}

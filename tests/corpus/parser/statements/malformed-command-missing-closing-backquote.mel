@@ -1,0 +1,2 @@
+int $exists = (!`optionVar -exists (prefKey("outputPath", $scope)));
+optionVar -sv (prefKey("outputPath", $scope)) (buildDefaultPath($scope));

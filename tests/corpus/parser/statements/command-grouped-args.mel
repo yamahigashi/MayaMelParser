@@ -1,0 +1,2 @@
+iconTextButton -style "iconOnly" -image1 "trash.png" -command ("removeMultiInstance "+$attr) -ann (($rgb.x)+", "+($rgb.y)+", "+($rgb.z));
+menuItem -c ("GswRenamer_NodeTypeReload(\""+$type+"\")") -l $items[$i].name -cb `checkBox -q -v $toggle`;

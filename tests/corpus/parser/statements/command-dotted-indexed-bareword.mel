@@ -1,0 +1,1 @@
+connectAttr foo.worldMatrix[0] bar.inputWorldMatrix;

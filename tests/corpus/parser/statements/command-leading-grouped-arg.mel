@@ -1,0 +1,1 @@
+renameAttr ($object+"."+$attr) $newAttr;

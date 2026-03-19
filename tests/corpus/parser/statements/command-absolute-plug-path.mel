@@ -1,0 +1,1 @@
+defaultNavigation -source shaderNodePreview1 -destination |geoPreview1|geoPreviewShape1.instObjGroups[0] -connectToExisting;

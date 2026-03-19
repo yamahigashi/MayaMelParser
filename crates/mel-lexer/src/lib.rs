@@ -1,0 +1,781 @@
+#![forbid(unsafe_code)]
+//! Minimal lexer scaffold for MEL.
+//!
+//! This implementation is intentionally small. It exists to anchor crate boundaries
+//! and test flow until a richer lexer is introduced.
+
+use mel_syntax::{text_range, LexDiagnostic, Lexed, Token, TokenKind};
+
+#[must_use]
+pub fn lex(input: &str) -> Lexed {
+    let bytes = input.as_bytes();
+    let mut tokens = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'\t' | b'\r' | b'\n' => {
+                let start = i;
+                i = lex_whitespace(bytes, i);
+                tokens.push(Token::new(
+                    TokenKind::Whitespace,
+                    text_range(start as u32, i as u32),
+                ));
+            }
+            b'/' if matches!(bytes.get(i + 1), Some(b'/')) => {
+                let start = i;
+                i = lex_line_comment(bytes, i);
+                tokens.push(Token::new(
+                    TokenKind::LineComment,
+                    text_range(start as u32, i as u32),
+                ));
+            }
+            b'/' if matches!(bytes.get(i + 1), Some(b'*')) => {
+                let start = i;
+                let (end, terminated) = lex_block_comment(bytes, i);
+                i = end;
+                if !terminated {
+                    diagnostics.push(LexDiagnostic::new(
+                        "unterminated block comment",
+                        text_range(start as u32, end as u32),
+                    ));
+                }
+                tokens.push(Token::new(
+                    TokenKind::BlockComment,
+                    text_range(start as u32, end as u32),
+                ));
+            }
+            b';' => push(&mut tokens, TokenKind::Semi, i, i + 1, &mut i),
+            b'(' => push(&mut tokens, TokenKind::LParen, i, i + 1, &mut i),
+            b')' => push(&mut tokens, TokenKind::RParen, i, i + 1, &mut i),
+            b'[' => push(&mut tokens, TokenKind::LBracket, i, i + 1, &mut i),
+            b']' => push(&mut tokens, TokenKind::RBracket, i, i + 1, &mut i),
+            b'{' => push(&mut tokens, TokenKind::LBrace, i, i + 1, &mut i),
+            b'}' => push(&mut tokens, TokenKind::RBrace, i, i + 1, &mut i),
+            b'.' if bytes
+                .get(i + 1)
+                .copied()
+                .is_some_and(|b| b.is_ascii_digit()) =>
+            {
+                let start = i;
+                i += 1;
+                while bytes.get(i).copied().is_some_and(|b| b.is_ascii_digit()) {
+                    i += 1;
+                }
+
+                if let Some(end) = lex_exponent_suffix(bytes, i) {
+                    i = end;
+                }
+
+                tokens.push(Token::new(
+                    TokenKind::FloatLiteral,
+                    text_range(start as u32, i as u32),
+                ));
+            }
+            b'.' => push(&mut tokens, TokenKind::Dot, i, i + 1, &mut i),
+            b',' => push(&mut tokens, TokenKind::Comma, i, i + 1, &mut i),
+            b'$' => push(&mut tokens, TokenKind::Dollar, i, i + 1, &mut i),
+            b'`' => push(&mut tokens, TokenKind::Backquote, i, i + 1, &mut i),
+            b'?' => push(&mut tokens, TokenKind::Question, i, i + 1, &mut i),
+            b':' => push(&mut tokens, TokenKind::Colon, i, i + 1, &mut i),
+            b'+' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::PlusEq, i, i + 2, &mut i)
+            }
+            b'+' if matches!(bytes.get(i + 1), Some(b'+')) => {
+                push(&mut tokens, TokenKind::PlusPlus, i, i + 2, &mut i)
+            }
+            b'+' => push(&mut tokens, TokenKind::Plus, i, i + 1, &mut i),
+            b'*' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::StarEq, i, i + 2, &mut i)
+            }
+            b'*' => push(&mut tokens, TokenKind::Star, i, i + 1, &mut i),
+            b'/' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::SlashEq, i, i + 2, &mut i)
+            }
+            b'/' => push(&mut tokens, TokenKind::Slash, i, i + 1, &mut i),
+            b'%' => push(&mut tokens, TokenKind::Percent, i, i + 1, &mut i),
+            b'^' => push(&mut tokens, TokenKind::Caret, i, i + 1, &mut i),
+            b'!' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::NotEq, i, i + 2, &mut i)
+            }
+            b'!' => push(&mut tokens, TokenKind::Bang, i, i + 1, &mut i),
+            b'=' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::EqEq, i, i + 2, &mut i)
+            }
+            b'=' => push(&mut tokens, TokenKind::Assign, i, i + 1, &mut i),
+            b'<' if matches!(bytes.get(i + 1), Some(b'<')) => {
+                push(&mut tokens, TokenKind::LtLt, i, i + 2, &mut i)
+            }
+            b'<' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::Le, i, i + 2, &mut i)
+            }
+            b'<' => push(&mut tokens, TokenKind::Lt, i, i + 1, &mut i),
+            b'>' if matches!(bytes.get(i + 1), Some(b'>')) => {
+                push(&mut tokens, TokenKind::GtGt, i, i + 2, &mut i)
+            }
+            b'>' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::Ge, i, i + 2, &mut i)
+            }
+            b'>' => push(&mut tokens, TokenKind::Gt, i, i + 1, &mut i),
+            b'&' if matches!(bytes.get(i + 1), Some(b'&')) => {
+                push(&mut tokens, TokenKind::AndAnd, i, i + 2, &mut i)
+            }
+            b'|' if matches!(bytes.get(i + 1), Some(b'|')) => {
+                push(&mut tokens, TokenKind::OrOr, i, i + 2, &mut i)
+            }
+            b'|' => push(&mut tokens, TokenKind::Pipe, i, i + 1, &mut i),
+            b'-' if matches!(bytes.get(i + 1), Some(b'-')) => {
+                push(&mut tokens, TokenKind::MinusMinus, i, i + 2, &mut i)
+            }
+            b'-' if matches!(bytes.get(i + 1), Some(b'=')) => {
+                push(&mut tokens, TokenKind::MinusEq, i, i + 2, &mut i)
+            }
+            b'-' if bytes.get(i + 1).copied().is_some_and(is_ident_start_byte)
+                && can_start_flag(bytes, i) =>
+            {
+                let start = i;
+                i += 1;
+                while bytes.get(i).copied().is_some_and(is_ident_continue_byte) {
+                    i += 1;
+                }
+                tokens.push(Token::new(
+                    TokenKind::Flag,
+                    text_range(start as u32, i as u32),
+                ));
+            }
+            b'-' => push(&mut tokens, TokenKind::Minus, i, i + 1, &mut i),
+            b'"' => {
+                let start = i;
+                i += 1;
+                let mut terminated = false;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => {
+                            i += if i + 1 < bytes.len() { 2 } else { 1 };
+                        }
+                        b'"' => {
+                            i += 1;
+                            terminated = true;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if !terminated {
+                    diagnostics.push(LexDiagnostic::new(
+                        "unterminated string literal",
+                        text_range(start as u32, i as u32),
+                    ));
+                }
+                tokens.push(Token::new(
+                    TokenKind::StringLiteral,
+                    text_range(start as u32, i as u32),
+                ));
+            }
+            b'0'..=b'9' => {
+                let start = i;
+
+                if bytes[i] == b'0'
+                    && matches!(bytes.get(i + 1), Some(b'x' | b'X'))
+                    && bytes
+                        .get(i + 2)
+                        .copied()
+                        .is_some_and(|b| b.is_ascii_hexdigit())
+                {
+                    i += 2;
+                    while bytes.get(i).copied().is_some_and(|b| b.is_ascii_hexdigit()) {
+                        i += 1;
+                    }
+                    tokens.push(Token::new(
+                        TokenKind::IntLiteral,
+                        text_range(start as u32, i as u32),
+                    ));
+                    continue;
+                }
+
+                i += 1;
+                while bytes.get(i).copied().is_some_and(|b| b.is_ascii_digit()) {
+                    i += 1;
+                }
+
+                let mut kind = TokenKind::IntLiteral;
+
+                if matches!(bytes.get(i), Some(b'.')) {
+                    if bytes
+                        .get(i + 1)
+                        .copied()
+                        .is_some_and(|b| b.is_ascii_digit())
+                    {
+                        i += 1;
+                        while bytes.get(i).copied().is_some_and(|b| b.is_ascii_digit()) {
+                            i += 1;
+                        }
+                        kind = TokenKind::FloatLiteral;
+                    } else if can_end_with_trailing_dot_float(bytes, i + 1) {
+                        i += 1;
+                        kind = TokenKind::FloatLiteral;
+                    }
+                }
+
+                if let Some(end) = lex_exponent_suffix(bytes, i) {
+                    i = end;
+                    kind = TokenKind::FloatLiteral;
+                }
+
+                tokens.push(Token::new(kind, text_range(start as u32, i as u32)));
+            }
+            b if is_ident_start_byte(b) => {
+                let start = i;
+                i += 1;
+                while bytes.get(i).copied().is_some_and(is_ident_continue_byte) {
+                    i += 1;
+                }
+                tokens.push(Token::new(
+                    TokenKind::Ident,
+                    text_range(start as u32, i as u32),
+                ));
+            }
+            _ => {
+                diagnostics.push(LexDiagnostic::new(
+                    "unknown character",
+                    text_range(i as u32, (i + 1) as u32),
+                ));
+                tokens.push(Token::new(
+                    TokenKind::Unknown,
+                    text_range(i as u32, (i + 1) as u32),
+                ));
+                i += 1;
+            }
+        }
+    }
+
+    let eof = input.len() as u32;
+    tokens.push(Token::new(TokenKind::Eof, text_range(eof, eof)));
+    Lexed {
+        tokens,
+        diagnostics,
+    }
+}
+
+fn push(tokens: &mut Vec<Token>, kind: TokenKind, start: usize, end: usize, cursor: &mut usize) {
+    tokens.push(Token::new(kind, text_range(start as u32, end as u32)));
+    *cursor = end;
+}
+
+fn lex_whitespace(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+        i += 1;
+    }
+    i
+}
+
+fn lex_line_comment(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 2;
+    while let Some(byte) = bytes.get(i) {
+        if *byte == b'\n' {
+            break;
+        }
+        i += 1;
+    }
+    i
+}
+
+fn lex_block_comment(bytes: &[u8], start: usize) -> (usize, bool) {
+    let mut i = start + 2;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+            return (i + 2, true);
+        }
+        i += 1;
+    }
+    (bytes.len(), false)
+}
+
+fn can_start_flag(bytes: &[u8], index: usize) -> bool {
+    index > 0 && bytes[index - 1].is_ascii_whitespace()
+}
+
+fn is_ident_start_byte(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_ident_continue_byte(byte: u8) -> bool {
+    is_ident_start_byte(byte) || byte.is_ascii_digit()
+}
+
+fn can_end_with_trailing_dot_float(bytes: &[u8], index: usize) -> bool {
+    match bytes.get(index).copied() {
+        None => true,
+        Some(byte) if byte.is_ascii_whitespace() => true,
+        Some(
+            b';' | b',' | b')' | b']' | b'}' | b'?' | b':' | b'+' | b'-' | b'*' | b'/' | b'%'
+            | b'=' | b'!' | b'<' | b'>' | b'&' | b'|',
+        ) => true,
+        _ => false,
+    }
+}
+
+fn lex_exponent_suffix(bytes: &[u8], start: usize) -> Option<usize> {
+    let exponent = bytes.get(start).copied()?;
+    if !matches!(exponent, b'e' | b'E') {
+        return None;
+    }
+
+    let mut index = start + 1;
+    if matches!(bytes.get(index), Some(b'+' | b'-')) {
+        index += 1;
+    }
+
+    let first_digit = bytes.get(index).copied()?;
+    if !first_digit.is_ascii_digit() {
+        return None;
+    }
+
+    index += 1;
+    while bytes
+        .get(index)
+        .copied()
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        index += 1;
+    }
+
+    Some(index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lex;
+    use mel_syntax::{range_end, range_start, text_range, TokenKind};
+
+    fn token_kinds(input: &str) -> Vec<TokenKind> {
+        lex(input)
+            .tokens
+            .into_iter()
+            .map(|token| token.kind)
+            .collect()
+    }
+
+    #[test]
+    fn lexes_basic_statement() {
+        let kinds = token_kinds(r#"$foo = 1;"#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Assign,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_compound_assignment_and_updates() {
+        let kinds = token_kinds(r#"$foo += 1; $bar -= 2; $baz *= 3; $qux /= 4; $foo++; $foo--;"#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::PlusEq,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Semi,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::MinusEq,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Semi,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::StarEq,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Semi,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::SlashEq,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Semi,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::PlusPlus,
+                TokenKind::Semi,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::MinusMinus,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_backquoted_command() {
+        let kinds = token_kinds(r#"`ls -sl`;"#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Backquote,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Flag,
+                TokenKind::Backquote,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_minus_before_ident_in_expression_as_minus() {
+        let kinds = token_kinds(r#"size($path)-size($sceneName);"#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::LParen,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::RParen,
+                TokenKind::Minus,
+                TokenKind::Ident,
+                TokenKind::LParen,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::RParen,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_minus_ident_after_whitespace_as_flag() {
+        let kinds = token_kinds("optionVar -q Foo;");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Flag,
+                TokenKind::Whitespace,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_exponent_float_literals() {
+        let input = "1.0e-3 1e+3 0.0e0 1E-9";
+        let lexed = lex(input);
+        let texts: Vec<_> = lexed
+            .tokens
+            .iter()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .map(|token| {
+                (
+                    &input[range_start(token.range) as usize..range_end(token.range) as usize],
+                    token.kind,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                ("1.0e-3", TokenKind::FloatLiteral),
+                ("1e+3", TokenKind::FloatLiteral),
+                ("0.0e0", TokenKind::FloatLiteral),
+                ("1E-9", TokenKind::FloatLiteral),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_leading_dot_float_literals() {
+        let input = ".7 .001 .5e+2 .";
+        let lexed = lex(input);
+        let texts: Vec<_> = lexed
+            .tokens
+            .iter()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .map(|token| {
+                (
+                    &input[range_start(token.range) as usize..range_end(token.range) as usize],
+                    token.kind,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                (".7", TokenKind::FloatLiteral),
+                (".001", TokenKind::FloatLiteral),
+                (".5e+2", TokenKind::FloatLiteral),
+                (".", TokenKind::Dot),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_trailing_dot_float_literals() {
+        let input = "1000. 0. -1000. 1.. 1.foo";
+        let lexed = lex(input);
+        let texts: Vec<_> = lexed
+            .tokens
+            .iter()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .map(|token| {
+                (
+                    &input[range_start(token.range) as usize..range_end(token.range) as usize],
+                    token.kind,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                ("1000.", TokenKind::FloatLiteral),
+                ("0.", TokenKind::FloatLiteral),
+                ("-", TokenKind::Minus),
+                ("1000.", TokenKind::FloatLiteral),
+                ("1", TokenKind::IntLiteral),
+                (".", TokenKind::Dot),
+                (".", TokenKind::Dot),
+                ("1", TokenKind::IntLiteral),
+                (".", TokenKind::Dot),
+                ("foo", TokenKind::Ident),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_hex_integer_literals() {
+        let input = "0x8000 0X0001 42";
+        let lexed = lex(input);
+        let texts: Vec<_> = lexed
+            .tokens
+            .iter()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .map(|token| {
+                (
+                    &input[range_start(token.range) as usize..range_end(token.range) as usize],
+                    token.kind,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                ("0x8000", TokenKind::IntLiteral),
+                ("0X0001", TokenKind::IntLiteral),
+                ("42", TokenKind::IntLiteral),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_caret_operator() {
+        let kinds = token_kinds("vector $cross = $a ^ $b;");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Assign,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Caret,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_exponent_suffix_stays_split() {
+        let kinds = token_kinds("1e+ 1.0e 1e-");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::IntLiteral,
+                TokenKind::Ident,
+                TokenKind::Plus,
+                TokenKind::Whitespace,
+                TokenKind::FloatLiteral,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Ident,
+                TokenKind::Minus,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_vector_literals_and_components() {
+        let kinds = token_kinds(r#"$dir = <<1, 2, 3>>; $x = $dir.x;"#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Assign,
+                TokenKind::Whitespace,
+                TokenKind::LtLt,
+                TokenKind::IntLiteral,
+                TokenKind::Comma,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Comma,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::GtGt,
+                TokenKind::Semi,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::Assign,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Dot,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_single_pipe_for_dag_paths() {
+        let kinds = token_kinds("|pSphere1|pSphereShape1.instObjGroups[0]");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Pipe,
+                TokenKind::Ident,
+                TokenKind::Pipe,
+                TokenKind::Ident,
+                TokenKind::Dot,
+                TokenKind::Ident,
+                TokenKind::LBracket,
+                TokenKind::IntLiteral,
+                TokenKind::RBracket,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_double_pipe_as_boolean_or() {
+        let kinds = token_kinds("$a || $b");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::OrOr,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn retains_trivia_tokens() {
+        let kinds = token_kinds("// lead\n$foo /* mid */ = 1;");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::LineComment,
+                TokenKind::Whitespace,
+                TokenKind::Dollar,
+                TokenKind::Ident,
+                TokenKind::Whitespace,
+                TokenKind::BlockComment,
+                TokenKind::Whitespace,
+                TokenKind::Assign,
+                TokenKind::Whitespace,
+                TokenKind::IntLiteral,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn unterminated_string_produces_diagnostic() {
+        let lexed = lex("\"unterminated");
+        assert_eq!(lexed.tokens.len(), 2);
+        assert_eq!(lexed.tokens[0].kind, TokenKind::StringLiteral);
+        assert_eq!(lexed.tokens[0].range, text_range(0, 13));
+        assert_eq!(lexed.tokens[1].kind, TokenKind::Eof);
+        assert_eq!(lexed.tokens[1].range, text_range(13, 13));
+        assert_eq!(lexed.diagnostics.len(), 1);
+        assert_eq!(lexed.diagnostics[0].message, "unterminated string literal");
+        assert_eq!(lexed.diagnostics[0].range, text_range(0, 13));
+    }
+
+    #[test]
+    fn unterminated_block_comment_produces_diagnostic() {
+        let lexed = lex("/* unterminated");
+        assert_eq!(lexed.tokens.len(), 2);
+        assert_eq!(lexed.tokens[0].kind, TokenKind::BlockComment);
+        assert_eq!(lexed.tokens[0].range, text_range(0, 15));
+        assert_eq!(lexed.tokens[1].kind, TokenKind::Eof);
+        assert_eq!(lexed.tokens[1].range, text_range(15, 15));
+        assert_eq!(lexed.diagnostics.len(), 1);
+        assert_eq!(lexed.diagnostics[0].message, "unterminated block comment");
+        assert_eq!(lexed.diagnostics[0].range, text_range(0, 15));
+    }
+
+    #[test]
+    fn unknown_character_produces_token_and_diagnostic() {
+        let lexed = lex("@");
+        assert_eq!(lexed.tokens.len(), 2);
+        assert_eq!(lexed.tokens[0].kind, TokenKind::Unknown);
+        assert_eq!(lexed.tokens[0].range, text_range(0, 1));
+        assert_eq!(lexed.diagnostics.len(), 1);
+        assert_eq!(lexed.diagnostics[0].message, "unknown character");
+        assert_eq!(lexed.diagnostics[0].range, text_range(0, 1));
+    }
+}

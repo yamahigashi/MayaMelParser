@@ -1,0 +1,2 @@
+vector $hColor = `hsv_to_rgb <<$hsv[0], 1, 1>>`;
+text -e -bgc ($hColor.x) ($hColor.y) ($hColor.z) $palette[4];

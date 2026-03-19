@@ -1,0 +1,3 @@
+string $name = (string)$index;
+int $millis = (int)(`timerX` * 1000);
+$label = ((string)`text -q -label $widget`);

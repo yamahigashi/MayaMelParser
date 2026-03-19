@@ -1,0 +1,3 @@
+// Select current objects.
+$selection = `ls -sl`; /* trailing capture */
+

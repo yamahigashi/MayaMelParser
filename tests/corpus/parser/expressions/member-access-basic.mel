@@ -1,0 +1,2 @@
+$x = $dir.foo + foo().bar;
+$y = $items[$i].name;

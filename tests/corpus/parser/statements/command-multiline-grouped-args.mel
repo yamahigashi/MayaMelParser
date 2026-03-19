@@ -1,0 +1,6 @@
+connectAttr
+    ($burstRoot + ".maxOutputSpeed")
+    ($trailShape + ".maxOutputSpeed");
+
+setAttr ($shader + ".color")
+    -type double3 ($rgb.x) ($rgb.y) ($rgb.z);

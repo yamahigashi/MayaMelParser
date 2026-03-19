@@ -1,0 +1,25 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"lexer/symbols/unknown-char.mel\",\ninclude_str!(\"../../../tests/corpus/lexer/symbols/unknown-char.mel\"),)"
+---
+source: lexer/symbols/unknown-char.mel
+encoding: utf-8
+items: 0
+decode diagnostics: 0
+lexical diagnostics: 1
+parse errors: 1
+semantic diagnostics: 0
+[31mError:[0m lex: unknown character
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m lexer/symbols/unknown-char.mel:1:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m1 │[0m [34m@[0m
+ [38;5;240m  │[0m [34m┬[0m  
+ [38;5;240m  │[0m [34m╰[0m[34m─[0m[34m─[0m unknown character
+[38;5;246m───╯[0m
+[31mError:[0m parse: unexpected token while parsing item
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m lexer/symbols/unknown-char.mel:1:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m1 │[0m [31m@[0m
+ [38;5;240m  │[0m [31m┬[0m  
+ [38;5;240m  │[0m [31m╰[0m[31m─[0m[31m─[0m unexpected token while parsing item
+[38;5;246m───╯[0m

@@ -1,0 +1,1 @@
+select -r ns:root|ns:spine|ns:ctrl;

@@ -1,0 +1,3 @@
+global proc string greetUser(string $name) {
+    return $name;
+}

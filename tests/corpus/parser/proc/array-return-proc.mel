@@ -1,0 +1,4 @@
+proc string[] collectNames(string $prefix) {
+    string $names[];
+    return $names;
+}
