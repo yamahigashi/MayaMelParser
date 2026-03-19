@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use mel_parser::{parse_file, parse_file_with_encoding, parse_source, Parse, SourceEncoding};
+use mel_parser::{Parse, SourceEncoding, parse_file, parse_file_with_encoding, parse_source};
 use mel_sema::analyze;
 use mel_syntax::TextRange;
 
@@ -378,7 +378,7 @@ struct FileSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_single_file_output, CorpusSummary, FileSummary};
+    use super::{CorpusSummary, FileSummary, format_single_file_output};
     use mel_parser::parse_source;
 
     fn render_snapshot(label: &str, source: &str) -> String {
@@ -506,6 +506,17 @@ mod tests {
             render_snapshot(
                 "sema/proc/local-forward-reference.mel",
                 include_str!("../../../tests/corpus/sema/proc/local-forward-reference.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_local_proc_shell_unresolved_fixture() {
+        insta::assert_snapshot!(
+            "sema_local_proc_shell_unresolved",
+            render_snapshot(
+                "sema/proc/local-shell-unresolved.mel",
+                include_str!("../../../tests/corpus/sema/proc/local-shell-unresolved.mel"),
             )
         );
     }

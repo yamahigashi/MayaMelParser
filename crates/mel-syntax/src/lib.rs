@@ -127,7 +127,7 @@ pub struct Lexed {
 
 #[cfg(test)]
 mod tests {
-    use super::{range_len, text_range, LexDiagnostic, Token, TokenKind};
+    use super::{LexDiagnostic, Token, TokenKind, range_len, text_range};
 
     #[test]
     fn text_range_helpers_keep_offsets() {

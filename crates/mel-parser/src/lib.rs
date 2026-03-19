@@ -14,7 +14,7 @@ use mel_ast::{
     TypeName, UnaryOp, UpdateOp, VarDecl, VectorComponent,
 };
 use mel_lexer::lex;
-use mel_syntax::{range_end, range_start, text_range, LexDiagnostic, TextRange, Token, TokenKind};
+use mel_syntax::{LexDiagnostic, TextRange, Token, TokenKind, range_end, range_start, text_range};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeDiagnostic {
@@ -1067,26 +1067,26 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LParen, "expected '(' after for")?;
 
         let checkpoint = self.pos;
-        if let Some(binding) = self.parse_expr() {
-            if self.eat_keyword("in").is_some() {
-                let iterable = if let Some(expr) = self.parse_expr() {
-                    expr
-                } else {
-                    let range = self.current().range;
-                    self.error("expected iterable expression after 'in'", range);
-                    return None;
-                };
+        if let Some(binding) = self.parse_expr()
+            && self.eat_keyword("in").is_some()
+        {
+            let iterable = if let Some(expr) = self.parse_expr() {
+                expr
+            } else {
+                let range = self.current().range;
+                self.error("expected iterable expression after 'in'", range);
+                return None;
+            };
 
-                let close = self.expect(TokenKind::RParen, "expected ')' after for-in clause")?;
-                let body = self.parse_stmt()?;
-                let body_end = range_end(stmt_range(&body)).max(range_end(close.range));
-                return Some(Stmt::ForIn {
-                    binding,
-                    iterable,
-                    body: Box::new(body),
-                    range: text_range(range_start(for_token.range), body_end),
-                });
-            }
+            let close = self.expect(TokenKind::RParen, "expected ')' after for-in clause")?;
+            let body = self.parse_stmt()?;
+            let body_end = range_end(stmt_range(&body)).max(range_end(close.range));
+            return Some(Stmt::ForIn {
+                binding,
+                iterable,
+                body: Box::new(body),
+                range: text_range(range_start(for_token.range), body_end),
+            });
         }
 
         self.pos = checkpoint;
@@ -3152,7 +3152,7 @@ fn remap_shell_word_ranges(word: &mut ShellWord, map: &OffsetMap) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bytes, parse_bytes_with_encoding, parse_source, SourceEncoding};
+    use super::{SourceEncoding, parse_bytes, parse_bytes_with_encoding, parse_source};
     use encoding_rs::{GBK, SHIFT_JIS};
     use mel_ast::{
         AssignOp, BinaryOp, Expr, InvokeSurface, Item, ShellWord, Stmt, SwitchLabel, TypeName,
@@ -3252,10 +3252,12 @@ mod tests {
         let parse = parse_source(include_str!(
             "../../../tests/corpus/parser/statements/malformed-nested-proc-missing-body.mel"
         ));
-        assert!(parse
-            .errors
-            .iter()
-            .any(|error| error.message == "expected proc body block"));
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|error| error.message == "expected proc body block")
+        );
     }
 
     #[test]

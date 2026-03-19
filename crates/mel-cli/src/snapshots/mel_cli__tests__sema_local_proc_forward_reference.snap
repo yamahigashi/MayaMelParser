@@ -8,4 +8,11 @@ items: 2
 decode diagnostics: 0
 lexical diagnostics: 0
 parse errors: 0
-semantic diagnostics: 0
+semantic diagnostics: 1
+[31mError:[0m sema: local proc "helper" is called before its definition
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/proc/local-forward-reference.mel:1:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m1 │[0m [35mh[0m[35me[0m[35ml[0m[35mp[0m[35me[0m[35mr[0m[35m([0m[35m)[0m[38;5;249m;[0m
+ [38;5;240m  │[0m [35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m┬[0m[35m─[0m[35m─[0m[35m─[0m  
+ [38;5;240m  │[0m     [35m╰[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m local proc "helper" is called before its definition
+[38;5;246m───╯[0m

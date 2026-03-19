@@ -17,7 +17,7 @@ Today the workspace already includes:
 - a lexer with trivia retention and lexical diagnostics
 - a parser for core MEL statement and expression surfaces
 - typed AST structures
-- an initial semantic pass for proc visibility diagnostics
+- an initial scoped proc-symbol pass with function-style local proc visibility diagnostics
 - a small local CLI for inspecting parse and diagnostic output
 
 The implementation is under active development, and crate boundaries are being

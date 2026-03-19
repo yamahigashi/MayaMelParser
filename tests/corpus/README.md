@@ -72,6 +72,7 @@ tests/corpus/
 現在の sema fixture 例:
 
 - `sema/proc/local-forward-reference.mel`
+- `sema/proc/local-shell-unresolved.mel`
 - `sema/proc/local-visible-call.mel`
 
 現在の diagnostics snapshot 対象:
@@ -81,3 +82,4 @@ tests/corpus/
 - `parser/expressions/missing-ternary-colon.mel`
 - `parser/proc/missing-proc-param-name.mel`
 - `sema/proc/local-forward-reference.mel`
+- `sema/proc/local-shell-unresolved.mel`

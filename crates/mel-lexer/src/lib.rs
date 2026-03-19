@@ -4,7 +4,7 @@
 //! This implementation is intentionally small. It exists to anchor crate boundaries
 //! and test flow until a richer lexer is introduced.
 
-use mel_syntax::{text_range, LexDiagnostic, Lexed, Token, TokenKind};
+use mel_syntax::{LexDiagnostic, Lexed, Token, TokenKind, text_range};
 
 #[must_use]
 pub fn lex(input: &str) -> Lexed {
@@ -348,7 +348,7 @@ fn lex_exponent_suffix(bytes: &[u8], start: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::lex;
-    use mel_syntax::{range_end, range_start, text_range, TokenKind};
+    use mel_syntax::{TokenKind, range_end, range_start, text_range};
 
     fn token_kinds(input: &str) -> Vec<TokenKind> {
         lex(input)
