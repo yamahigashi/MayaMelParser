@@ -1,0 +1,19 @@
+---
+source: crates/mel-cli/src/main.rs
+assertion_line: 548
+expression: "render_snapshot(\"sema/proc/void-return-value.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/void-return-value.mel\"),)"
+---
+source: sema/proc/void-return-value.mel
+encoding: utf-8
+items: 1
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 1
+[31mError:[0m sema: proc "helper" has no return type but returns a value
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/proc/void-return-value.mel:2:5 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m2 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[35mr[0m[35me[0m[35mt[0m[35mu[0m[35mr[0m[35mn[0m[35m [0m[35m1[0m[35m;[0m
+ [38;5;240m  │[0m     [35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m┬[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m  
+ [38;5;240m  │[0m         [35m╰[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m proc "helper" has no return type but returns a value
+[38;5;246m───╯[0m

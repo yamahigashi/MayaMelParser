@@ -1,4 +1,4 @@
-missingProc;
-
 proc helper() {
 }
+
+helper 7 "Torq";

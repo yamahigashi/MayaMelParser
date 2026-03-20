@@ -520,4 +520,59 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn snapshot_sema_local_proc_shell_forward_reference_fixture() {
+        insta::assert_snapshot!(
+            "sema_local_proc_shell_forward_reference",
+            render_snapshot(
+                "sema/proc/local-shell-forward-reference.mel",
+                include_str!("../../../tests/corpus/sema/proc/local-shell-forward-reference.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_typed_missing_value_return_fixture() {
+        insta::assert_snapshot!(
+            "sema_typed_missing_value_return",
+            render_snapshot(
+                "sema/proc/typed-missing-value-return.mel",
+                include_str!("../../../tests/corpus/sema/proc/typed-missing-value-return.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_void_return_value_fixture() {
+        insta::assert_snapshot!(
+            "sema_void_return_value",
+            render_snapshot(
+                "sema/proc/void-return-value.mel",
+                include_str!("../../../tests/corpus/sema/proc/void-return-value.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_typed_return_type_mismatch_fixture() {
+        insta::assert_snapshot!(
+            "sema_typed_return_type_mismatch",
+            render_snapshot(
+                "sema/proc/typed-return-type-mismatch.mel",
+                include_str!("../../../tests/corpus/sema/proc/typed-return-type-mismatch.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_var_init_type_mismatch_fixture() {
+        insta::assert_snapshot!(
+            "sema_var_init_type_mismatch",
+            render_snapshot(
+                "sema/proc/var-init-type-mismatch.mel",
+                include_str!("../../../tests/corpus/sema/proc/var-init-type-mismatch.mel"),
+            )
+        );
+    }
 }

@@ -1,0 +1,3 @@
+proc int helper() {
+    return;
+}

@@ -1,4 +1,3 @@
-missingProc;
-
 proc helper() {
+    return 1;
 }
