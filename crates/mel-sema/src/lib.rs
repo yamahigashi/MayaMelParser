@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 pub use command_norm::{
     CommandMode, NormalizedCommandInvoke, NormalizedCommandItem, NormalizedFlag, PositionalArg,
+    RawShellItem, SetAttrDataReferenceEditsTail, SpecializedCommandForm,
 };
 pub use command_schema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
@@ -1238,8 +1239,8 @@ mod tests {
     use super::{
         CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema,
         CommandSourceKind, DiagnosticSeverity, EmbeddedCommandRegistry, FlagArity, FlagArityByMode,
-        FlagSchema, IdentTarget, ReturnBehavior, ValueShape, VariableKind, analyze,
-        analyze_with_registry,
+        FlagSchema, IdentTarget, ReturnBehavior, SpecializedCommandForm, ValueShape, VariableKind,
+        analyze, analyze_with_registry,
     };
     use mel_ast::{
         AssignOp, CalleeResolution, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef,
@@ -1985,6 +1986,119 @@ mod tests {
                 ..
             }) if text == "\"title\""
         ));
+    }
+
+    #[test]
+    fn set_attr_data_reference_edits_tail_is_preserved_losslessly() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "setAttr".to_owned(),
+                        words: vec![
+                            ShellWord::QuotedString {
+                                text: "\".ed\"".to_owned(),
+                                range: text_range(8, 13),
+                            },
+                            ShellWord::Flag {
+                                text: "-type".to_owned(),
+                                range: text_range(14, 19),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"dataReferenceEdits\"".to_owned(),
+                                range: text_range(20, 40),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"rootRN\"".to_owned(),
+                                range: text_range(41, 49),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"\"".to_owned(),
+                                range: text_range(50, 52),
+                            },
+                            ShellWord::NumericLiteral {
+                                text: "5".to_owned(),
+                                range: text_range(53, 54),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"node.placeHolderList[0]\"".to_owned(),
+                                range: text_range(55, 81),
+                            },
+                            ShellWord::BareWord {
+                                text: "|world|ctrl".to_owned(),
+                                range: text_range(82, 93),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\" -type \\\"double3\\\" 0 0 1\"".to_owned(),
+                                range: text_range(94, 120),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\" -av\"".to_owned(),
+                                range: text_range(121, 128),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 128),
+                }),
+                range: text_range(0, 129),
+            }))],
+        };
+
+        let mut command = command_schema("setAttr", CommandKind::Builtin);
+        command.flags = vec![flag_schema("type", Some("typ"), FlagArity::Exact(1))];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        let Some(SpecializedCommandForm::SetAttrDataReferenceEdits(payload)) =
+            analysis.normalized_invokes[0].special_form.as_ref()
+        else {
+            panic!("expected dataReferenceEdits special form");
+        };
+
+        assert_eq!(payload.command_head, "setAttr");
+        assert!(matches!(
+            payload.attr_path.word,
+            ShellWord::QuotedString { ref text, .. } if text == "\".ed\""
+        ));
+        assert_eq!(payload.type_flag_text, "-type");
+        assert!(matches!(
+            payload.type_name.word,
+            ShellWord::QuotedString { ref text, .. } if text == "\"dataReferenceEdits\""
+        ));
+        assert_eq!(payload.raw_tail_items.len(), 7);
+        assert!(matches!(
+            payload.raw_tail_items[0].word,
+            ShellWord::QuotedString { ref text, .. } if text == "\"rootRN\""
+        ));
+        assert!(matches!(
+            payload.raw_tail_items[1].word,
+            ShellWord::QuotedString { ref text, .. } if text == "\"\""
+        ));
+        assert!(matches!(
+            payload.raw_tail_items[2].word,
+            ShellWord::NumericLiteral { ref text, .. } if text == "5"
+        ));
+        assert!(matches!(
+            payload.raw_tail_items[3].word,
+            ShellWord::QuotedString { ref text, .. } if text.contains("placeHolderList[0]")
+        ));
+        assert!(matches!(
+            payload.raw_tail_items[4].word,
+            ShellWord::BareWord { ref text, .. } if text == "|world|ctrl"
+        ));
+        assert!(matches!(
+            payload.raw_tail_items[5].word,
+            ShellWord::QuotedString { ref text, .. } if text == "\" -type \\\"double3\\\" 0 0 1\""
+        ));
+        assert!(matches!(
+            payload.raw_tail_items[6].word,
+            ShellWord::QuotedString { ref text, .. } if text == "\" -av\""
+        ));
+        assert!(analysis.diagnostics.is_empty());
     }
 
     #[test]
