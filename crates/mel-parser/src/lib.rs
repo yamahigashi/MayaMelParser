@@ -35,6 +35,18 @@ pub enum SourceEncoding {
     Gbk,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParseMode {
+    #[default]
+    Strict,
+    AllowTrailingStmtWithoutSemi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ParseOptions {
+    pub mode: ParseMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parse {
     pub syntax: SourceFile,
@@ -82,7 +94,12 @@ impl SourceMap {
 
 #[must_use]
 pub fn parse_source(input: &str) -> Parse {
-    let mut parse = Parser::new(input).parse();
+    parse_source_with_options(input, ParseOptions::default())
+}
+
+#[must_use]
+pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
+    let mut parse = Parser::new(input, options).parse();
     parse.source_text = input.to_owned();
     parse.source_map = SourceMap::identity(input.len());
     parse.source_encoding = SourceEncoding::Utf8;
@@ -420,15 +437,23 @@ fn source_len_for_char(ch: char, encoding: SourceEncoding) -> Option<usize> {
 
 struct Parser<'a> {
     input: &'a str,
+    options: ParseOptions,
     tokens: Vec<Token>,
     pos: usize,
     errors: Vec<ParseError>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StmtContext {
+    TopLevel,
+    Nested,
+}
+
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, options: ParseOptions) -> Self {
         Self {
             input,
+            options,
             tokens: Vec::new(),
             pos: 0,
             errors: Vec::new(),
@@ -470,7 +495,9 @@ impl<'a> Parser<'a> {
             return self.parse_proc_def().map(Box::new).map(Item::Proc);
         }
 
-        self.parse_stmt().map(Box::new).map(Item::Stmt)
+        self.parse_stmt(StmtContext::TopLevel)
+            .map(Box::new)
+            .map(Item::Stmt)
     }
 
     fn parse_proc_def(&mut self) -> Option<ProcDef> {
@@ -673,7 +700,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_stmt(&mut self) -> Option<Stmt> {
+    fn parse_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         if let Some(token) = self.eat(TokenKind::Semi) {
             return Some(Stmt::Empty { range: token.range });
         }
@@ -721,26 +748,26 @@ impl<'a> Parser<'a> {
         }
 
         if self.starts_var_decl() {
-            return self.parse_var_decl_stmt();
+            return self.parse_var_decl_stmt(context);
         }
 
         if self.at_keyword("return") {
-            return self.parse_return_stmt();
+            return self.parse_return_stmt(context);
         }
 
         if self.at_keyword("break") {
-            return self.parse_break_stmt();
+            return self.parse_break_stmt(context);
         }
 
         if self.at_keyword("continue") {
-            return self.parse_continue_stmt();
+            return self.parse_continue_stmt(context);
         }
 
         if self.starts_command_stmt() {
-            return self.parse_command_stmt();
+            return self.parse_command_stmt(context);
         }
 
-        self.parse_expr_stmt()
+        self.parse_expr_stmt(context)
     }
 
     fn parse_block_stmt(&mut self) -> Option<Stmt> {
@@ -748,7 +775,7 @@ impl<'a> Parser<'a> {
         let mut statements = Vec::new();
 
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            if let Some(stmt) = self.parse_stmt() {
+            if let Some(stmt) = self.parse_stmt(StmtContext::Nested) {
                 statements.push(stmt);
             } else {
                 let range = self.current().range;
@@ -781,9 +808,9 @@ impl<'a> Parser<'a> {
             self.error("expected ')' after if condition", range);
         }
 
-        let then_branch = self.parse_stmt()?;
+        let then_branch = self.parse_stmt(StmtContext::Nested)?;
         let else_branch = if self.eat_keyword("else").is_some() {
-            self.parse_stmt().map(Box::new)
+            self.parse_stmt(StmtContext::Nested).map(Box::new)
         } else {
             None
         };
@@ -829,7 +856,7 @@ impl<'a> Parser<'a> {
             self.error("expected ')' after while condition", range);
         }
 
-        let body = if let Some(stmt) = self.parse_stmt() {
+        let body = if let Some(stmt) = self.parse_stmt(StmtContext::Nested) {
             stmt
         } else {
             let range = self.current().range;
@@ -846,7 +873,7 @@ impl<'a> Parser<'a> {
 
     fn parse_do_while_stmt(&mut self) -> Option<Stmt> {
         let do_token = self.eat_keyword("do")?;
-        let body = if let Some(stmt) = self.parse_stmt() {
+        let body = if let Some(stmt) = self.parse_stmt(StmtContext::Nested) {
             stmt
         } else {
             let range = self.current().range;
@@ -1040,7 +1067,7 @@ impl<'a> Parser<'a> {
             && !self.at_keyword("case")
             && !self.at_keyword("default")
         {
-            if let Some(stmt) = self.parse_stmt() {
+            if let Some(stmt) = self.parse_stmt(StmtContext::Nested) {
                 statements.push(stmt);
             } else {
                 let range = self.current().range;
@@ -1079,7 +1106,7 @@ impl<'a> Parser<'a> {
             };
 
             let close = self.expect(TokenKind::RParen, "expected ')' after for-in clause")?;
-            let body = self.parse_stmt()?;
+            let body = self.parse_stmt(StmtContext::Nested)?;
             let body_end = range_end(stmt_range(&body)).max(range_end(close.range));
             return Some(Stmt::ForIn {
                 binding,
@@ -1111,7 +1138,7 @@ impl<'a> Parser<'a> {
             self.parse_for_clause_exprs()
         };
         let close = self.expect(TokenKind::RParen, "expected ')' after for clause")?;
-        let body = self.parse_stmt()?;
+        let body = self.parse_stmt(StmtContext::Nested)?;
 
         let body_end = range_end(stmt_range(&body)).max(range_end(close.range));
         Some(Stmt::For {
@@ -1146,50 +1173,50 @@ impl<'a> Parser<'a> {
         Some(exprs)
     }
 
-    fn parse_return_stmt(&mut self) -> Option<Stmt> {
+    fn parse_return_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         let token = self.eat_keyword("return")?;
         let expr = if self.at(TokenKind::Semi) {
             None
         } else {
             self.parse_expr()
         };
-        let end = self.expect_stmt_semi("expected ';' after return statement")?;
+        let end = self.expect_stmt_terminator("expected ';' after return statement", context)?;
         Some(Stmt::Return {
             expr,
             range: text_range(range_start(token.range), end),
         })
     }
 
-    fn parse_break_stmt(&mut self) -> Option<Stmt> {
+    fn parse_break_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         let token = self.eat_keyword("break")?;
-        let end = self.expect_stmt_semi("expected ';' after break statement")?;
+        let end = self.expect_stmt_terminator("expected ';' after break statement", context)?;
         Some(Stmt::Break {
             range: text_range(range_start(token.range), end),
         })
     }
 
-    fn parse_continue_stmt(&mut self) -> Option<Stmt> {
+    fn parse_continue_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         let token = self.eat_keyword("continue")?;
-        let end = self.expect_stmt_semi("expected ';' after continue statement")?;
+        let end = self.expect_stmt_terminator("expected ';' after continue statement", context)?;
         Some(Stmt::Continue {
             range: text_range(range_start(token.range), end),
         })
     }
 
-    fn parse_command_stmt(&mut self) -> Option<Stmt> {
+    fn parse_command_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         let start = range_start(self.current().range);
         let invoke = self.parse_shell_like_invoke(false)?;
-        let end = self.expect_stmt_semi("expected ';' after statement")?;
+        let end = self.expect_stmt_terminator("expected ';' after statement", context)?;
         Some(Stmt::Expr {
             expr: Expr::Invoke(invoke),
             range: text_range(start, end),
         })
     }
 
-    fn parse_expr_stmt(&mut self) -> Option<Stmt> {
+    fn parse_expr_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         let start = range_start(self.current().range);
         let expr = self.parse_expr()?;
-        let end = self.expect_stmt_semi("expected ';' after statement")?;
+        let end = self.expect_stmt_terminator("expected ';' after statement", context)?;
         Some(Stmt::Expr {
             expr,
             range: text_range(start, end),
@@ -1235,7 +1262,7 @@ impl<'a> Parser<'a> {
                 && self.starts_stmt_after_function_args(next_index))
     }
 
-    fn parse_var_decl_stmt(&mut self) -> Option<Stmt> {
+    fn parse_var_decl_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
         let start = range_start(self.current().range);
         let is_global = self.eat_keyword("global").is_some();
         let type_token = self.eat(TokenKind::Ident)?;
@@ -1257,7 +1284,8 @@ impl<'a> Parser<'a> {
             break;
         }
 
-        let end = self.expect_stmt_semi("expected ';' after variable declaration")?;
+        let end =
+            self.expect_stmt_terminator("expected ';' after variable declaration", context)?;
         let range = text_range(start, end);
         Some(Stmt::VarDecl {
             decl: VarDecl {
@@ -2493,9 +2521,11 @@ impl<'a> Parser<'a> {
         None
     }
 
-    fn expect_stmt_semi(&mut self, message: &str) -> Option<u32> {
+    fn expect_stmt_terminator(&mut self, message: &str, context: StmtContext) -> Option<u32> {
         if let Some(token) = self.eat(TokenKind::Semi) {
             Some(range_end(token.range))
+        } else if self.can_omit_stmt_semi(context) {
+            Some(range_end(self.previous_significant_range()))
         } else {
             let range = self.current().range;
             self.error(message, range);
@@ -2506,6 +2536,12 @@ impl<'a> Parser<'a> {
                 Some(range_end(self.previous_range()).max(range_end(range)))
             }
         }
+    }
+
+    fn can_omit_stmt_semi(&self, context: StmtContext) -> bool {
+        matches!(self.options.mode, ParseMode::AllowTrailingStmtWithoutSemi)
+            && matches!(context, StmtContext::TopLevel)
+            && self.at(TokenKind::Eof)
     }
 
     fn at(&self, kind: TokenKind) -> bool {
@@ -2607,6 +2643,19 @@ impl<'a> Parser<'a> {
             .checked_sub(1)
             .map(|index| self.token_at(index).range)
             .unwrap_or(text_range(0, 0))
+    }
+
+    fn previous_significant_range(&self) -> TextRange {
+        let mut index = self.current_index();
+        while index > 0 {
+            index -= 1;
+            let token = self.token_at(index);
+            if !token.kind.is_trivia() {
+                return token.range;
+            }
+        }
+
+        text_range(0, 0)
     }
 
     fn error(&mut self, message: &str, range: TextRange) {
@@ -3152,7 +3201,10 @@ fn remap_shell_word_ranges(word: &mut ShellWord, map: &OffsetMap) {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceEncoding, parse_bytes, parse_bytes_with_encoding, parse_source};
+    use super::{
+        ParseMode, ParseOptions, SourceEncoding, parse_bytes, parse_bytes_with_encoding,
+        parse_source, parse_source_with_options,
+    };
     use encoding_rs::{GBK, SHIFT_JIS};
     use mel_ast::{
         AssignOp, BinaryOp, Expr, InvokeSurface, Item, ShellWord, Stmt, SwitchLabel, TypeName,
@@ -5598,6 +5650,52 @@ mod tests {
                 }
             )
         ));
+    }
+
+    #[test]
+    fn allows_trailing_top_level_statement_without_semicolon_in_lenient_mode() {
+        let parse = parse_source_with_options(
+            include_str!("../../../tests/corpus/parser/statements/trailing-statement-no-semi.mel"),
+            ParseOptions {
+                mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            },
+        );
+        assert!(parse.errors.is_empty());
+        assert_eq!(parse.syntax.items.len(), 1);
+        assert!(matches!(
+            parse.syntax.items[0],
+            Item::Stmt(ref stmt) if matches!(
+                &**stmt,
+                Stmt::Expr {
+                    expr: Expr::Invoke(_),
+                    ..
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn still_requires_semicolon_between_top_level_statements_in_lenient_mode() {
+        let parse = parse_source_with_options(
+            "$x = 1\n$y = 2;",
+            ParseOptions {
+                mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            },
+        );
+        assert!(!parse.errors.is_empty());
+        assert_eq!(parse.errors[0].message, "expected ';' after statement");
+    }
+
+    #[test]
+    fn still_requires_semicolon_for_nested_statement_in_lenient_mode() {
+        let parse = parse_source_with_options(
+            "if ($ready) print(\"hello\")",
+            ParseOptions {
+                mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            },
+        );
+        assert!(!parse.errors.is_empty());
+        assert_eq!(parse.errors[0].message, "expected ';' after statement");
     }
 
     #[test]

@@ -8,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use mel_parser::{Parse, SourceEncoding, parse_file, parse_file_with_encoding, parse_source};
+use mel_parser::{
+    Parse, ParseMode, ParseOptions, SourceEncoding, parse_file, parse_file_with_encoding,
+    parse_source_with_options,
+};
 use mel_sema::{DiagnosticSeverity, analyze};
 use mel_syntax::TextRange;
 
@@ -100,7 +103,13 @@ fn run() -> Result<(), RunError> {
     }
 
     if let Some(input) = args.inline_input {
-        print_parse_summary("inline", &parse_source(&input));
+        let parse = parse_source_with_options(
+            &input,
+            ParseOptions {
+                mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            },
+        );
+        print_parse_summary("inline", &parse);
         return Ok(());
     }
 
@@ -435,11 +444,22 @@ struct FileSummary {
 mod tests {
     use super::{Args, CorpusSummary, FileSummary, format_single_file_output, parse_cli_args};
     use clap::{CommandFactory, error::ErrorKind};
-    use mel_parser::parse_source;
+    use mel_parser::{ParseMode, ParseOptions, parse_source, parse_source_with_options};
     use std::path::PathBuf;
 
     fn render_snapshot(label: &str, source: &str) -> String {
         format_single_file_output(label, &parse_source(source)).expect("snapshot should render")
+    }
+
+    #[test]
+    fn inline_mode_accepts_single_trailing_statement_without_semicolon() {
+        let parse = parse_source_with_options(
+            r#"print "hello""#,
+            ParseOptions {
+                mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            },
+        );
+        assert!(parse.errors.is_empty());
     }
 
     #[test]
