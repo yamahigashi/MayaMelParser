@@ -1,0 +1,7 @@
+proc string helper() {
+    return "bad";
+}
+
+proc int outer() {
+    return helper();
+}

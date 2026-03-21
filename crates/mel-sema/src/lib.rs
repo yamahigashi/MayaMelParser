@@ -1,8 +1,19 @@
 #![forbid(unsafe_code)]
 //! Minimal semantic analysis scaffold.
 
+mod command_norm;
+mod command_schema;
+
 use std::collections::HashMap;
 
+pub use command_norm::{
+    CommandMode, NormalizedCommandInvoke, NormalizedCommandItem, NormalizedFlag, PositionalArg,
+};
+pub use command_schema::{
+    CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
+    EmbeddedCommandRegistry, EmptyCommandRegistry, FlagArity, FlagSchema, ReturnBehavior,
+    ValueShape,
+};
 use mel_ast::{CalleeResolution, Expr, Item, ProcDef, ShellWord, SourceFile, Stmt, SwitchClause};
 use mel_syntax::TextRange;
 
@@ -26,6 +37,7 @@ pub struct ProcSymbol {
     pub id: ProcSymbolId,
     pub name: String,
     pub is_global: bool,
+    pub return_type: Option<mel_ast::ProcReturnType>,
     pub owner_scope: ScopeId,
     pub decl_order: usize,
     pub range: TextRange,
@@ -78,6 +90,7 @@ pub struct Analysis {
     pub variable_symbols: Vec<VariableSymbol>,
     pub invoke_resolutions: Vec<InvokeResolution>,
     pub ident_resolutions: Vec<IdentResolution>,
+    pub normalized_invokes: Vec<NormalizedCommandInvoke>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,31 +104,6 @@ enum ValueType {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandKind {
-    Builtin,
-    Plugin,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandInfo {
-    pub name: String,
-    pub kind: CommandKind,
-}
-
-pub trait CommandRegistry {
-    fn lookup(&self, name: &str) -> Option<CommandInfo>;
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct EmptyCommandRegistry;
-
-impl CommandRegistry for EmptyCommandRegistry {
-    fn lookup(&self, _name: &str) -> Option<CommandInfo> {
-        None
-    }
-}
-
 #[must_use]
 pub fn analyze(source: &SourceFile) -> Analysis {
     analyze_with_registry(source, &EmptyCommandRegistry)
@@ -126,8 +114,9 @@ pub fn analyze_with_registry<R>(source: &SourceFile, registry: &R) -> Analysis
 where
     R: CommandRegistry + ?Sized,
 {
+    let overlay = command_schema::OverlayCommandRegistry::new(registry);
     let collected = ScopeCollector::collect(source);
-    let mut analyzer = Analyzer::new(&collected, registry);
+    let mut analyzer = Analyzer::new(&collected, &overlay);
 
     for item in &source.items {
         analyzer.walk_item(item, collected.root_scope);
@@ -139,6 +128,7 @@ where
         variable_symbols: collected.variable_symbols.clone(),
         invoke_resolutions: analyzer.invoke_resolutions,
         ident_resolutions: analyzer.ident_resolutions,
+        normalized_invokes: analyzer.normalized_invokes,
     }
 }
 
@@ -239,6 +229,7 @@ impl ScopeCollector {
             id: symbol_id,
             name: proc_def.name.clone(),
             is_global: proc_def.is_global,
+            return_type: proc_def.return_type.clone(),
             owner_scope,
             decl_order,
             range: proc_def.range,
@@ -507,6 +498,17 @@ impl CollectedScopes {
             .map(|symbol_id| self.symbol(*symbol_id))
     }
 
+    fn find_resolved_proc_symbol(
+        &self,
+        name: &str,
+        scope: ScopeId,
+        visible_decl_orders: &HashMap<ScopeId, usize>,
+    ) -> Option<&ProcSymbol> {
+        self.find_visible_local_proc(name, scope, visible_decl_orders)
+            .or_else(|| self.find_forward_local_proc(name, scope, visible_decl_orders))
+            .or_else(|| self.find_global_proc(name))
+    }
+
     fn find_visible_local_variable(
         &self,
         name: &str,
@@ -567,6 +569,7 @@ struct Analyzer<'a, R: ?Sized> {
     diagnostics: Vec<Diagnostic>,
     invoke_resolutions: Vec<InvokeResolution>,
     ident_resolutions: Vec<IdentResolution>,
+    normalized_invokes: Vec<NormalizedCommandInvoke>,
     visible_decl_orders: HashMap<ScopeId, usize>,
     visible_variable_decl_orders: HashMap<ScopeId, usize>,
     proc_contexts: Vec<ProcContext>,
@@ -577,6 +580,25 @@ struct ProcContext {
     range: TextRange,
     return_type: Option<ValueType>,
     saw_value_return: bool,
+}
+
+enum ResolvedInvokeTarget {
+    Proc(String),
+    Command(CommandSchema),
+    Unresolved,
+}
+
+impl ResolvedInvokeTarget {
+    fn into_callee_resolution(self) -> CalleeResolution {
+        match self {
+            Self::Proc(name) => CalleeResolution::Proc(name),
+            Self::Command(command) => match command.kind {
+                CommandKind::Builtin => CalleeResolution::BuiltinCommand(command.name.clone()),
+                CommandKind::Plugin => CalleeResolution::PluginCommand(command.name.clone()),
+            },
+            Self::Unresolved => CalleeResolution::Unresolved,
+        }
+    }
 }
 
 impl<'a, R> Analyzer<'a, R>
@@ -590,6 +612,7 @@ where
             diagnostics: Vec::new(),
             invoke_resolutions: Vec::new(),
             ident_resolutions: Vec::new(),
+            normalized_invokes: Vec::new(),
             visible_decl_orders: HashMap::new(),
             visible_variable_decl_orders: HashMap::new(),
             proc_contexts: Vec::new(),
@@ -802,7 +825,19 @@ where
                 for word in words {
                     self.walk_shell_word(word, current_scope);
                 }
-                self.resolve_invoke(head, invoke.range, current_scope)
+                let resolved = self.resolve_named_target(head, invoke.range, current_scope);
+                if let ResolvedInvokeTarget::Command(ref command) = resolved {
+                    let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
+                        command,
+                        current_scope,
+                        head,
+                        words,
+                        invoke.range,
+                    );
+                    self.diagnostics.extend(diagnostics);
+                    self.normalized_invokes.push(normalized);
+                }
+                resolved.into_callee_resolution()
             }
         };
 
@@ -833,11 +868,21 @@ where
         range: TextRange,
         current_scope: ScopeId,
     ) -> CalleeResolution {
+        self.resolve_named_target(name, range, current_scope)
+            .into_callee_resolution()
+    }
+
+    fn resolve_named_target(
+        &mut self,
+        name: &str,
+        range: TextRange,
+        current_scope: ScopeId,
+    ) -> ResolvedInvokeTarget {
         if let Some(symbol) =
             self.collected
                 .find_visible_local_proc(name, current_scope, &self.visible_decl_orders)
         {
-            return CalleeResolution::Proc(symbol.name.clone());
+            return ResolvedInvokeTarget::Proc(symbol.name.clone());
         }
 
         if let Some(symbol) =
@@ -848,21 +893,18 @@ where
                 message: format!("local proc \"{name}\" is called before its definition"),
                 range,
             });
-            return CalleeResolution::Proc(symbol.name.clone());
+            return ResolvedInvokeTarget::Proc(symbol.name.clone());
         }
 
         if let Some(symbol) = self.collected.find_global_proc(name) {
-            return CalleeResolution::Proc(symbol.name.clone());
+            return ResolvedInvokeTarget::Proc(symbol.name.clone());
         }
 
         if let Some(command) = self.registry.lookup(name) {
-            return match command.kind {
-                CommandKind::Builtin => CalleeResolution::BuiltinCommand(command.name),
-                CommandKind::Plugin => CalleeResolution::PluginCommand(command.name),
-            };
+            return ResolvedInvokeTarget::Command(command);
         }
 
-        CalleeResolution::Unresolved
+        ResolvedInvokeTarget::Unresolved
     }
 
     fn mark_proc_visible(&mut self, proc_def: &ProcDef) {
@@ -1042,7 +1084,7 @@ where
                 ValueType::Array(inner) => *inner,
                 _ => ValueType::Unknown,
             },
-            Expr::Invoke(_) => ValueType::Unknown,
+            Expr::Invoke(invoke) => self.infer_invoke_type(invoke, current_scope),
         }
     }
 
@@ -1059,6 +1101,27 @@ where
                 }
             }
         }
+    }
+
+    fn infer_invoke_type(&self, invoke: &mel_ast::InvokeExpr, current_scope: ScopeId) -> ValueType {
+        let name = match &invoke.surface {
+            mel_ast::InvokeSurface::Function { name, .. }
+            | mel_ast::InvokeSurface::ShellLike { head: name, .. } => name,
+        };
+
+        let Some(symbol) = self.collected.find_resolved_proc_symbol(
+            name,
+            current_scope,
+            &self.visible_decl_orders,
+        ) else {
+            return ValueType::Unknown;
+        };
+
+        symbol
+            .return_type
+            .as_ref()
+            .map(value_type_from_proc_return_type)
+            .unwrap_or(ValueType::Unknown)
     }
 }
 
@@ -1156,8 +1219,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandInfo, CommandKind, CommandRegistry, IdentTarget, VariableKind, analyze,
-        analyze_with_registry,
+        CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema,
+        CommandSourceKind, EmbeddedCommandRegistry, FlagArity, FlagSchema, IdentTarget,
+        ReturnBehavior, ValueShape, VariableKind, analyze, analyze_with_registry,
     };
     use mel_ast::{
         AssignOp, CalleeResolution, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef,
@@ -1166,12 +1230,37 @@ mod tests {
     use mel_syntax::text_range;
 
     struct TestRegistry {
-        commands: Vec<CommandInfo>,
+        commands: Vec<CommandSchema>,
     }
 
     impl CommandRegistry for TestRegistry {
-        fn lookup(&self, name: &str) -> Option<CommandInfo> {
+        fn lookup(&self, name: &str) -> Option<CommandSchema> {
             self.commands.iter().find(|info| info.name == name).cloned()
+        }
+    }
+
+    fn command_schema(name: &str, kind: CommandKind) -> CommandSchema {
+        CommandSchema {
+            name: name.to_owned(),
+            kind,
+            source_kind: CommandSourceKind::Command,
+            return_behavior: ReturnBehavior::Unknown,
+            flags: Vec::new(),
+        }
+    }
+
+    fn flag_schema(long_name: &str, short_name: Option<&str>, arity: FlagArity) -> FlagSchema {
+        FlagSchema {
+            long_name: long_name.to_owned(),
+            short_name: short_name.map(str::to_owned),
+            mode_mask: CommandModeMask {
+                create: true,
+                edit: true,
+                query: true,
+            },
+            arity,
+            value_shapes: vec![ValueShape::Unknown],
+            allows_multiple: false,
         }
     }
 
@@ -1526,10 +1615,7 @@ mod tests {
         };
 
         let registry = TestRegistry {
-            commands: vec![CommandInfo {
-                name: "sphere".to_owned(),
-                kind: CommandKind::Builtin,
-            }],
+            commands: vec![command_schema("sphere", CommandKind::Builtin)],
         };
 
         let analysis = analyze_with_registry(&source, &registry);
@@ -1558,10 +1644,7 @@ mod tests {
         };
 
         let registry = TestRegistry {
-            commands: vec![CommandInfo {
-                name: "foo".to_owned(),
-                kind: CommandKind::Plugin,
-            }],
+            commands: vec![command_schema("foo", CommandKind::Plugin)],
         };
 
         let analysis = analyze_with_registry(&source, &registry);
@@ -1603,10 +1686,7 @@ mod tests {
         };
 
         let registry = TestRegistry {
-            commands: vec![CommandInfo {
-                name: "helper".to_owned(),
-                kind: CommandKind::Builtin,
-            }],
+            commands: vec![command_schema("helper", CommandKind::Builtin)],
         };
 
         let analysis = analyze_with_registry(&source, &registry);
@@ -1615,6 +1695,167 @@ mod tests {
             analysis.invoke_resolutions[0].resolution,
             CalleeResolution::Proc("helper".to_owned())
         );
+    }
+
+    #[test]
+    fn analyze_uses_embedded_catalog_by_default() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::Function {
+                        name: "sphere".to_owned(),
+                        args: Vec::new(),
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 8),
+                }),
+                range: text_range(0, 9),
+            }))],
+        };
+
+        let analysis = analyze(&source);
+        assert_eq!(
+            analysis.invoke_resolutions[0].resolution,
+            CalleeResolution::BuiltinCommand("sphere".to_owned())
+        );
+    }
+
+    #[test]
+    fn embedded_catalog_keeps_script_source_kind() {
+        let schema = EmbeddedCommandRegistry::new()
+            .lookup("addNewShelfTab")
+            .expect("embedded schema for addNewShelfTab");
+        assert_eq!(schema.kind, CommandKind::Builtin);
+        assert_eq!(schema.source_kind, CommandSourceKind::Script);
+    }
+
+    #[test]
+    fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![
+                            ShellWord::Flag {
+                                text: "-query".to_owned(),
+                                range: text_range(12, 18),
+                            },
+                            ShellWord::Flag {
+                                text: "-label".to_owned(),
+                                range: text_range(19, 25),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"title\"".to_owned(),
+                                range: text_range(26, 33),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 33),
+                }),
+                range: text_range(0, 34),
+            }))],
+        };
+
+        let mut command = command_schema("frameLayout", CommandKind::Builtin);
+        command.flags = vec![
+            FlagSchema {
+                mode_mask: CommandModeMask {
+                    create: true,
+                    edit: true,
+                    query: true,
+                },
+                value_shapes: Vec::new(),
+                ..flag_schema("query", Some("q"), FlagArity::None)
+            },
+            FlagSchema {
+                mode_mask: CommandModeMask {
+                    create: true,
+                    edit: true,
+                    query: true,
+                },
+                value_shapes: Vec::new(),
+                ..flag_schema("edit", Some("e"), FlagArity::None)
+            },
+            FlagSchema {
+                mode_mask: CommandModeMask {
+                    create: false,
+                    edit: true,
+                    query: false,
+                },
+                value_shapes: vec![ValueShape::String],
+                ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+            },
+        ];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert_eq!(
+            analysis.invoke_resolutions[0].resolution,
+            CalleeResolution::BuiltinCommand("frameLayout".to_owned())
+        );
+        assert_eq!(analysis.normalized_invokes.len(), 1);
+        assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Query);
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("not available in query mode"))
+        );
+    }
+
+    #[test]
+    fn shell_like_command_normalization_reports_mode_conflict() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![
+                            ShellWord::Flag {
+                                text: "-edit".to_owned(),
+                                range: text_range(12, 17),
+                            },
+                            ShellWord::Flag {
+                                text: "-query".to_owned(),
+                                range: text_range(18, 24),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 24),
+                }),
+                range: text_range(0, 25),
+            }))],
+        };
+
+        let mut command = command_schema("frameLayout", CommandKind::Builtin);
+        command.flags = vec![
+            FlagSchema {
+                value_shapes: Vec::new(),
+                ..flag_schema("query", Some("q"), FlagArity::None)
+            },
+            FlagSchema {
+                value_shapes: Vec::new(),
+                ..flag_schema("edit", Some("e"), FlagArity::None)
+            },
+        ];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Unknown);
+        assert!(analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("both query and edit mode flags")
+        }));
     }
 
     #[test]
@@ -1990,5 +2231,176 @@ mod tests {
             analysis.diagnostics[0].message,
             "variable \"$value\" has declared type String but initializer is Int"
         );
+    }
+
+    #[test]
+    fn proc_invoke_return_type_flows_into_initializer_check() {
+        let source = SourceFile {
+            items: vec![
+                Item::Proc(Box::new(ProcDef {
+                    return_type: Some(mel_ast::ProcReturnType {
+                        ty: TypeName::String,
+                        is_array: false,
+                        range: text_range(5, 11),
+                    }),
+                    name: "helper".to_owned(),
+                    params: Vec::new(),
+                    body: Stmt::Block {
+                        statements: vec![Stmt::Return {
+                            expr: Some(Expr::String {
+                                text: "\"bad\"".to_owned(),
+                                range: text_range(24, 29),
+                            }),
+                            range: text_range(17, 30),
+                        }],
+                        range: text_range(16, 31),
+                    },
+                    is_global: false,
+                    range: text_range(0, 31),
+                })),
+                Item::Stmt(Box::new(Stmt::VarDecl {
+                    decl: VarDecl {
+                        is_global: false,
+                        ty: TypeName::Int,
+                        declarators: vec![Declarator {
+                            name: "$value".to_owned(),
+                            array_size: None,
+                            initializer: Some(Expr::Invoke(InvokeExpr {
+                                surface: InvokeSurface::Function {
+                                    name: "helper".to_owned(),
+                                    args: Vec::new(),
+                                },
+                                resolution: CalleeResolution::Unresolved,
+                                range: text_range(44, 52),
+                            })),
+                            range: text_range(36, 52),
+                        }],
+                        range: text_range(32, 53),
+                    },
+                    range: text_range(32, 53),
+                })),
+            ],
+        };
+
+        let analysis = analyze(&source);
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].message,
+            "variable \"$value\" has declared type Int but initializer is String"
+        );
+    }
+
+    #[test]
+    fn proc_invoke_return_type_flows_into_return_check() {
+        let source = SourceFile {
+            items: vec![
+                Item::Proc(Box::new(ProcDef {
+                    return_type: Some(mel_ast::ProcReturnType {
+                        ty: TypeName::String,
+                        is_array: false,
+                        range: text_range(5, 11),
+                    }),
+                    name: "helper".to_owned(),
+                    params: Vec::new(),
+                    body: Stmt::Block {
+                        statements: vec![Stmt::Return {
+                            expr: Some(Expr::String {
+                                text: "\"bad\"".to_owned(),
+                                range: text_range(24, 29),
+                            }),
+                            range: text_range(17, 30),
+                        }],
+                        range: text_range(16, 31),
+                    },
+                    is_global: false,
+                    range: text_range(0, 31),
+                })),
+                Item::Proc(Box::new(ProcDef {
+                    return_type: Some(mel_ast::ProcReturnType {
+                        ty: TypeName::Int,
+                        is_array: false,
+                        range: text_range(37, 40),
+                    }),
+                    name: "outer".to_owned(),
+                    params: Vec::new(),
+                    body: Stmt::Block {
+                        statements: vec![Stmt::Return {
+                            expr: Some(Expr::Invoke(InvokeExpr {
+                                surface: InvokeSurface::Function {
+                                    name: "helper".to_owned(),
+                                    args: Vec::new(),
+                                },
+                                resolution: CalleeResolution::Unresolved,
+                                range: text_range(56, 64),
+                            })),
+                            range: text_range(49, 65),
+                        }],
+                        range: text_range(48, 66),
+                    },
+                    is_global: false,
+                    range: text_range(32, 66),
+                })),
+            ],
+        };
+
+        let analysis = analyze(&source);
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].message,
+            "proc \"outer\" returns String but declares Int"
+        );
+    }
+
+    #[test]
+    fn proc_invoke_return_type_allows_matching_initializer() {
+        let source = SourceFile {
+            items: vec![
+                Item::Proc(Box::new(ProcDef {
+                    return_type: Some(mel_ast::ProcReturnType {
+                        ty: TypeName::Int,
+                        is_array: false,
+                        range: text_range(5, 8),
+                    }),
+                    name: "helper".to_owned(),
+                    params: Vec::new(),
+                    body: Stmt::Block {
+                        statements: vec![Stmt::Return {
+                            expr: Some(Expr::Int {
+                                value: 1,
+                                range: text_range(21, 22),
+                            }),
+                            range: text_range(14, 23),
+                        }],
+                        range: text_range(13, 24),
+                    },
+                    is_global: false,
+                    range: text_range(0, 24),
+                })),
+                Item::Stmt(Box::new(Stmt::VarDecl {
+                    decl: VarDecl {
+                        is_global: false,
+                        ty: TypeName::Int,
+                        declarators: vec![Declarator {
+                            name: "$value".to_owned(),
+                            array_size: None,
+                            initializer: Some(Expr::Invoke(InvokeExpr {
+                                surface: InvokeSurface::Function {
+                                    name: "helper".to_owned(),
+                                    args: Vec::new(),
+                                },
+                                resolution: CalleeResolution::Unresolved,
+                                range: text_range(37, 45),
+                            })),
+                            range: text_range(29, 45),
+                        }],
+                        range: text_range(25, 46),
+                    },
+                    range: text_range(25, 46),
+                })),
+            ],
+        };
+
+        let analysis = analyze(&source);
+        assert!(analysis.diagnostics.is_empty());
     }
 }

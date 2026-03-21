@@ -575,4 +575,28 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn snapshot_sema_typed_return_type_mismatch_via_call_fixture() {
+        insta::assert_snapshot!(
+            "sema_typed_return_type_mismatch_via_call",
+            render_snapshot(
+                "sema/proc/typed-return-type-mismatch-via-call.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/proc/typed-return-type-mismatch-via-call.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_var_init_type_mismatch_via_call_fixture() {
+        insta::assert_snapshot!(
+            "sema_var_init_type_mismatch_via_call",
+            render_snapshot(
+                "sema/proc/var-init-type-mismatch-via-call.mel",
+                include_str!("../../../tests/corpus/sema/proc/var-init-type-mismatch-via-call.mel"),
+            )
+        );
+    }
 }

@@ -1,0 +1,5 @@
+proc string helper() {
+    return "bad";
+}
+
+int $value = helper();
