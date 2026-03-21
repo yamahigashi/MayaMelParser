@@ -23,6 +23,16 @@ Today the workspace already includes:
 The implementation is under active development, and crate boundaries are being
 treated as part of the long-term architecture.
 
+## CLI Usage
+
+`mel-cli` is a small inspection CLI for parser and sema output.
+
+```bash
+cargo run -p mel-cli -- --file examples/hello.mel
+cargo run -p mel-cli -- --directory tests/private-corpus
+cargo run -p mel-cli -- '`ls -sl`;'
+```
+
 ## Architecture
 
 The workspace is organized around this pipeline:

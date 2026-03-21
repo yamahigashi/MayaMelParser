@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
+use clap::{CommandFactory, Parser, ValueEnum};
 use std::{
     collections::HashMap,
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -13,74 +14,112 @@ use mel_syntax::TextRange;
 
 const TOP_RANK_LIMIT: usize = 10;
 
-fn main() {
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
+#[derive(Debug, Parser)]
+#[command(about = "Inspect MEL parse and diagnostic output", long_about = None)]
+struct Args {
+    #[arg(long, value_enum, default_value_t = CliEncoding::Auto)]
+    encoding: CliEncoding,
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["directory", "inline_input"])]
+    file: Option<PathBuf>,
+    #[arg(
+        long = "directory",
+        visible_alias = "dir",
+        value_name = "PATH",
+        conflicts_with_all = ["file", "inline_input"]
+    )]
+    directory: Option<PathBuf>,
+    #[arg(value_name = "INPUT", conflicts_with_all = ["file", "directory"])]
+    inline_input: Option<String>,
+}
+
+impl Args {
+    fn has_input(&self) -> bool {
+        self.file.is_some() || self.directory.is_some() || self.inline_input.is_some()
     }
 }
 
-fn run() -> Result<(), String> {
-    let mut args = env::args().skip(1);
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum CliEncoding {
+    #[default]
+    #[value(name = "auto")]
+    Auto,
+    #[value(name = "utf8")]
+    Utf8,
+    #[value(name = "cp932")]
+    Cp932,
+    #[value(name = "gbk")]
+    Gbk,
+}
 
-    let mut selected_encoding = None;
-    let mut file_path = None;
-    let mut corpus_dir = None;
-    let mut inline_input = None;
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--encoding" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "missing value after --encoding".to_owned())?;
-                selected_encoding = parse_cli_encoding(&value)?;
-            }
-            "--file" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| "missing path after --file".to_owned())?;
-                file_path = Some(PathBuf::from(path));
-            }
-            "--corpus-dir" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| "missing path after --corpus-dir".to_owned())?;
-                corpus_dir = Some(PathBuf::from(path));
-            }
-            input => {
-                inline_input = Some(input.to_owned());
-            }
+impl CliEncoding {
+    fn into_source_encoding(self) -> Option<SourceEncoding> {
+        match self {
+            Self::Auto => None,
+            Self::Utf8 => Some(SourceEncoding::Utf8),
+            Self::Cp932 => Some(SourceEncoding::Cp932),
+            Self::Gbk => Some(SourceEncoding::Gbk),
         }
     }
+}
 
-    if let Some(path) = file_path {
-        return print_single_file(&path, selected_encoding).map_err(|error| error.to_string());
+fn main() {
+    match run() {
+        Ok(()) => {}
+        Err(RunError::Cli(error)) => error.exit(),
+        Err(RunError::Message(error)) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[derive(Debug)]
+enum RunError {
+    Cli(clap::Error),
+    Message(String),
+}
+
+fn run() -> Result<(), RunError> {
+    let args = parse_cli_args(std::env::args_os()).map_err(RunError::Cli)?;
+
+    if !args.has_input() {
+        print_help().map_err(|error| RunError::Message(error.to_string()))?;
+        return Ok(());
     }
 
-    if let Some(path) = corpus_dir {
-        return print_corpus_summary(&path, selected_encoding).map_err(|error| error.to_string());
+    let selected_encoding = args.encoding.into_source_encoding();
+
+    if let Some(path) = args.file {
+        return print_single_file(&path, selected_encoding)
+            .map_err(|error| RunError::Message(error.to_string()));
     }
 
-    if let Some(input) = inline_input {
+    if let Some(path) = args.directory {
+        return print_corpus_summary(&path, selected_encoding)
+            .map_err(|error| RunError::Message(error.to_string()));
+    }
+
+    if let Some(input) = args.inline_input {
         print_parse_summary("inline", &parse_source(&input));
         return Ok(());
     }
 
-    print_parse_summary("inline", &parse_source("`ls -sl`;"));
     Ok(())
 }
 
-fn parse_cli_encoding(value: &str) -> Result<Option<SourceEncoding>, String> {
-    match value {
-        "auto" => Ok(None),
-        "utf8" => Ok(Some(SourceEncoding::Utf8)),
-        "cp932" => Ok(Some(SourceEncoding::Cp932)),
-        "gbk" => Ok(Some(SourceEncoding::Gbk)),
-        _ => Err(format!(
-            "unsupported encoding '{value}'; expected auto|utf8|cp932|gbk"
-        )),
-    }
+fn parse_cli_args<I, T>(args: I) -> Result<Args, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    Args::try_parse_from(args)
+}
+
+fn print_help() -> io::Result<()> {
+    let mut command = Args::command();
+    command.print_help()?;
+    println!();
+    Ok(())
 }
 
 fn print_single_file(path: &Path, encoding: Option<SourceEncoding>) -> io::Result<()> {
@@ -394,11 +433,67 @@ struct FileSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{CorpusSummary, FileSummary, format_single_file_output};
+    use super::{Args, CorpusSummary, FileSummary, format_single_file_output, parse_cli_args};
+    use clap::{CommandFactory, error::ErrorKind};
     use mel_parser::parse_source;
+    use std::path::PathBuf;
 
     fn render_snapshot(label: &str, source: &str) -> String {
         format_single_file_output(label, &parse_source(source)).expect("snapshot should render")
+    }
+
+    #[test]
+    fn cli_accepts_directory_flag() {
+        let args = parse_cli_args(["mel-cli", "--directory", "tests/private-corpus"])
+            .expect("directory flag should parse");
+        assert_eq!(args.directory, Some(PathBuf::from("tests/private-corpus")));
+    }
+
+    #[test]
+    fn cli_accepts_dir_alias() {
+        let args = parse_cli_args(["mel-cli", "--dir", "tests/private-corpus"])
+            .expect("dir alias should parse");
+        assert_eq!(args.directory, Some(PathBuf::from("tests/private-corpus")));
+    }
+
+    #[test]
+    fn cli_rejects_removed_corpus_dir_flag() {
+        let error = parse_cli_args(["mel-cli", "--corpus-dir", "tests/private-corpus"])
+            .expect_err("removed flag should fail");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn cli_rejects_conflicting_modes() {
+        let error = parse_cli_args([
+            "mel-cli",
+            "--file",
+            "a.mel",
+            "--directory",
+            "tests/private-corpus",
+        ])
+        .expect_err("conflicting modes should fail");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cli_rejects_invalid_encoding() {
+        let error = parse_cli_args(["mel-cli", "--encoding", "latin1", "`ls -sl`;"])
+            .expect_err("invalid encoding should fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn help_mentions_directory_flag_and_encoding_values() {
+        let mut help = Vec::new();
+        let mut command = Args::command();
+        command
+            .write_long_help(&mut help)
+            .expect("help should render");
+        let help = String::from_utf8(help).expect("help should be utf8");
+        assert!(help.contains("--directory <PATH>"));
+        assert!(help.contains("[aliases: --dir]"));
+        assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
     }
 
     #[test]

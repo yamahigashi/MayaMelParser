@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 ariadne = "0.5"
+clap = { version = "4.5", features = ["derive"] }
 mel-parser = { path = "../mel-parser" }
 mel-sema = { path = "../mel-sema" }
 mel-syntax = { path = "../mel-syntax" }
