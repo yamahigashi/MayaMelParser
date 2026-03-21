@@ -48,6 +48,8 @@ struct RawArity {
     #[serde(rename = "type")]
     kind: String,
     value: Option<u8>,
+    min: Option<u8>,
+    max: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +78,7 @@ fn main() {
 
     assert_eq!(
         root.schema_version,
-        2,
+        3,
         "unsupported command schema version in {}",
         input_path.display()
     );
@@ -204,6 +206,12 @@ fn render_arity(value: &RawArity) -> String {
             "FlagArity::Exact({})",
             value.value.expect("exact arity requires value")
         ),
+        "range" => {
+            let min = value.min.expect("range arity requires min");
+            let max = value.max.expect("range arity requires max");
+            assert!(min <= max, "range arity requires min <= max");
+            format!("FlagArity::Range {{ min: {min}, max: {max} }}")
+        }
         other => panic!("unsupported arity kind {other:?}"),
     }
 }

@@ -140,13 +140,11 @@ pub(crate) fn normalize_shell_like_invoke(
                     seen_flags.push(schema.long_name.clone());
                 }
 
-                let expected_arity = match arity_for_mode(schema.arity_by_mode, mode) {
-                    FlagArity::None => 0,
-                    FlagArity::Exact(value) => usize::from(value),
-                };
+                let expected_arity = arity_for_mode(schema.arity_by_mode, mode);
+                let (min_arity, max_arity) = arity_bounds(expected_arity);
                 let mut args = Vec::new();
                 let mut consumed = 0;
-                while consumed < expected_arity {
+                while consumed < max_arity {
                     let next_index = index + 1 + consumed;
                     let Some(next_word) = words.get(next_index) else {
                         break;
@@ -161,7 +159,7 @@ pub(crate) fn normalize_shell_like_invoke(
                     consumed += 1;
                 }
 
-                if args.len() != expected_arity {
+                if args.len() < min_arity {
                     diagnostics.push(Diagnostic {
                         severity: if matches!(mode, CommandMode::Query) {
                             DiagnosticSeverity::Warning
@@ -170,7 +168,9 @@ pub(crate) fn normalize_shell_like_invoke(
                         },
                         message: format!(
                             "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
-                            schema.long_name, expected_arity, command.name
+                            schema.long_name,
+                            format_arity(expected_arity),
+                            command.name
                         ),
                         range: *flag_range,
                     });
@@ -397,6 +397,26 @@ fn arity_for_mode(arity_by_mode: FlagArityByMode, mode: CommandMode) -> FlagArit
         CommandMode::Create | CommandMode::Unknown => arity_by_mode.create,
         CommandMode::Edit => arity_by_mode.edit,
         CommandMode::Query => arity_by_mode.query,
+    }
+}
+
+fn arity_bounds(arity: FlagArity) -> (usize, usize) {
+    match arity {
+        FlagArity::None => (0, 0),
+        FlagArity::Exact(value) => {
+            let value = usize::from(value);
+            (value, value)
+        }
+        FlagArity::Range { min, max } => (usize::from(min), usize::from(max)),
+    }
+}
+
+fn format_arity(arity: FlagArity) -> String {
+    match arity {
+        FlagArity::None => "0".to_owned(),
+        FlagArity::Exact(value) => value.to_string(),
+        FlagArity::Range { min, max } if min == max => min.to_string(),
+        FlagArity::Range { min, max } => format!("{min} to {max}"),
     }
 }
 

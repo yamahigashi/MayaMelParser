@@ -1989,6 +1989,157 @@ mod tests {
     }
 
     #[test]
+    fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![
+                            ShellWord::Flag {
+                                text: "-label".to_owned(),
+                                range: text_range(12, 18),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"title\"".to_owned(),
+                                range: text_range(19, 26),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 26),
+                }),
+                range: text_range(0, 27),
+            }))],
+        };
+
+        let mut command = command_schema("frameLayout", CommandKind::Builtin);
+        command.flags = vec![FlagSchema {
+            arity_by_mode: FlagArityByMode {
+                create: FlagArity::Range { min: 1, max: 2 },
+                edit: FlagArity::Range { min: 1, max: 2 },
+                query: FlagArity::None,
+            },
+            value_shapes: vec![ValueShape::String, ValueShape::String],
+            ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+        }];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert!(analysis.diagnostics.is_empty());
+        let items = &analysis.normalized_invokes[0].items;
+        assert!(matches!(
+            &items[0],
+            super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+                canonical_name: Some(name),
+                args,
+                ..
+            }) if name == "label" && args.len() == 1
+        ));
+    }
+
+    #[test]
+    fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![
+                            ShellWord::Flag {
+                                text: "-label".to_owned(),
+                                range: text_range(12, 18),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"title\"".to_owned(),
+                                range: text_range(19, 26),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"tooltip\"".to_owned(),
+                                range: text_range(27, 36),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 36),
+                }),
+                range: text_range(0, 37),
+            }))],
+        };
+
+        let mut command = command_schema("frameLayout", CommandKind::Builtin);
+        command.flags = vec![FlagSchema {
+            arity_by_mode: FlagArityByMode {
+                create: FlagArity::Range { min: 1, max: 2 },
+                edit: FlagArity::Range { min: 1, max: 2 },
+                query: FlagArity::None,
+            },
+            value_shapes: vec![ValueShape::String, ValueShape::String],
+            ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+        }];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert!(analysis.diagnostics.is_empty());
+        let items = &analysis.normalized_invokes[0].items;
+        assert!(matches!(
+            &items[0],
+            super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+                canonical_name: Some(name),
+                args,
+                ..
+            }) if name == "label" && args.len() == 2
+        ));
+    }
+
+    #[test]
+    fn shell_like_command_range_arity_reports_missing_required_argument() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![ShellWord::Flag {
+                            text: "-label".to_owned(),
+                            range: text_range(12, 18),
+                        }],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 18),
+                }),
+                range: text_range(0, 19),
+            }))],
+        };
+
+        let mut command = command_schema("frameLayout", CommandKind::Builtin);
+        command.flags = vec![FlagSchema {
+            arity_by_mode: FlagArityByMode {
+                create: FlagArity::Range { min: 1, max: 2 },
+                edit: FlagArity::Range { min: 1, max: 2 },
+                query: FlagArity::None,
+            },
+            value_shapes: vec![ValueShape::String, ValueShape::String],
+            ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+        }];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert!(analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Error
+                && diagnostic.message.contains("expects 1 to 2 argument(s)")
+        }));
+    }
+
+    #[test]
     fn set_attr_data_reference_edits_tail_is_preserved_losslessly() {
         let source = SourceFile {
             items: vec![Item::Stmt(Box::new(Stmt::Expr {

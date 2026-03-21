@@ -22,6 +22,7 @@ pub enum ReturnBehavior {
 pub enum FlagArity {
     None,
     Exact(u8),
+    Range { min: u8, max: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
