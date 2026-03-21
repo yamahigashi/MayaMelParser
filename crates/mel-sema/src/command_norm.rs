@@ -2,7 +2,8 @@ use mel_ast::ShellWord;
 use mel_syntax::{TextRange, range_end, range_start, text_range};
 
 use crate::{
-    CommandModeMask, CommandSchema, Diagnostic, FlagArity, ScopeId, command_schema::CommandKind,
+    CommandModeMask, CommandSchema, Diagnostic, DiagnosticSeverity, FlagArity, FlagArityByMode,
+    ScopeId, command_schema::CommandKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,8 +55,27 @@ pub(crate) fn normalize_shell_like_invoke(
     let mut diagnostics = Vec::new();
     let mut items = Vec::new();
     let mut seen_flags = Vec::<String>::new();
-    let mut query_ranges = Vec::new();
-    let mut edit_ranges = Vec::new();
+    let (create_ranges, edit_ranges, query_ranges) = collect_mode_flag_ranges(command, words);
+    let active_mode_count = usize::from(!create_ranges.is_empty())
+        + usize::from(!edit_ranges.is_empty())
+        + usize::from(!query_ranges.is_empty());
+    let mode = match active_mode_count {
+        0 => CommandMode::Create,
+        1 if !create_ranges.is_empty() => CommandMode::Create,
+        1 if !edit_ranges.is_empty() => CommandMode::Edit,
+        1 if !query_ranges.is_empty() => CommandMode::Query,
+        _ => {
+            diagnostics.push(Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                message: format!(
+                    "command \"{}\" cannot combine create/edit/query mode flags",
+                    command.name
+                ),
+                range,
+            });
+            CommandMode::Unknown
+        }
+    };
     let mut index = 0;
 
     while index < words.len() {
@@ -66,6 +86,7 @@ pub(crate) fn normalize_shell_like_invoke(
             } => {
                 let Some(schema) = find_flag_schema(command, text) else {
                     diagnostics.push(Diagnostic {
+                        severity: DiagnosticSeverity::Warning,
                         message: format!(
                             "unknown flag \"{text}\" for command \"{}\"",
                             command.name
@@ -82,16 +103,11 @@ pub(crate) fn normalize_shell_like_invoke(
                     continue;
                 };
 
-                if schema.long_name == "query" {
-                    query_ranges.push(*flag_range);
-                } else if schema.long_name == "edit" {
-                    edit_ranges.push(*flag_range);
-                }
-
                 if !schema.allows_multiple
                     && seen_flags.iter().any(|name| name == &schema.long_name)
                 {
                     diagnostics.push(Diagnostic {
+                        severity: DiagnosticSeverity::Error,
                         message: format!(
                             "flag \"-{0}\" cannot be repeated for command \"{1}\"",
                             schema.long_name, command.name
@@ -102,7 +118,7 @@ pub(crate) fn normalize_shell_like_invoke(
                     seen_flags.push(schema.long_name.clone());
                 }
 
-                let expected_arity = match schema.arity {
+                let expected_arity = match arity_for_mode(schema.arity_by_mode, mode) {
                     FlagArity::None => 0,
                     FlagArity::Exact(value) => usize::from(value),
                 };
@@ -125,6 +141,11 @@ pub(crate) fn normalize_shell_like_invoke(
 
                 if args.len() != expected_arity {
                     diagnostics.push(Diagnostic {
+                        severity: if matches!(mode, CommandMode::Query) {
+                            DiagnosticSeverity::Warning
+                        } else {
+                            DiagnosticSeverity::Error
+                        },
                         message: format!(
                             "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
                             schema.long_name, expected_arity, command.name
@@ -154,21 +175,21 @@ pub(crate) fn normalize_shell_like_invoke(
         }
     }
 
-    let mode = match (edit_ranges.is_empty(), query_ranges.is_empty()) {
-        (true, true) => CommandMode::Create,
-        (false, true) => CommandMode::Edit,
-        (true, false) => CommandMode::Query,
-        (false, false) => {
-            diagnostics.push(Diagnostic {
-                message: format!(
-                    "command \"{}\" cannot use both query and edit mode flags together",
-                    command.name
-                ),
-                range,
-            });
-            CommandMode::Unknown
-        }
-    };
+    if !mode_allows(command.mode_mask, mode) {
+        diagnostics.push(Diagnostic {
+            severity: if matches!(mode, CommandMode::Query) {
+                DiagnosticSeverity::Warning
+            } else {
+                DiagnosticSeverity::Error
+            },
+            message: format!(
+                "command \"{}\" is not available in {} mode",
+                command.name,
+                mode_label(mode)
+            ),
+            range,
+        });
+    }
 
     for item in &items {
         let NormalizedCommandItem::Flag(flag) = item else {
@@ -177,15 +198,16 @@ pub(crate) fn normalize_shell_like_invoke(
         let Some(canonical_name) = flag.canonical_name.as_deref() else {
             continue;
         };
-        let Some(schema) = command
-            .flags
-            .iter()
-            .find(|candidate| candidate.long_name == canonical_name)
-        else {
+        let Some(schema) = find_flag_schema_by_canonical_name(command, canonical_name) else {
             continue;
         };
         if !mode_allows(schema.mode_mask, mode) {
             diagnostics.push(Diagnostic {
+                severity: if matches!(mode, CommandMode::Query) {
+                    DiagnosticSeverity::Warning
+                } else {
+                    DiagnosticSeverity::Error
+                },
                 message: format!(
                     "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
                     schema.long_name,
@@ -211,15 +233,94 @@ pub(crate) fn normalize_shell_like_invoke(
     )
 }
 
-fn find_flag_schema<'a>(command: &'a CommandSchema, text: &str) -> Option<&'a crate::FlagSchema> {
+fn find_flag_schema(command: &CommandSchema, text: &str) -> Option<crate::FlagSchema> {
     let normalized = text.strip_prefix('-').unwrap_or(text);
-    command.flags.iter().find(|flag| {
-        normalized == flag.long_name
-            || flag
-                .short_name
-                .as_deref()
-                .is_some_and(|short| short == normalized)
-    })
+    command
+        .flags
+        .iter()
+        .find(|flag| {
+            normalized == flag.long_name
+                || flag
+                    .short_name
+                    .as_deref()
+                    .is_some_and(|short| short == normalized)
+        })
+        .cloned()
+        .or_else(|| synthetic_mode_flag_for_name(command, normalized))
+}
+
+fn find_flag_schema_by_canonical_name(
+    command: &CommandSchema,
+    canonical_name: &str,
+) -> Option<crate::FlagSchema> {
+    command
+        .flags
+        .iter()
+        .find(|flag| flag.long_name == canonical_name)
+        .cloned()
+        .or_else(|| synthetic_mode_flag_for_name(command, canonical_name))
+}
+
+fn synthetic_mode_flag_for_name(command: &CommandSchema, name: &str) -> Option<crate::FlagSchema> {
+    match name {
+        "create" | "c" if command.mode_mask.create => Some(synthetic_mode_flag("create", "c")),
+        "edit" | "e" if command.mode_mask.edit => Some(synthetic_mode_flag("edit", "e")),
+        "query" | "q" if command.mode_mask.query => Some(synthetic_mode_flag("query", "q")),
+        _ => None,
+    }
+}
+
+fn synthetic_mode_flag(long_name: &str, short_name: &str) -> crate::FlagSchema {
+    crate::FlagSchema {
+        long_name: long_name.to_owned(),
+        short_name: Some(short_name.to_owned()),
+        mode_mask: CommandModeMask {
+            create: true,
+            edit: true,
+            query: true,
+        },
+        arity_by_mode: FlagArityByMode {
+            create: FlagArity::None,
+            edit: FlagArity::None,
+            query: FlagArity::None,
+        },
+        value_shapes: Vec::new(),
+        allows_multiple: false,
+    }
+}
+
+fn collect_mode_flag_ranges(
+    command: &CommandSchema,
+    words: &[ShellWord],
+) -> (Vec<TextRange>, Vec<TextRange>, Vec<TextRange>) {
+    let mut create_ranges = Vec::new();
+    let mut edit_ranges = Vec::new();
+    let mut query_ranges = Vec::new();
+
+    for word in words {
+        let ShellWord::Flag { text, range } = word else {
+            continue;
+        };
+        let Some(schema) = find_flag_schema(command, text) else {
+            continue;
+        };
+        match schema.long_name.as_str() {
+            "create" => create_ranges.push(*range),
+            "edit" => edit_ranges.push(*range),
+            "query" => query_ranges.push(*range),
+            _ => {}
+        }
+    }
+
+    (create_ranges, edit_ranges, query_ranges)
+}
+
+fn arity_for_mode(arity_by_mode: FlagArityByMode, mode: CommandMode) -> FlagArity {
+    match mode {
+        CommandMode::Create | CommandMode::Unknown => arity_by_mode.create,
+        CommandMode::Edit => arity_by_mode.edit,
+        CommandMode::Query => arity_by_mode.query,
+    }
 }
 
 fn shell_word_range(word: &ShellWord) -> TextRange {

@@ -11,16 +11,33 @@ pub use command_norm::{
 };
 pub use command_schema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    EmbeddedCommandRegistry, EmptyCommandRegistry, FlagArity, FlagSchema, ReturnBehavior,
-    ValueShape,
+    EmbeddedCommandRegistry, EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema,
+    ReturnBehavior, ValueShape,
 };
 use mel_ast::{CalleeResolution, Expr, Item, ProcDef, ShellWord, SourceFile, Stmt, SwitchClause};
 use mel_syntax::TextRange;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    pub severity: DiagnosticSeverity,
     pub message: String,
     pub range: TextRange,
+}
+
+impl Diagnostic {
+    fn error(message: impl Into<String>, range: TextRange) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Error,
+            message: message.into(),
+            range,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -889,10 +906,10 @@ where
             self.collected
                 .find_forward_local_proc(name, current_scope, &self.visible_decl_orders)
         {
-            self.diagnostics.push(Diagnostic {
-                message: format!("local proc \"{name}\" is called before its definition"),
+            self.diagnostics.push(Diagnostic::error(
+                format!("local proc \"{name}\" is called before its definition"),
                 range,
-            });
+            ));
             return ResolvedInvokeTarget::Proc(symbol.name.clone());
         }
 
@@ -974,23 +991,23 @@ where
         };
 
         match (&context.return_type, actual.as_ref()) {
-            (None, Some(_)) => self.diagnostics.push(Diagnostic {
-                message: format!(
+            (None, Some(_)) => self.diagnostics.push(Diagnostic::error(
+                format!(
                     "proc \"{}\" has no return type but returns a value",
                     context.name
                 ),
                 range,
-            }),
+            )),
             (Some(expected), Some(actual)) => {
                 context.saw_value_return = true;
                 if !is_assignable(expected, actual) {
-                    self.diagnostics.push(Diagnostic {
-                        message: format!(
+                    self.diagnostics.push(Diagnostic::error(
+                        format!(
                             "proc \"{}\" returns {:?} but declares {:?}",
                             context.name, actual, expected
                         ),
                         range,
-                    });
+                    ));
                 }
             }
             (Some(_), None) | (None, None) => {}
@@ -1003,13 +1020,13 @@ where
         };
 
         if context.return_type.is_some() && !context.saw_value_return {
-            self.diagnostics.push(Diagnostic {
-                message: format!(
+            self.diagnostics.push(Diagnostic::error(
+                format!(
                     "proc \"{}\" declares a return type but never returns a value",
                     context.name
                 ),
-                range: context.range,
-            });
+                context.range,
+            ));
         }
     }
 
@@ -1023,13 +1040,13 @@ where
         let expected = value_type_from_var_decl(decl, declarator);
         let actual = self.infer_expr_type(initializer, current_scope);
         if !is_assignable(&expected, &actual) {
-            self.diagnostics.push(Diagnostic {
-                message: format!(
+            self.diagnostics.push(Diagnostic::error(
+                format!(
                     "variable \"{}\" has declared type {:?} but initializer is {:?}",
                     declarator.name, expected, actual
                 ),
-                range: declarator.range,
-            });
+                declarator.range,
+            ));
         }
     }
 
@@ -1220,8 +1237,9 @@ where
 mod tests {
     use super::{
         CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema,
-        CommandSourceKind, EmbeddedCommandRegistry, FlagArity, FlagSchema, IdentTarget,
-        ReturnBehavior, ValueShape, VariableKind, analyze, analyze_with_registry,
+        CommandSourceKind, DiagnosticSeverity, EmbeddedCommandRegistry, FlagArity, FlagArityByMode,
+        FlagSchema, IdentTarget, ReturnBehavior, ValueShape, VariableKind, analyze,
+        analyze_with_registry,
     };
     use mel_ast::{
         AssignOp, CalleeResolution, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef,
@@ -1244,8 +1262,21 @@ mod tests {
             name: name.to_owned(),
             kind,
             source_kind: CommandSourceKind::Command,
+            mode_mask: CommandModeMask {
+                create: true,
+                edit: true,
+                query: true,
+            },
             return_behavior: ReturnBehavior::Unknown,
             flags: Vec::new(),
+        }
+    }
+
+    fn uniform_arity(arity: FlagArity) -> FlagArityByMode {
+        FlagArityByMode {
+            create: arity,
+            edit: arity,
+            query: arity,
         }
     }
 
@@ -1258,7 +1289,7 @@ mod tests {
                 edit: true,
                 query: true,
             },
-            arity,
+            arity_by_mode: uniform_arity(arity),
             value_shapes: vec![ValueShape::Unknown],
             allows_multiple: false,
         }
@@ -1730,6 +1761,31 @@ mod tests {
     }
 
     #[test]
+    fn embedded_catalog_synthesizes_mode_flags_from_command_mode_mask() {
+        let schema = EmbeddedCommandRegistry::new()
+            .lookup("addAttr")
+            .expect("embedded schema for addAttr");
+        assert!(
+            schema
+                .flags
+                .iter()
+                .any(|flag| flag.long_name == "create" && flag.short_name.as_deref() == Some("c"))
+        );
+        assert!(
+            schema
+                .flags
+                .iter()
+                .any(|flag| flag.long_name == "edit" && flag.short_name.as_deref() == Some("e"))
+        );
+        assert!(
+            schema
+                .flags
+                .iter()
+                .any(|flag| flag.long_name == "query" && flag.short_name.as_deref() == Some("q"))
+        );
+    }
+
+    #[test]
     fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
         let source = SourceFile {
             items: vec![Item::Stmt(Box::new(Stmt::Expr {
@@ -1760,35 +1816,20 @@ mod tests {
         };
 
         let mut command = command_schema("frameLayout", CommandKind::Builtin);
-        command.flags = vec![
-            FlagSchema {
-                mode_mask: CommandModeMask {
-                    create: true,
-                    edit: true,
-                    query: true,
-                },
-                value_shapes: Vec::new(),
-                ..flag_schema("query", Some("q"), FlagArity::None)
+        command.mode_mask = CommandModeMask {
+            create: true,
+            edit: true,
+            query: true,
+        };
+        command.flags = vec![FlagSchema {
+            mode_mask: CommandModeMask {
+                create: false,
+                edit: true,
+                query: false,
             },
-            FlagSchema {
-                mode_mask: CommandModeMask {
-                    create: true,
-                    edit: true,
-                    query: true,
-                },
-                value_shapes: Vec::new(),
-                ..flag_schema("edit", Some("e"), FlagArity::None)
-            },
-            FlagSchema {
-                mode_mask: CommandModeMask {
-                    create: false,
-                    edit: true,
-                    query: false,
-                },
-                value_shapes: vec![ValueShape::String],
-                ..flag_schema("label", Some("l"), FlagArity::Exact(1))
-            },
-        ];
+            value_shapes: vec![ValueShape::String],
+            ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+        }];
         let registry = TestRegistry {
             commands: vec![command],
         };
@@ -1800,12 +1841,41 @@ mod tests {
         );
         assert_eq!(analysis.normalized_invokes.len(), 1);
         assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Query);
-        assert!(
-            analysis
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("not available in query mode"))
-        );
+        assert!(analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message.contains("not available in query mode")
+        }));
+    }
+
+    #[test]
+    fn shell_like_command_unknown_flag_is_warning() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![ShellWord::Flag {
+                            text: "-mystery".to_owned(),
+                            range: text_range(12, 20),
+                        }],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 20),
+                }),
+                range: text_range(0, 21),
+            }))],
+        };
+
+        let registry = TestRegistry {
+            commands: vec![command_schema("frameLayout", CommandKind::Builtin)],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert!(analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message.contains("unknown flag")
+        }));
     }
 
     #[test]
@@ -1835,16 +1905,11 @@ mod tests {
         };
 
         let mut command = command_schema("frameLayout", CommandKind::Builtin);
-        command.flags = vec![
-            FlagSchema {
-                value_shapes: Vec::new(),
-                ..flag_schema("query", Some("q"), FlagArity::None)
-            },
-            FlagSchema {
-                value_shapes: Vec::new(),
-                ..flag_schema("edit", Some("e"), FlagArity::None)
-            },
-        ];
+        command.mode_mask = CommandModeMask {
+            create: true,
+            edit: true,
+            query: true,
+        };
         let registry = TestRegistry {
             commands: vec![command],
         };
@@ -1854,7 +1919,110 @@ mod tests {
         assert!(analysis.diagnostics.iter().any(|diagnostic| {
             diagnostic
                 .message
-                .contains("both query and edit mode flags")
+                .contains("combine create/edit/query mode flags")
+        }));
+    }
+
+    #[test]
+    fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "frameLayout".to_owned(),
+                        words: vec![
+                            ShellWord::Flag {
+                                text: "-query".to_owned(),
+                                range: text_range(12, 18),
+                            },
+                            ShellWord::Flag {
+                                text: "-label".to_owned(),
+                                range: text_range(19, 25),
+                            },
+                            ShellWord::QuotedString {
+                                text: "\"title\"".to_owned(),
+                                range: text_range(26, 33),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 33),
+                }),
+                range: text_range(0, 34),
+            }))],
+        };
+
+        let mut command = command_schema("frameLayout", CommandKind::Builtin);
+        command.flags = vec![FlagSchema {
+            arity_by_mode: FlagArityByMode {
+                create: FlagArity::Exact(1),
+                edit: FlagArity::Exact(1),
+                query: FlagArity::None,
+            },
+            value_shapes: vec![ValueShape::String],
+            ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+        }];
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert!(analysis.diagnostics.is_empty());
+        let items = &analysis.normalized_invokes[0].items;
+        assert!(matches!(
+            &items[1],
+            super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+                canonical_name: Some(name),
+                args,
+                ..
+            }) if name == "label" && args.is_empty()
+        ));
+        assert!(matches!(
+            &items[2],
+            super::NormalizedCommandItem::Positional(super::PositionalArg {
+                word: ShellWord::QuotedString { text, .. },
+                ..
+            }) if text == "\"title\""
+        ));
+    }
+
+    #[test]
+    fn shell_like_command_without_mode_flag_reports_unavailable_create_mode() {
+        let source = SourceFile {
+            items: vec![Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head: "queryOnly".to_owned(),
+                        words: vec![ShellWord::BareWord {
+                            text: "node1".to_owned(),
+                            range: text_range(10, 15),
+                        }],
+                        captured: false,
+                    },
+                    resolution: CalleeResolution::Unresolved,
+                    range: text_range(0, 15),
+                }),
+                range: text_range(0, 16),
+            }))],
+        };
+
+        let mut command = command_schema("queryOnly", CommandKind::Builtin);
+        command.mode_mask = CommandModeMask {
+            create: false,
+            edit: false,
+            query: true,
+        };
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let analysis = analyze_with_registry(&source, &registry);
+        assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Create);
+        assert!(analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("command \"queryOnly\" is not available in create mode")
         }));
     }
 

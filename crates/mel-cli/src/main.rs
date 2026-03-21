@@ -8,7 +8,7 @@ use std::{
 };
 
 use mel_parser::{Parse, SourceEncoding, parse_file, parse_file_with_encoding, parse_source};
-use mel_sema::analyze;
+use mel_sema::{DiagnosticSeverity, analyze};
 use mel_syntax::TextRange;
 
 const TOP_RANK_LIMIT: usize = 10;
@@ -221,6 +221,7 @@ fn format_single_file_output(label: &str, parse: &Parse) -> io::Result<String> {
 #[derive(Debug, Clone)]
 struct FileDiagnostic {
     stage: &'static str,
+    severity: DiagnosticSeverity,
     message: String,
     range: TextRange,
 }
@@ -234,12 +235,12 @@ fn render_diagnostics(label: &str, parse: &Parse) -> io::Result<String> {
     let mut rendered = Vec::new();
     for diagnostic in diagnostics {
         let span = parse.source_map.display_range(diagnostic.range);
-        Report::build(ReportKind::Error, (label, span.clone()))
+        Report::build(report_kind(diagnostic.severity), (label, span.clone()))
             .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message))
             .with_label(
                 Label::new((label, span))
                     .with_message(diagnostic.message)
-                    .with_color(stage_color(diagnostic.stage)),
+                    .with_color(stage_color(diagnostic.stage, diagnostic.severity)),
             )
             .finish()
             .write(
@@ -256,16 +257,19 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "decode",
+        severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
         range: diagnostic.range,
     }));
     diagnostics.extend(parse.lex_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "lex",
+        severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
         range: diagnostic.range,
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "parse",
+        severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
         range: diagnostic.range,
     }));
@@ -275,6 +279,7 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
             .into_iter()
             .map(|diagnostic| FileDiagnostic {
                 stage: "sema",
+                severity: diagnostic.severity,
                 message: diagnostic.message,
                 range: diagnostic.range,
             }),
@@ -282,7 +287,18 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
     diagnostics
 }
 
-fn stage_color(stage: &str) -> Color {
+fn report_kind(severity: DiagnosticSeverity) -> ReportKind<'static> {
+    match severity {
+        DiagnosticSeverity::Error => ReportKind::Error,
+        DiagnosticSeverity::Warning => ReportKind::Warning,
+    }
+}
+
+fn stage_color(stage: &str, severity: DiagnosticSeverity) -> Color {
+    if matches!(severity, DiagnosticSeverity::Warning) {
+        return Color::Yellow;
+    }
+
     match stage {
         "decode" => Color::Yellow,
         "lex" => Color::Blue,

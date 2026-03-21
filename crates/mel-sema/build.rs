@@ -14,6 +14,7 @@ struct RawRoot {
 struct RawCommand {
     name: String,
     kind: String,
+    mode_mask: RawModeMask,
     return_behavior: RawReturnBehavior,
     flags: Vec<RawFlag>,
 }
@@ -30,7 +31,7 @@ struct RawFlag {
     long_name: String,
     short_name: Option<String>,
     mode_mask: RawModeMask,
-    arity: RawArity,
+    arity_by_mode: RawArityByMode,
     value_shapes: Vec<RawValueShape>,
     allows_multiple: bool,
 }
@@ -47,6 +48,13 @@ struct RawArity {
     #[serde(rename = "type")]
     kind: String,
     value: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawArityByMode {
+    create: RawArity,
+    edit: RawArity,
+    query: RawArity,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +76,7 @@ fn main() {
 
     assert_eq!(
         root.schema_version,
-        1,
+        2,
         "unsupported command schema version in {}",
         input_path.display()
     );
@@ -101,6 +109,12 @@ fn main() {
             other => panic!("unsupported command kind {other:?}"),
         });
         rendered.push_str(",\n");
+        rendered.push_str("        mode_mask: CommandModeMask {\n");
+        rendered.push_str(&format!(
+            "            create: {},\n            edit: {},\n            query: {},\n",
+            command.mode_mask.create, command.mode_mask.edit, command.mode_mask.query
+        ));
+        rendered.push_str("        },\n");
         rendered.push_str("        return_behavior: ");
         rendered.push_str(&render_return_behavior(&command.return_behavior));
         rendered.push_str(",\n");
@@ -125,9 +139,17 @@ fn main() {
                 flag.mode_mask.create, flag.mode_mask.edit, flag.mode_mask.query
             ));
             rendered.push_str("                },\n");
-            rendered.push_str("                arity: ");
-            rendered.push_str(&render_arity(&flag.arity));
+            rendered.push_str("                arity_by_mode: FlagArityByMode {\n");
+            rendered.push_str("                    create: ");
+            rendered.push_str(&render_arity(&flag.arity_by_mode.create));
             rendered.push_str(",\n");
+            rendered.push_str("                    edit: ");
+            rendered.push_str(&render_arity(&flag.arity_by_mode.edit));
+            rendered.push_str(",\n");
+            rendered.push_str("                    query: ");
+            rendered.push_str(&render_arity(&flag.arity_by_mode.query));
+            rendered.push_str(",\n");
+            rendered.push_str("                },\n");
             rendered.push_str("                value_shapes: &[");
             for (index, value_shape) in flag.value_shapes.iter().enumerate() {
                 if index > 0 {
