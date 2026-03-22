@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
-use mel_ast::{Expr, InvokeSurface, Item, ProcDef, ShellWord, SourceFile, Stmt};
+use mel_ast::{Expr, InvokeSurface, Item, ProcDef, ShellWord, Stmt};
+use mel_parser::Parse;
 use mel_sema::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, NormalizedCommandInvoke,
-    NormalizedCommandItem, NormalizedFlag, PositionalArg, ReturnBehavior, ValueShape,
+    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, NormalizedCommandItem,
+    NormalizedFlag, PositionalArg, ReturnBehavior, ValueShape,
 };
 use mel_syntax::TextRange;
 
@@ -228,28 +229,25 @@ pub struct MayaFileCommand {
 }
 
 #[must_use]
-pub fn collect_top_level_facts(source: &SourceFile) -> MayaTopLevelFacts {
-    collect_top_level_facts_with_registry(source, &EmptyCommandRegistry)
+pub fn collect_top_level_facts(parse: &Parse) -> MayaTopLevelFacts {
+    collect_top_level_facts_with_registry(parse, &EmptyCommandRegistry)
 }
 
 #[must_use]
-pub fn collect_top_level_facts_with_registry<R>(
-    source: &SourceFile,
-    registry: &R,
-) -> MayaTopLevelFacts
+pub fn collect_top_level_facts_with_registry<R>(parse: &Parse, registry: &R) -> MayaTopLevelFacts
 where
     R: CommandRegistry + ?Sized,
 {
     let overlay = OverlayRegistry::new(registry);
-    let analysis = mel_sema::analyze_with_registry(source, &overlay);
+    let analysis = mel_sema::analyze_with_registry(&parse.syntax, &overlay);
     let mut remaining_normalized: Vec<Option<MayaNormalizedCommand>> = analysis
         .normalized_invokes
         .into_iter()
-        .map(|invoke| Some(MayaNormalizedCommand::from(invoke)))
+        .map(|invoke| Some(maya_normalized_command_from_parse(parse, invoke)))
         .collect();
     let mut items = Vec::new();
 
-    for item in &source.items {
+    for item in &parse.syntax.items {
         match item {
             Item::Proc(proc_def) => items.push(proc_item(proc_def)),
             Item::Stmt(stmt) => match &**stmt {
@@ -268,7 +266,7 @@ where
                             take_matching_normalized(&mut remaining_normalized, head, invoke.range);
                         let raw_items = words
                             .iter()
-                            .map(raw_item_from_shell_word)
+                            .map(|word| raw_item_from_shell_word(parse, word))
                             .collect::<Vec<_>>();
                         let specialized =
                             specialize_command(head, invoke.range, normalized.as_ref(), &raw_items);
@@ -489,79 +487,38 @@ fn is_numeric_like(item: &MayaRawShellItem) -> bool {
     matches!(item.kind, MayaRawShellItemKind::Numeric)
 }
 
-fn raw_item_from_shell_word(word: &ShellWord) -> MayaRawShellItem {
-    let (source_text, value_text, kind, span) = match word {
-        ShellWord::Flag { text, range } => (text.clone(), None, MayaRawShellItemKind::Flag, *range),
-        ShellWord::NumericLiteral { text, range } => (
-            text.clone(),
-            Some(text.clone()),
-            MayaRawShellItemKind::Numeric,
-            *range,
-        ),
-        ShellWord::BareWord { text, range } => (
-            text.clone(),
-            Some(text.clone()),
-            MayaRawShellItemKind::BareWord,
-            *range,
-        ),
+fn raw_item_from_shell_word(parse: &Parse, word: &ShellWord) -> MayaRawShellItem {
+    let (value_text, kind, span) = match word {
+        ShellWord::Flag { range, .. } => (None, MayaRawShellItemKind::Flag, *range),
+        ShellWord::NumericLiteral { text, range } => {
+            (Some(text.clone()), MayaRawShellItemKind::Numeric, *range)
+        }
+        ShellWord::BareWord { text, range } => {
+            (Some(text.clone()), MayaRawShellItemKind::BareWord, *range)
+        }
         ShellWord::QuotedString { text, range } => (
-            text.clone(),
             unquote_shell_string(text).map(str::to_owned),
             MayaRawShellItemKind::QuotedString,
             *range,
         ),
-        ShellWord::Variable { expr, range } => (
-            shell_expr_source_text(expr),
-            None,
-            MayaRawShellItemKind::Variable,
-            *range,
-        ),
-        ShellWord::GroupedExpr { expr, range } => (
-            shell_expr_source_text(expr),
-            None,
-            MayaRawShellItemKind::GroupedExpr,
-            *range,
-        ),
-        ShellWord::BraceList { expr, range } => (
-            shell_expr_source_text(expr),
-            None,
-            MayaRawShellItemKind::BraceList,
-            *range,
-        ),
-        ShellWord::VectorLiteral { expr, range } => (
-            shell_expr_source_text(expr),
-            None,
-            MayaRawShellItemKind::VectorLiteral,
-            *range,
-        ),
-        ShellWord::Capture { invoke, range } => (
-            match &invoke.surface {
-                InvokeSurface::Function { name, .. } => format!("`{name}(...)`"),
-                InvokeSurface::ShellLike { head, .. } => format!("`{head} ...`"),
-            },
-            None,
-            MayaRawShellItemKind::Capture,
-            *range,
-        ),
+        ShellWord::Variable { range, .. } => (None, MayaRawShellItemKind::Variable, *range),
+        ShellWord::GroupedExpr { range, .. } => (None, MayaRawShellItemKind::GroupedExpr, *range),
+        ShellWord::BraceList { range, .. } => (None, MayaRawShellItemKind::BraceList, *range),
+        ShellWord::VectorLiteral { range, .. } => {
+            (None, MayaRawShellItemKind::VectorLiteral, *range)
+        }
+        ShellWord::Capture { range, .. } => (None, MayaRawShellItemKind::Capture, *range),
     };
     MayaRawShellItem {
-        source_text,
+        source_text: slice_source_text(parse, span),
         value_text,
         kind,
         span,
     }
 }
 
-fn shell_expr_source_text(expr: &Expr) -> String {
-    match expr {
-        Expr::Ident { name, .. } => name.clone(),
-        Expr::BareWord { text, .. } => text.clone(),
-        Expr::Int { value, .. } => value.to_string(),
-        Expr::Float { text, .. } | Expr::String { text, .. } => text.clone(),
-        Expr::MemberAccess { member, .. } => member.clone(),
-        Expr::ComponentAccess { component, .. } => format!("{component:?}"),
-        _ => "<expr>".to_owned(),
-    }
+fn slice_source_text(parse: &Parse, range: TextRange) -> String {
+    parse.source_text[parse.source_map.display_range(range)].to_owned()
 }
 
 fn stmt_range(stmt: &Stmt) -> TextRange {
@@ -587,52 +544,54 @@ fn unquote_shell_string(text: &str) -> Option<&str> {
     text.strip_prefix('"')?.strip_suffix('"')
 }
 
-impl From<NormalizedCommandInvoke> for MayaNormalizedCommand {
-    fn from(value: NormalizedCommandInvoke) -> Self {
-        Self {
-            head: value.head,
-            schema_name: value.schema_name,
-            kind: value.kind,
-            mode: value.mode,
-            items: value
-                .items
-                .into_iter()
-                .map(MayaNormalizedCommandItem::from)
-                .collect(),
-            span: value.range,
+fn maya_normalized_command_from_parse(
+    parse: &Parse,
+    value: mel_sema::NormalizedCommandInvoke,
+) -> MayaNormalizedCommand {
+    MayaNormalizedCommand {
+        head: value.head,
+        schema_name: value.schema_name,
+        kind: value.kind,
+        mode: value.mode,
+        items: value
+            .items
+            .into_iter()
+            .map(|item| maya_normalized_command_item_from_parse(parse, item))
+            .collect(),
+        span: value.range,
+    }
+}
+
+fn maya_normalized_command_item_from_parse(
+    parse: &Parse,
+    value: NormalizedCommandItem,
+) -> MayaNormalizedCommandItem {
+    match value {
+        NormalizedCommandItem::Flag(flag) => {
+            MayaNormalizedCommandItem::Flag(maya_normalized_flag_from_parse(parse, flag))
+        }
+        NormalizedCommandItem::Positional(arg) => {
+            MayaNormalizedCommandItem::Positional(maya_positional_arg_from_parse(parse, arg))
         }
     }
 }
 
-impl From<NormalizedCommandItem> for MayaNormalizedCommandItem {
-    fn from(value: NormalizedCommandItem) -> Self {
-        match value {
-            NormalizedCommandItem::Flag(flag) => Self::Flag(flag.into()),
-            NormalizedCommandItem::Positional(arg) => Self::Positional(arg.into()),
-        }
+fn maya_normalized_flag_from_parse(parse: &Parse, value: NormalizedFlag) -> MayaNormalizedFlag {
+    MayaNormalizedFlag {
+        source_text: value.source_text,
+        canonical_name: value.canonical_name,
+        args: value
+            .args
+            .into_iter()
+            .map(|arg| maya_positional_arg_from_parse(parse, arg))
+            .collect(),
+        span: value.range,
     }
 }
 
-impl From<NormalizedFlag> for MayaNormalizedFlag {
-    fn from(value: NormalizedFlag) -> Self {
-        Self {
-            source_text: value.source_text,
-            canonical_name: value.canonical_name,
-            args: value
-                .args
-                .into_iter()
-                .map(MayaPositionalArg::from)
-                .collect(),
-            span: value.range,
-        }
-    }
-}
-
-impl From<PositionalArg> for MayaPositionalArg {
-    fn from(value: PositionalArg) -> Self {
-        Self {
-            item: raw_item_from_shell_word(&value.word),
-        }
+fn maya_positional_arg_from_parse(parse: &Parse, value: PositionalArg) -> MayaPositionalArg {
+    MayaPositionalArg {
+        item: raw_item_from_shell_word(parse, &value.word),
     }
 }
 
@@ -761,9 +720,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mel_ast::{CalleeResolution, InvokeExpr};
-    use mel_parser::parse_source;
-    use mel_syntax::text_range;
+    use mel_parser::{parse_bytes, parse_source};
 
     struct TestRegistry {
         commands: Vec<CommandSchema>,
@@ -798,7 +755,7 @@ mod tests {
     fn collects_top_level_command_proc_and_other_items() {
         let parse = parse_source("global proc foo() { }\nsetAttr \".tx\" 1;\nint $x = 1;\n");
         assert!(parse.errors.is_empty());
-        let facts = collect_top_level_facts(&parse.syntax);
+        let facts = collect_top_level_facts(&parse);
         assert!(matches!(facts.items[0], MayaTopLevelItem::Proc { .. }));
         assert!(matches!(facts.items[1], MayaTopLevelItem::Command(_)));
         assert!(matches!(facts.items[2], MayaTopLevelItem::Other { .. }));
@@ -806,79 +763,22 @@ mod tests {
 
     #[test]
     fn raw_items_preserve_exponent_numeric_literals() {
-        let source = SourceFile {
-            items: vec![Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
-                    surface: InvokeSurface::ShellLike {
-                        head: "setAttr".to_owned(),
-                        words: vec![
-                            ShellWord::QuotedString {
-                                text: "\".v\"".to_owned(),
-                                range: text_range(8, 12),
-                            },
-                            ShellWord::NumericLiteral {
-                                text: ".5e+2".to_owned(),
-                                range: text_range(13, 18),
-                            },
-                        ],
-                        captured: false,
-                    },
-                    resolution: CalleeResolution::Unresolved,
-                    range: text_range(0, 18),
-                }),
-                range: text_range(0, 19),
-            }))],
-        };
-
-        let facts = collect_top_level_facts(&source);
+        let parse = parse_source("setAttr \".v\" .5e+2;\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
         let MayaTopLevelItem::Command(command) = &facts.items[0] else {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[1].kind, MayaRawShellItemKind::Numeric);
         assert_eq!(command.raw_items[1].value_text.as_deref(), Some(".5e+2"));
+        assert_eq!(command.raw_items[1].source_text, ".5e+2");
     }
 
     #[test]
     fn set_attr_data_reference_edits_is_specialized_losslessly() {
-        let source = SourceFile {
-            items: vec![Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
-                    surface: InvokeSurface::ShellLike {
-                        head: "setAttr".to_owned(),
-                        words: vec![
-                            ShellWord::QuotedString {
-                                text: "\".ed\"".to_owned(),
-                                range: text_range(8, 13),
-                            },
-                            ShellWord::Flag {
-                                text: "-type".to_owned(),
-                                range: text_range(14, 19),
-                            },
-                            ShellWord::QuotedString {
-                                text: "\"dataReferenceEdits\"".to_owned(),
-                                range: text_range(20, 40),
-                            },
-                            ShellWord::QuotedString {
-                                text: "\"rootRN\"".to_owned(),
-                                range: text_range(41, 49),
-                            },
-                            ShellWord::QuotedString {
-                                text: "\"\"".to_owned(),
-                                range: text_range(50, 52),
-                            },
-                            ShellWord::NumericLiteral {
-                                text: "5".to_owned(),
-                                range: text_range(53, 54),
-                            },
-                        ],
-                        captured: false,
-                    },
-                    resolution: CalleeResolution::Unresolved,
-                    range: text_range(0, 54),
-                }),
-                range: text_range(0, 55),
-            }))],
-        };
+        let parse =
+            parse_source("setAttr \".ed\" -type \"dataReferenceEdits\" \"rootRN\" \"\" 5;\n");
+        assert!(parse.errors.is_empty());
         let mut command = CommandSchema {
             name: "setAttr".to_owned(),
             kind: CommandKind::Builtin,
@@ -913,7 +813,7 @@ mod tests {
             commands: vec![command],
         };
 
-        let facts = collect_top_level_facts_with_registry(&source, &registry);
+        let facts = collect_top_level_facts_with_registry(&parse, &registry);
         let MayaTopLevelItem::Command(command) = &facts.items[0] else {
             panic!("expected command");
         };
@@ -939,7 +839,7 @@ mod tests {
     fn create_node_specialization_extracts_parent_and_name() {
         let parse = parse_source("createNode transform -n \"pCube1\" -p \"|group1\";\n");
         assert!(parse.errors.is_empty());
-        let facts = collect_top_level_facts(&parse.syntax);
+        let facts = collect_top_level_facts(&parse);
         let MayaTopLevelItem::Command(command) = &facts.items[0] else {
             panic!("expected command");
         };
@@ -961,5 +861,106 @@ mod tests {
                 .and_then(|item| item.value_text.as_deref()),
             Some("|group1")
         );
+    }
+
+    #[test]
+    fn grouped_expr_raw_item_preserves_full_source_text() {
+        let parse = parse_source("setAttr \".b\" -type \"string\" (\"a\" + \"b\");\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[3].kind, MayaRawShellItemKind::GroupedExpr);
+        assert_eq!(command.raw_items[3].source_text, "(\"a\" + \"b\")");
+    }
+
+    #[test]
+    fn variable_raw_item_preserves_full_source_text() {
+        let parse = parse_source("python $cmd;\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[0].kind, MayaRawShellItemKind::Variable);
+        assert_eq!(command.raw_items[0].source_text, "$cmd");
+    }
+
+    #[test]
+    fn brace_list_raw_item_preserves_full_source_text() {
+        let parse = parse_source("foo {\"a\", \"b\"};\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[0].kind, MayaRawShellItemKind::BraceList);
+        assert_eq!(command.raw_items[0].source_text, "{\"a\", \"b\"}");
+    }
+
+    #[test]
+    fn vector_literal_raw_item_preserves_full_source_text() {
+        let parse = parse_source("move <<1, 2, 3>>;\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(
+            command.raw_items[0].kind,
+            MayaRawShellItemKind::VectorLiteral
+        );
+        assert_eq!(command.raw_items[0].source_text, "<<1, 2, 3>>");
+    }
+
+    #[test]
+    fn capture_raw_item_preserves_full_source_text() {
+        let parse = parse_source("python `someCmd -q`;\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[0].kind, MayaRawShellItemKind::Capture);
+        assert_eq!(command.raw_items[0].source_text, "`someCmd -q`");
+    }
+
+    #[test]
+    fn mixed_shell_word_kinds_remain_lossless() {
+        let parse = parse_source("python $cmd (\"a\" + \"b\") {\"x\"} <<1, 2, 3>> `someCmd -q`;\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        let actual = command
+            .raw_items
+            .iter()
+            .map(|item| item.source_text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                "$cmd",
+                "(\"a\" + \"b\")",
+                "{\"x\"}",
+                "<<1, 2, 3>>",
+                "`someCmd -q`"
+            ]
+        );
+    }
+
+    #[test]
+    fn grouped_expr_raw_item_uses_display_range_for_lossless_slice() {
+        let bytes = b"setAttr \".b\" -type \"string\" (\"\xFF\");\n";
+        let parse = parse_bytes(bytes);
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[3].kind, MayaRawShellItemKind::GroupedExpr);
+        assert_eq!(command.raw_items[3].source_text, "(\"\u{FFFD}\")");
     }
 }
