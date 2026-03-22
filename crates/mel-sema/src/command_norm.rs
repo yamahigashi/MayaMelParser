@@ -21,27 +21,6 @@ pub struct PositionalArg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawShellItem {
-    pub word: ShellWord,
-    pub range: TextRange,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetAttrDataReferenceEditsTail {
-    pub command_head: String,
-    pub attr_path: RawShellItem,
-    pub type_flag_text: String,
-    pub type_flag_range: TextRange,
-    pub type_name: RawShellItem,
-    pub raw_tail_items: Vec<RawShellItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpecializedCommandForm {
-    SetAttrDataReferenceEdits(SetAttrDataReferenceEditsTail),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedFlag {
     pub source_text: String,
     pub canonical_name: Option<String>,
@@ -64,7 +43,6 @@ pub struct NormalizedCommandInvoke {
     pub kind: CommandKind,
     pub mode: CommandMode,
     pub items: Vec<NormalizedCommandItem>,
-    pub special_form: Option<SpecializedCommandForm>,
 }
 
 pub(crate) fn normalize_shell_like_invoke(
@@ -250,64 +228,9 @@ pub(crate) fn normalize_shell_like_invoke(
             kind: command.kind,
             mode,
             items,
-            special_form: detect_specialized_command_form(command, head, words),
         },
         diagnostics,
     )
-}
-
-fn detect_specialized_command_form(
-    command: &CommandSchema,
-    head: &str,
-    words: &[ShellWord],
-) -> Option<SpecializedCommandForm> {
-    if command.name != "setAttr" {
-        return None;
-    }
-
-    let attr_path = words.first().and_then(as_raw_shell_item)?;
-    if shell_word_value_text(&attr_path.word)? != ".ed" {
-        return None;
-    }
-
-    let mut index = 1;
-    while index + 1 < words.len() {
-        let ShellWord::Flag {
-            text: flag_text,
-            range: flag_range,
-        } = &words[index]
-        else {
-            index += 1;
-            continue;
-        };
-        if !matches!(flag_text.as_str(), "-type" | "-typ") {
-            index += 1;
-            continue;
-        }
-
-        let type_name = as_raw_shell_item(&words[index + 1])?;
-        if shell_word_value_text(&type_name.word)? != "dataReferenceEdits" {
-            index += 1;
-            continue;
-        }
-
-        let raw_tail_items = words[(index + 2)..]
-            .iter()
-            .filter_map(as_raw_shell_item)
-            .collect();
-        return Some(SpecializedCommandForm::SetAttrDataReferenceEdits(
-            SetAttrDataReferenceEditsTail {
-                command_head: head.to_owned(),
-                attr_path,
-                type_flag_text: flag_text.clone(),
-                type_flag_range: *flag_range,
-                type_name,
-                raw_tail_items,
-            },
-        ));
-    }
-
-    None
 }
 
 fn find_flag_schema(command: &CommandSchema, text: &str) -> Option<crate::FlagSchema> {
@@ -432,25 +355,6 @@ fn shell_word_range(word: &ShellWord) -> TextRange {
         | ShellWord::VectorLiteral { range, .. }
         | ShellWord::Capture { range, .. } => *range,
     }
-}
-
-fn as_raw_shell_item(word: &ShellWord) -> Option<RawShellItem> {
-    Some(RawShellItem {
-        word: word.clone(),
-        range: shell_word_range(word),
-    })
-}
-
-fn shell_word_value_text(word: &ShellWord) -> Option<&str> {
-    match word {
-        ShellWord::QuotedString { text, .. } => unquote_shell_string(text),
-        ShellWord::NumericLiteral { text, .. } | ShellWord::BareWord { text, .. } => Some(text),
-        _ => None,
-    }
-}
-
-fn unquote_shell_string(text: &str) -> Option<&str> {
-    text.strip_prefix('"')?.strip_suffix('"')
 }
 
 fn mode_allows(mask: CommandModeMask, mode: CommandMode) -> bool {

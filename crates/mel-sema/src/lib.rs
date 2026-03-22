@@ -12,12 +12,10 @@ mod tests;
 
 pub use command_norm::{
     CommandMode, NormalizedCommandInvoke, NormalizedCommandItem, NormalizedFlag, PositionalArg,
-    RawShellItem, SetAttrDataReferenceEditsTail, SpecializedCommandForm,
 };
 pub use command_schema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    EmbeddedCommandRegistry, EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema,
-    ReturnBehavior, ValueShape,
+    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, ReturnBehavior, ValueShape,
 };
 
 use flow::FlowLintAnalyzer;
@@ -138,9 +136,8 @@ pub fn analyze_with_registry<R>(source: &SourceFile, registry: &R) -> Analysis
 where
     R: CommandRegistry + ?Sized,
 {
-    let overlay = command_schema::OverlayCommandRegistry::new(registry);
     let collected = ScopeCollector::collect(source);
-    let mut analyzer = Analyzer::new(&collected, &overlay);
+    let mut analyzer = Analyzer::new(&collected, registry);
 
     for item in &source.items {
         analyzer.walk_item(item, collected.root_scope);

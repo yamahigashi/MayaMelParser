@@ -6,6 +6,7 @@ members = [
     "crates/mel-ast",
     "crates/mel-parser",
     "crates/mel-sema",
+    "crates/mel-maya",
     "crates/mel-cli",
 ]
 resolver = "2"

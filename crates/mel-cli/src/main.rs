@@ -8,11 +8,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use mel_maya::MayaCommandRegistry;
 use mel_parser::{
     Parse, ParseMode, ParseOptions, SourceEncoding, parse_file, parse_file_with_encoding,
     parse_source_with_options,
 };
-use mel_sema::{DiagnosticSeverity, analyze};
+use mel_sema::{DiagnosticSeverity, analyze_with_registry};
 use mel_syntax::TextRange;
 
 const TOP_RANK_LIMIT: usize = 10;
@@ -22,22 +23,15 @@ const TOP_RANK_LIMIT: usize = 10;
 struct Args {
     #[arg(long, value_enum, default_value_t = CliEncoding::Auto)]
     encoding: CliEncoding,
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["directory", "inline_input"])]
-    file: Option<PathBuf>,
-    #[arg(
-        long = "directory",
-        visible_alias = "dir",
-        value_name = "PATH",
-        conflicts_with_all = ["file", "inline_input"]
-    )]
-    directory: Option<PathBuf>,
-    #[arg(value_name = "INPUT", conflicts_with_all = ["file", "directory"])]
+    #[arg(value_name = "PATH", conflicts_with = "inline_input")]
+    path: Option<PathBuf>,
+    #[arg(long = "inline", value_name = "SOURCE", conflicts_with = "path")]
     inline_input: Option<String>,
 }
 
 impl Args {
     fn has_input(&self) -> bool {
-        self.file.is_some() || self.directory.is_some() || self.inline_input.is_some()
+        self.path.is_some() || self.inline_input.is_some()
     }
 }
 
@@ -92,13 +86,8 @@ fn run() -> Result<(), RunError> {
 
     let selected_encoding = args.encoding.into_source_encoding();
 
-    if let Some(path) = args.file {
-        return print_single_file(&path, selected_encoding)
-            .map_err(|error| RunError::Message(error.to_string()));
-    }
-
-    if let Some(path) = args.directory {
-        return print_corpus_summary(&path, selected_encoding)
+    if let Some(path) = args.path {
+        return print_path_output(&path, selected_encoding)
             .map_err(|error| RunError::Message(error.to_string()));
     }
 
@@ -114,6 +103,24 @@ fn run() -> Result<(), RunError> {
     }
 
     Ok(())
+}
+
+fn print_path_output(path: &Path, encoding: Option<SourceEncoding>) -> io::Result<()> {
+    let metadata = fs::metadata(path)?;
+
+    if metadata.is_dir() {
+        print_corpus_summary(path, encoding)
+    } else if metadata.is_file() {
+        print_single_file(path, encoding)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "path is neither a regular file nor a directory: {}",
+                path.display()
+            ),
+        ))
+    }
 }
 
 fn parse_cli_args<I, T>(args: I) -> Result<Args, clap::Error>
@@ -154,7 +161,7 @@ fn print_corpus_summary(root: &Path, encoding: Option<SourceEncoding>) -> io::Re
             .unwrap_or_else(|| parse_file(&path))
         {
             Ok(parse) => {
-                let analysis = analyze(&parse.syntax);
+                let analysis = analyze_parse(&parse);
                 let file_summary = FileSummary {
                     path: path.display().to_string(),
                     decode_errors: parse.decode_errors.len(),
@@ -248,7 +255,7 @@ fn print_parse_summary(label: &str, parse: &Parse) {
 }
 
 fn format_parse_summary(label: &str, parse: &Parse) -> String {
-    let analysis = analyze(&parse.syntax);
+    let analysis = analyze_parse(parse);
     format!(
         "source: {label}\nencoding: {}\nitems: {}\ndecode diagnostics: {}\nlexical diagnostics: {}\nparse errors: {}\nsemantic diagnostics: {}\n",
         parse.source_encoding.label(),
@@ -322,7 +329,7 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
         range: diagnostic.range,
     }));
     diagnostics.extend(
-        analyze(&parse.syntax)
+        analyze_parse(parse)
             .diagnostics
             .into_iter()
             .map(|diagnostic| FileDiagnostic {
@@ -333,6 +340,10 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
             }),
     );
     diagnostics
+}
+
+fn analyze_parse(parse: &Parse) -> mel_sema::Analysis {
+    analyze_with_registry(&parse.syntax, &MayaCommandRegistry::new())
 }
 
 fn report_kind(severity: DiagnosticSeverity) -> ReportKind<'static> {
@@ -442,10 +453,17 @@ struct FileSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, CorpusSummary, FileSummary, format_single_file_output, parse_cli_args};
+    use super::{
+        Args, CorpusSummary, FileSummary, format_single_file_output, parse_cli_args,
+        print_path_output,
+    };
     use clap::{CommandFactory, error::ErrorKind};
     use mel_parser::{ParseMode, ParseOptions, parse_source, parse_source_with_options};
-    use std::path::PathBuf;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn render_snapshot(label: &str, source: &str) -> String {
         format_single_file_output(label, &parse_source(source)).expect("snapshot should render")
@@ -463,34 +481,46 @@ mod tests {
     }
 
     #[test]
-    fn cli_accepts_directory_flag() {
-        let args = parse_cli_args(["mel-cli", "--directory", "tests/private-corpus"])
-            .expect("directory flag should parse");
-        assert_eq!(args.directory, Some(PathBuf::from("tests/private-corpus")));
+    fn cli_accepts_positional_path() {
+        let args = parse_cli_args(["mel-cli", "tests/private-corpus"]).expect("path should parse");
+        assert_eq!(args.path, Some(PathBuf::from("tests/private-corpus")));
     }
 
     #[test]
-    fn cli_accepts_dir_alias() {
-        let args = parse_cli_args(["mel-cli", "--dir", "tests/private-corpus"])
-            .expect("dir alias should parse");
-        assert_eq!(args.directory, Some(PathBuf::from("tests/private-corpus")));
+    fn cli_accepts_inline_flag() {
+        let args = parse_cli_args(["mel-cli", "--inline", r#"print "hello""#])
+            .expect("inline should parse");
+        assert_eq!(args.inline_input.as_deref(), Some(r#"print "hello""#));
     }
 
     #[test]
-    fn cli_rejects_removed_corpus_dir_flag() {
-        let error = parse_cli_args(["mel-cli", "--corpus-dir", "tests/private-corpus"])
-            .expect_err("removed flag should fail");
+    fn cli_rejects_removed_file_flag() {
+        let error = parse_cli_args(["mel-cli", "--file", "a.mel"])
+            .expect_err("removed file flag should fail");
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
-    fn cli_rejects_conflicting_modes() {
+    fn cli_rejects_removed_directory_flag() {
+        let error = parse_cli_args(["mel-cli", "--directory", "tests/private-corpus"])
+            .expect_err("removed directory flag should fail");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn cli_rejects_removed_path_flag() {
+        let error = parse_cli_args(["mel-cli", "--path", "tests/private-corpus"])
+            .expect_err("removed path flag should fail");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn cli_rejects_conflicting_input_modes() {
         let error = parse_cli_args([
             "mel-cli",
-            "--file",
-            "a.mel",
-            "--directory",
             "tests/private-corpus",
+            "--inline",
+            r#"print "hello""#,
         ])
         .expect_err("conflicting modes should fail");
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
@@ -498,7 +528,7 @@ mod tests {
 
     #[test]
     fn cli_rejects_invalid_encoding() {
-        let error = parse_cli_args(["mel-cli", "--encoding", "latin1", "`ls -sl`;"])
+        let error = parse_cli_args(["mel-cli", "--encoding", "latin1", "--inline", "`ls -sl`;"])
             .expect_err("invalid encoding should fail");
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
@@ -511,9 +541,32 @@ mod tests {
             .write_long_help(&mut help)
             .expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("--directory <PATH>"));
-        assert!(help.contains("[aliases: --dir]"));
+        assert!(help.contains("[PATH]"));
+        assert!(help.contains("--inline <SOURCE>"));
         assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
+    }
+
+    #[test]
+    fn path_mode_rejects_non_file_non_directory() {
+        let path = unique_test_path("socket");
+        #[cfg(unix)]
+        {
+            use std::os::unix::net::UnixListener;
+
+            let _listener = UnixListener::bind(&path).expect("socket should bind");
+            let error = print_path_output(&path, None).expect_err("socket path should fail");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(path.parent().expect("temp dir should exist"))
+                .expect("temp dir should exist");
+            fs::write(&path, []).expect("temp file should exist");
+            fs::remove_file(&path).expect("temp file should be removable");
+        }
+
+        cleanup_test_path(&path);
     }
 
     #[test]
@@ -751,5 +804,18 @@ mod tests {
                 include_str!("../../../tests/corpus/sema/lint/unresolved-variable.mel"),
             )
         );
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic enough")
+            .as_nanos();
+        std::env::temp_dir().join(format!("mel-cli-{label}-{nanos}"))
+    }
+
+    fn cleanup_test_path(path: &PathBuf) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(path);
     }
 }

@@ -295,6 +295,7 @@ dependencies = [
  "ariadne",
  "clap",
  "insta",
+ "mel-maya",
  "mel-parser",
  "mel-sema",
  "mel-syntax",
@@ -315,6 +316,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mel-maya"
+version = "0.1.0"
+dependencies = [
+ "mel-ast",
+ "mel-parser",
+ "mel-sema",
+ "mel-syntax",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mel-parser"
 version = "0.1.0"
 dependencies = [
@@ -330,8 +343,6 @@ version = "0.1.0"
 dependencies = [
  "mel-ast",
  "mel-syntax",
- "serde",
- "serde_json",
 ]
 
 [[package]]
