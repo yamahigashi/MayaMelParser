@@ -730,4 +730,26 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn snapshot_sema_read_before_write_and_shadowing_fixture() {
+        insta::assert_snapshot!(
+            "sema_read_before_write_and_shadowing",
+            render_snapshot(
+                "sema/lint/read-before-write-and-shadowing.mel",
+                include_str!("../../../tests/corpus/sema/lint/read-before-write-and-shadowing.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_unresolved_variable_fixture() {
+        insta::assert_snapshot!(
+            "sema_unresolved_variable",
+            render_snapshot(
+                "sema/lint/unresolved-variable.mel",
+                include_str!("../../../tests/corpus/sema/lint/unresolved-variable.mel"),
+            )
+        );
+    }
 }

@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 613
 expression: "render_snapshot(\"parser/expressions/missing-ternary-colon.mel\",\ninclude_str!(\"../../../tests/corpus/parser/expressions/missing-ternary-colon.mel\"),)"
 ---
 source: parser/expressions/missing-ternary-colon.mel
@@ -8,11 +9,18 @@ items: 1
 decode diagnostics: 0
 lexical diagnostics: 0
 parse errors: 1
-semantic diagnostics: 0
+semantic diagnostics: 1
 [31mError:[0m parse: expected ':' in ternary expression
    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m parser/expressions/missing-ternary-colon.mel:1:19 [38;5;246m][0m
    [38;5;246m│[0m
  [38;5;246m1 │[0m [38;5;249m$[0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249mu[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249m$[0m[38;5;249mf[0m[38;5;249ml[0m[38;5;249ma[0m[38;5;249mg[0m[38;5;249m [0m[38;5;249m?[0m[38;5;249m [0m[38;5;249m1[0m[31m;[0m
  [38;5;240m  │[0m                   [31m┬[0m  
  [38;5;240m  │[0m                   [31m╰[0m[31m─[0m[31m─[0m expected ':' in ternary expression
+[38;5;246m───╯[0m
+[33mWarning:[0m sema: unresolved variable "$flag"
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m parser/expressions/missing-ternary-colon.mel:1:10 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m1 │[0m [38;5;249m$[0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249mu[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[33m$[0m[33mf[0m[33ml[0m[33ma[0m[33mg[0m[38;5;249m [0m[38;5;249m?[0m[38;5;249m [0m[38;5;249m1[0m[38;5;249m;[0m
+ [38;5;240m  │[0m          [33m─[0m[33m─[0m[33m┬[0m[33m─[0m[33m─[0m  
+ [38;5;240m  │[0m            [33m╰[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m unresolved variable "$flag"
 [38;5;246m───╯[0m

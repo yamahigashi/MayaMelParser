@@ -1,0 +1,5 @@
+$missingTop;
+
+global proc unresolvedVariableCase() {
+    $missingLocal = 1;
+}

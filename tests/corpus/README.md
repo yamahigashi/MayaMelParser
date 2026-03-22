@@ -74,6 +74,8 @@ tests/corpus/
 - `sema/proc/local-forward-reference.mel`
 - `sema/proc/local-shell-unresolved.mel`
 - `sema/proc/local-visible-call.mel`
+- `sema/lint/read-before-write-and-shadowing.mel`
+- `sema/lint/unresolved-variable.mel`
 
 現在の diagnostics snapshot 対象:
 
@@ -83,3 +85,5 @@ tests/corpus/
 - `parser/proc/missing-proc-param-name.mel`
 - `sema/proc/local-forward-reference.mel`
 - `sema/proc/local-shell-unresolved.mel`
+- `sema/lint/read-before-write-and-shadowing.mel`
+- `sema/lint/unresolved-variable.mel`

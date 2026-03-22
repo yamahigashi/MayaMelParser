@@ -1,0 +1,11 @@
+global string $value;
+
+global proc lintCases(string $name) {
+    string $name;
+    int $value = 1;
+    int $count;
+    if ($name == "") {
+        $count = 1;
+    }
+    print($count);
+}

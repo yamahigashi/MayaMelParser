@@ -1,0 +1,19 @@
+---
+source: crates/mel-cli/src/main.rs
+assertion_line: 747
+expression: "render_snapshot(\"sema/lint/unresolved-variable.mel\",\ninclude_str!(\"../../../tests/corpus/sema/lint/unresolved-variable.mel\"),)"
+---
+source: sema/lint/unresolved-variable.mel
+encoding: utf-8
+items: 2
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 1
+[33mWarning:[0m sema: unresolved variable "$missingTop"
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/lint/unresolved-variable.mel:1:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m1 │[0m [33m$[0m[33mm[0m[33mi[0m[33ms[0m[33ms[0m[33mi[0m[33mn[0m[33mg[0m[33mT[0m[33mo[0m[33mp[0m[38;5;249m;[0m
+ [38;5;240m  │[0m [33m─[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m[33m┬[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m  
+ [38;5;240m  │[0m      [33m╰[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m unresolved variable "$missingTop"
+[38;5;246m───╯[0m
