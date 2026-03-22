@@ -18,7 +18,7 @@ use decode::{decode_source_auto, decode_source_with_encoding};
 use parser::Parser;
 use remap::remap_parse_ranges;
 
-use mel_syntax::{LexDiagnostic, TextRange, range_end, range_start};
+use mel_syntax::{LexDiagnostic, TextRange, range_end, range_start, text_slice};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeDiagnostic {
@@ -93,6 +93,25 @@ impl SourceMap {
     #[must_use]
     pub fn display_range(&self, range: TextRange) -> Range<usize> {
         self.display_offset(range_start(range))..self.display_offset(range_end(range))
+    }
+}
+
+impl Parse {
+    #[must_use]
+    pub fn source_slice(&self, range: TextRange) -> &str {
+        text_slice(&self.source_text, range)
+    }
+
+    #[must_use]
+    pub fn display_slice(&self, range: TextRange) -> &str {
+        &self.source_text[self.source_map.display_range(range)]
+    }
+
+    #[must_use]
+    pub fn string_literal_contents(&self, range: TextRange) -> Option<&str> {
+        self.source_slice(range)
+            .strip_prefix('"')?
+            .strip_suffix('"')
     }
 }
 

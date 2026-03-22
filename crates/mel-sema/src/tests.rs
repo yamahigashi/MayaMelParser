@@ -738,10 +738,11 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
     assert!(matches!(
         &items[1],
         super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+            source_range,
             canonical_name: Some(name),
             args,
             ..
-        }) if name == "label" && args.is_empty()
+        }) if *source_range == text_range(19, 25) && name == "label" && args.is_empty()
     ));
     assert!(matches!(
         &items[2],

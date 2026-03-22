@@ -28,6 +28,11 @@ pub fn range_len(range: TextRange) -> u32 {
     range.len().into()
 }
 
+#[must_use]
+pub fn text_slice(text: &str, range: TextRange) -> &str {
+    &text[range_start(range) as usize..range_end(range) as usize]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     Whitespace,

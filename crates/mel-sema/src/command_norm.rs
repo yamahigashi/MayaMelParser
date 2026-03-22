@@ -22,7 +22,7 @@ pub struct PositionalArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedFlag {
-    pub source_text: String,
+    pub source_range: TextRange,
     pub canonical_name: Option<String>,
     pub args: Vec<PositionalArg>,
     pub range: TextRange,
@@ -94,7 +94,7 @@ pub(crate) fn normalize_shell_like_invoke(
                         range: *flag_range,
                     });
                     items.push(NormalizedCommandItem::Flag(NormalizedFlag {
-                        source_text: text.clone(),
+                        source_range: *flag_range,
                         canonical_name: None,
                         args: Vec::new(),
                         range: *flag_range,
@@ -158,7 +158,7 @@ pub(crate) fn normalize_shell_like_invoke(
                     text_range(range_start(*flag_range), range_end(arg.range))
                 });
                 items.push(NormalizedCommandItem::Flag(NormalizedFlag {
-                    source_text: text.clone(),
+                    source_range: *flag_range,
                     canonical_name: Some(schema.long_name.clone()),
                     args,
                     range: item_range,

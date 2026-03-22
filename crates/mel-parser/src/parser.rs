@@ -968,7 +968,7 @@ impl<'a> Parser<'a> {
                     Expr::MemberAccess {
                         range,
                         target: Box::new(lhs),
-                        member: member_name,
+                        member: member_name.to_owned(),
                     }
                 };
                 continue;
@@ -1396,7 +1396,6 @@ impl<'a> Parser<'a> {
 
     fn parse_function_invoke(&mut self) -> Option<InvokeExpr> {
         let name_token = self.eat(TokenKind::Ident)?;
-        let name = self.token_text(name_token).to_owned();
         let _open = self.eat(TokenKind::LParen)?;
 
         let mut args = Vec::new();
@@ -1433,7 +1432,10 @@ impl<'a> Parser<'a> {
         };
 
         Some(InvokeExpr {
-            surface: InvokeSurface::Function { name, args },
+            surface: InvokeSurface::Function {
+                name: self.token_text(name_token).to_owned(),
+                args,
+            },
             resolution: CalleeResolution::Unresolved,
             range: text_range(range_start(name_token.range), end),
         })
@@ -1441,7 +1443,6 @@ impl<'a> Parser<'a> {
 
     fn parse_shell_like_invoke(&mut self, captured: bool) -> Option<InvokeExpr> {
         let head_token = self.eat(TokenKind::Ident)?;
-        let head = self.token_text(head_token).to_owned();
         let mut words = Vec::new();
 
         while !self.at(TokenKind::Eof) && !self.at_shell_terminator(captured) {
@@ -1476,7 +1477,7 @@ impl<'a> Parser<'a> {
         let end = range_end(self.previous_range()).max(range_end(head_token.range));
         Some(InvokeExpr {
             surface: InvokeSurface::ShellLike {
-                head,
+                head: self.token_text(head_token).to_owned(),
                 words,
                 captured,
             },
@@ -2004,7 +2005,7 @@ impl<'a> Parser<'a> {
                     Expr::MemberAccess {
                         range,
                         target: Box::new(expr),
-                        member: member_name,
+                        member: member_name.to_owned(),
                     }
                 };
                 continue;

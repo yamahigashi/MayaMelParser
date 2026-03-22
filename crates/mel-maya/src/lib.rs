@@ -540,10 +540,6 @@ fn stmt_range(stmt: &Stmt) -> TextRange {
     }
 }
 
-fn unquote_shell_string(text: &str) -> Option<&str> {
-    text.strip_prefix('"')?.strip_suffix('"')
-}
-
 fn maya_normalized_command_from_parse(
     parse: &Parse,
     value: mel_sema::NormalizedCommandInvoke,
@@ -578,7 +574,7 @@ fn maya_normalized_command_item_from_parse(
 
 fn maya_normalized_flag_from_parse(parse: &Parse, value: NormalizedFlag) -> MayaNormalizedFlag {
     MayaNormalizedFlag {
-        source_text: value.source_text,
+        source_text: slice_source_text(parse, value.source_range),
         canonical_name: value.canonical_name,
         args: value
             .args
@@ -587,6 +583,10 @@ fn maya_normalized_flag_from_parse(parse: &Parse, value: NormalizedFlag) -> Maya
             .collect(),
         span: value.range,
     }
+}
+
+fn unquote_shell_string(text: &str) -> Option<&str> {
+    text.strip_prefix('"')?.strip_suffix('"')
 }
 
 fn maya_positional_arg_from_parse(parse: &Parse, value: PositionalArg) -> MayaPositionalArg {

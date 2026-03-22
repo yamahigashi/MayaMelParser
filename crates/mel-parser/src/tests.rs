@@ -2626,3 +2626,30 @@ fn reports_hex_integer_literal_overflow() {
         _ => panic!("expected statement"),
     }
 }
+
+#[test]
+fn parse_helpers_slice_and_unquote_string_literals() {
+    let parse = parse_source("print \"hello\";");
+    assert!(parse.errors.is_empty());
+
+    match &parse.syntax.items[0] {
+        Item::Stmt(stmt) => match &**stmt {
+            Stmt::Expr {
+                expr: Expr::Invoke(invoke),
+                ..
+            } => match &invoke.surface {
+                InvokeSurface::ShellLike { words, .. } => match &words[0] {
+                    ShellWord::QuotedString { range, .. } => {
+                        assert_eq!(parse.source_slice(*range), "\"hello\"");
+                        assert_eq!(parse.display_slice(*range), "\"hello\"");
+                        assert_eq!(parse.string_literal_contents(*range), Some("hello"));
+                    }
+                    _ => panic!("expected quoted string shell word"),
+                },
+                _ => panic!("expected shell-like invoke"),
+            },
+            _ => panic!("expected command expression"),
+        },
+        _ => panic!("expected statement"),
+    }
+}

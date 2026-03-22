@@ -370,6 +370,77 @@ pub struct InvokeExpr {
     pub range: TextRange,
 }
 
+impl ProcDef {
+    #[must_use]
+    pub fn name_text(&self, source_text: &str) -> &str {
+        let _ = source_text;
+        self.name.as_str()
+    }
+}
+
+impl ProcParam {
+    #[must_use]
+    pub fn name_text(&self, source_text: &str) -> &str {
+        let _ = source_text;
+        self.name.as_str()
+    }
+}
+
+impl Declarator {
+    #[must_use]
+    pub fn name_text(&self, source_text: &str) -> &str {
+        let _ = source_text;
+        self.name.as_str()
+    }
+}
+
+impl InvokeSurface {
+    #[must_use]
+    pub fn head_text(&self, source_text: &str) -> Option<&str> {
+        match self {
+            Self::Function { name, .. } | Self::ShellLike { head: name, .. } => {
+                let _ = source_text;
+                Some(name.as_str())
+            }
+        }
+    }
+}
+
+impl ShellWord {
+    #[must_use]
+    pub fn text_range(&self) -> Option<TextRange> {
+        match self {
+            Self::Flag { range, .. }
+            | Self::NumericLiteral { range, .. }
+            | Self::BareWord { range, .. }
+            | Self::QuotedString { range, .. } => Some(*range),
+            Self::Variable { .. }
+            | Self::GroupedExpr { .. }
+            | Self::BraceList { .. }
+            | Self::VectorLiteral { .. }
+            | Self::Capture { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn text(&self, source_text: &str) -> Option<&str> {
+        match self {
+            Self::Flag { text, .. }
+            | Self::NumericLiteral { text, .. }
+            | Self::BareWord { text, .. }
+            | Self::QuotedString { text, .. } => {
+                let _ = source_text;
+                Some(text.as_str())
+            }
+            Self::Variable { .. }
+            | Self::GroupedExpr { .. }
+            | Self::BraceList { .. }
+            | Self::VectorLiteral { .. }
+            | Self::Capture { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CalleeResolution, Expr, InvokeExpr, InvokeSurface, ShellWord};

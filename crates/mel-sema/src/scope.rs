@@ -33,7 +33,9 @@ impl ScopeTree {
 pub(crate) struct ScopeCollector {
     scopes: ScopeTree,
     proc_symbols: Vec<ProcSymbol>,
+    proc_names: Vec<String>,
     variable_symbols: Vec<VariableSymbol>,
+    variable_names: Vec<String>,
     local_symbols_by_scope: HashMap<ScopeId, Vec<ProcSymbolId>>,
     global_symbols_by_name: HashMap<String, ProcSymbolId>,
     next_decl_order_by_scope: HashMap<ScopeId, usize>,
@@ -53,7 +55,9 @@ impl ScopeCollector {
         let mut collector = Self {
             scopes,
             proc_symbols: Vec::new(),
+            proc_names: Vec::new(),
             variable_symbols: Vec::new(),
+            variable_names: Vec::new(),
             local_symbols_by_scope: HashMap::new(),
             global_symbols_by_name: HashMap::new(),
             next_decl_order_by_scope: HashMap::new(),
@@ -73,7 +77,9 @@ impl ScopeCollector {
         CollectedScopes {
             scopes: collector.scopes,
             proc_symbols: collector.proc_symbols,
+            proc_names: collector.proc_names,
             variable_symbols: collector.variable_symbols,
+            variable_names: collector.variable_names,
             local_symbols_by_scope: collector.local_symbols_by_scope,
             global_symbols_by_name: collector.global_symbols_by_name,
             local_variables_by_scope: collector.local_variables_by_scope,
@@ -96,6 +102,7 @@ impl ScopeCollector {
     fn collect_proc_def(&mut self, proc_def: &ProcDef, owner_scope: ScopeId) {
         let decl_order = self.next_decl_order(owner_scope);
         let symbol_id = ProcSymbolId(self.proc_symbols.len());
+        let name = proc_def.name.clone();
         self.proc_symbols.push(ProcSymbol {
             id: symbol_id,
             name: proc_def.name.clone(),
@@ -105,11 +112,11 @@ impl ScopeCollector {
             decl_order,
             range: proc_def.range,
         });
+        self.proc_names.push(name.clone());
         self.symbol_by_proc_range.insert(proc_def.range, symbol_id);
 
         if proc_def.is_global {
-            self.global_symbols_by_name
-                .insert(proc_def.name.clone(), symbol_id);
+            self.global_symbols_by_name.insert(name, symbol_id);
         } else {
             self.local_symbols_by_scope
                 .entry(owner_scope)
@@ -200,6 +207,7 @@ impl ScopeCollector {
         let mut param_ids = Vec::new();
         for param in &proc_def.params {
             let symbol_id = VariableSymbolId(self.variable_symbols.len());
+            self.variable_names.push(param.name.clone());
             self.variable_symbols.push(VariableSymbol {
                 id: symbol_id,
                 name: param.name.clone(),
@@ -241,6 +249,8 @@ impl ScopeCollector {
             };
 
             let symbol_id = VariableSymbolId(self.variable_symbols.len());
+            let name = declarator.name.clone();
+            self.variable_names.push(name.clone());
             self.variable_symbols.push(VariableSymbol {
                 id: symbol_id,
                 name: declarator.name.clone(),
@@ -254,8 +264,7 @@ impl ScopeCollector {
 
             match kind {
                 VariableKind::Global => {
-                    self.global_variables_by_name
-                        .insert(declarator.name.clone(), symbol_id);
+                    self.global_variables_by_name.insert(name, symbol_id);
                 }
                 VariableKind::Local | VariableKind::Parameter => {
                     self.local_variables_by_scope
@@ -276,7 +285,9 @@ impl ScopeCollector {
 pub(crate) struct CollectedScopes {
     pub(crate) scopes: ScopeTree,
     pub(crate) proc_symbols: Vec<ProcSymbol>,
+    proc_names: Vec<String>,
     pub(crate) variable_symbols: Vec<VariableSymbol>,
+    variable_names: Vec<String>,
     local_symbols_by_scope: HashMap<ScopeId, Vec<ProcSymbolId>>,
     global_symbols_by_name: HashMap<String, ProcSymbolId>,
     local_variables_by_scope: HashMap<ScopeId, Vec<VariableSymbolId>>,
@@ -306,8 +317,16 @@ impl CollectedScopes {
         &self.proc_symbols[id.0]
     }
 
+    pub(crate) fn proc_name(&self, id: ProcSymbolId) -> &str {
+        &self.proc_names[id.0]
+    }
+
     pub(crate) fn variable_symbol(&self, id: VariableSymbolId) -> &VariableSymbol {
         &self.variable_symbols[id.0]
+    }
+
+    pub(crate) fn variable_name(&self, id: VariableSymbolId) -> &str {
+        &self.variable_names[id.0]
     }
 
     pub(crate) fn find_visible_local_proc(
@@ -327,7 +346,8 @@ impl CollectedScopes {
                         .iter()
                         .filter_map(|symbol_id| {
                             let symbol = self.symbol(*symbol_id);
-                            (symbol.name == name && symbol.decl_order <= visible_order)
+                            (self.proc_name(*symbol_id) == name
+                                && symbol.decl_order <= visible_order)
                                 .then_some(symbol)
                         })
                         .max_by_key(|symbol| symbol.decl_order)
@@ -357,7 +377,8 @@ impl CollectedScopes {
                     .iter()
                     .filter_map(|symbol_id| {
                         let symbol = self.symbol(*symbol_id);
-                        (symbol.name == name && symbol.decl_order > visible_order).then_some(symbol)
+                        (self.proc_name(*symbol_id) == name && symbol.decl_order > visible_order)
+                            .then_some(symbol)
                     })
                     .min_by_key(|symbol| symbol.decl_order)
             })
@@ -397,7 +418,8 @@ impl CollectedScopes {
                         .iter()
                         .filter_map(|symbol_id| {
                             let symbol = self.variable_symbol(*symbol_id);
-                            (symbol.name == name && symbol.decl_order <= visible_order)
+                            (self.variable_name(*symbol_id) == name
+                                && symbol.decl_order <= visible_order)
                                 .then_some(symbol)
                         })
                         .max_by_key(|symbol| symbol.decl_order)
