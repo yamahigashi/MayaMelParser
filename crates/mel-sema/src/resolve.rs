@@ -1,0 +1,729 @@
+use std::collections::HashMap;
+
+use crate::scope::CollectedScopes;
+use crate::*;
+use mel_ast::{CalleeResolution, Expr, Item, ProcDef, ShellWord, Stmt};
+use mel_syntax::TextRange;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValueType {
+    Int,
+    Float,
+    String,
+    Vector,
+    Matrix,
+    Array(Box<ValueType>),
+    Unknown,
+}
+
+pub(crate) struct Analyzer<'a, R: ?Sized> {
+    collected: &'a CollectedScopes,
+    registry: &'a R,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) invoke_resolutions: Vec<InvokeResolution>,
+    pub(crate) ident_resolutions: Vec<IdentResolution>,
+    pub(crate) normalized_invokes: Vec<NormalizedCommandInvoke>,
+    visible_decl_orders: HashMap<ScopeId, usize>,
+    visible_variable_decl_orders: HashMap<ScopeId, usize>,
+    implicit_variables_by_scope: HashMap<ScopeId, Vec<String>>,
+    proc_contexts: Vec<ProcContext>,
+}
+
+struct ProcContext {
+    name: String,
+    range: TextRange,
+    return_type: Option<ValueType>,
+    saw_value_return: bool,
+}
+
+enum ResolvedInvokeTarget {
+    Proc(String),
+    Command(CommandSchema),
+    Unresolved,
+}
+
+impl ResolvedInvokeTarget {
+    fn into_callee_resolution(self) -> CalleeResolution {
+        match self {
+            Self::Proc(name) => CalleeResolution::Proc(name),
+            Self::Command(command) => match command.kind {
+                CommandKind::Builtin => CalleeResolution::BuiltinCommand(command.name.clone()),
+                CommandKind::Plugin => CalleeResolution::PluginCommand(command.name.clone()),
+            },
+            Self::Unresolved => CalleeResolution::Unresolved,
+        }
+    }
+}
+
+impl<'a, R> Analyzer<'a, R>
+where
+    R: CommandRegistry + ?Sized,
+{
+    pub(crate) fn new(collected: &'a CollectedScopes, registry: &'a R) -> Self {
+        Self {
+            collected,
+            registry,
+            diagnostics: Vec::new(),
+            invoke_resolutions: Vec::new(),
+            ident_resolutions: Vec::new(),
+            normalized_invokes: Vec::new(),
+            visible_decl_orders: HashMap::new(),
+            visible_variable_decl_orders: HashMap::new(),
+            implicit_variables_by_scope: HashMap::new(),
+            proc_contexts: Vec::new(),
+        }
+    }
+
+    pub(crate) fn walk_item(&mut self, item: &Item, current_scope: ScopeId) {
+        match item {
+            Item::Proc(proc_def) => self.walk_proc_def(proc_def, current_scope),
+            Item::Stmt(stmt) => self.walk_stmt(stmt, current_scope),
+        }
+    }
+
+    fn walk_proc_def(&mut self, proc_def: &ProcDef, current_scope: ScopeId) {
+        self.mark_proc_visible(proc_def);
+        let body_scope = self.collected.scope_for_stmt(&proc_def.body);
+        self.mark_proc_params_visible(proc_def);
+        self.proc_contexts.push(ProcContext {
+            name: proc_def.name.clone(),
+            range: proc_def.range,
+            return_type: proc_def
+                .return_type
+                .as_ref()
+                .map(value_type_from_proc_return_type),
+            saw_value_return: false,
+        });
+        self.walk_stmt_in_existing_scope(&proc_def.body, body_scope);
+        self.finish_proc_context();
+        debug_assert_eq!(
+            self.collected.symbol_for_proc(proc_def).owner_scope,
+            current_scope
+        );
+    }
+
+    fn walk_stmt(&mut self, stmt: &Stmt, current_scope: ScopeId) {
+        match stmt {
+            Stmt::Empty { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Block { .. } => {
+                let block_scope = self.collected.scope_for_stmt(stmt);
+                self.walk_stmt_in_existing_scope(stmt, block_scope);
+            }
+            Stmt::Proc { proc_def, .. } => {
+                self.walk_proc_def(proc_def, current_scope);
+            }
+            Stmt::Expr { expr, .. } => self.walk_expr(expr, current_scope),
+            Stmt::VarDecl { decl, .. } => {
+                for declarator in &decl.declarators {
+                    if let Some(Some(size)) = &declarator.array_size {
+                        self.walk_expr(size, current_scope);
+                    }
+
+                    if let Some(initializer) = &declarator.initializer {
+                        self.walk_expr(initializer, current_scope);
+                        self.validate_var_initializer(decl, declarator, initializer, current_scope);
+                    }
+                }
+                self.mark_stmt_variables_visible(stmt);
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.walk_expr(condition, current_scope);
+                self.walk_stmt_in_child_scope(then_branch);
+                if let Some(else_branch) = else_branch {
+                    self.walk_stmt_in_child_scope(else_branch);
+                }
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                self.walk_expr(condition, current_scope);
+                self.walk_stmt_in_child_scope(body);
+            }
+            Stmt::DoWhile {
+                body, condition, ..
+            } => {
+                self.walk_stmt_in_child_scope(body);
+                self.walk_expr(condition, current_scope);
+            }
+            Stmt::Switch {
+                control, clauses, ..
+            } => {
+                self.walk_expr(control, current_scope);
+                for clause in clauses {
+                    if let mel_ast::SwitchLabel::Case(expr) = &clause.label {
+                        self.walk_expr(expr, current_scope);
+                    }
+                    let clause_scope = self.collected.scope_for_clause(clause);
+                    for stmt in &clause.statements {
+                        self.walk_stmt(stmt, clause_scope);
+                    }
+                }
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body,
+                ..
+            } => {
+                if let Some(init) = init {
+                    for expr in init {
+                        self.walk_expr(expr, current_scope);
+                    }
+                }
+                if let Some(condition) = condition {
+                    self.walk_expr(condition, current_scope);
+                }
+                if let Some(update) = update {
+                    for expr in update {
+                        self.walk_expr(expr, current_scope);
+                    }
+                }
+                self.walk_stmt_in_child_scope(body);
+            }
+            Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+                ..
+            } => {
+                self.walk_expr(binding, current_scope);
+                self.walk_expr(iterable, current_scope);
+                self.walk_stmt_in_child_scope(body);
+            }
+            Stmt::Return { expr, .. } => {
+                self.validate_return_stmt(expr.as_ref(), stmt_range(stmt), current_scope);
+                if let Some(expr) = expr {
+                    self.walk_expr(expr, current_scope);
+                }
+            }
+        }
+    }
+
+    fn walk_stmt_in_child_scope(&mut self, stmt: &Stmt) {
+        let child_scope = self.collected.scope_for_stmt(stmt);
+        self.walk_stmt_in_existing_scope(stmt, child_scope);
+    }
+
+    fn walk_stmt_in_existing_scope(&mut self, stmt: &Stmt, current_scope: ScopeId) {
+        match stmt {
+            Stmt::Block { statements, .. } => {
+                for stmt in statements {
+                    self.walk_stmt(stmt, current_scope);
+                }
+            }
+            _ => self.walk_stmt(stmt, current_scope),
+        }
+    }
+
+    fn walk_expr(&mut self, expr: &Expr, current_scope: ScopeId) {
+        match expr {
+            Expr::Cast { expr, .. } => self.walk_expr(expr, current_scope),
+            Expr::Unary { expr, .. } => self.walk_expr(expr, current_scope),
+            Expr::PrefixUpdate { expr, .. } | Expr::PostfixUpdate { expr, .. } => {
+                self.walk_assign_target(expr, current_scope, true);
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.walk_expr(lhs, current_scope);
+                self.walk_expr(rhs, current_scope);
+            }
+            Expr::Assign { op, lhs, rhs, .. } => {
+                self.walk_expr(rhs, current_scope);
+                self.walk_assign_target(
+                    lhs,
+                    current_scope,
+                    !matches!(op, mel_ast::AssignOp::Assign),
+                );
+            }
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.walk_expr(condition, current_scope);
+                self.walk_expr(then_expr, current_scope);
+                self.walk_expr(else_expr, current_scope);
+            }
+            Expr::Index { target, index, .. } => {
+                self.walk_expr(target, current_scope);
+                self.walk_expr(index, current_scope);
+            }
+            Expr::MemberAccess { target, .. } | Expr::ComponentAccess { target, .. } => {
+                self.walk_expr(target, current_scope);
+            }
+            Expr::VectorLiteral { elements, .. } | Expr::ArrayLiteral { elements, .. } => {
+                for element in elements {
+                    self.walk_expr(element, current_scope);
+                }
+            }
+            Expr::Invoke(invoke) => self.walk_invoke(invoke, current_scope),
+            Expr::Ident { name, range } => {
+                let resolution = self.resolve_ident(name, current_scope);
+                if matches!(resolution, IdentTarget::Unresolved)
+                    && !self.is_visible_implicit_variable(name, current_scope)
+                {
+                    self.diagnostics.push(Diagnostic::warning(
+                        format!("unresolved variable \"{name}\""),
+                        *range,
+                    ));
+                }
+                self.ident_resolutions.push(IdentResolution {
+                    range: *range,
+                    scope: current_scope,
+                    name: name.clone(),
+                    resolution,
+                });
+            }
+            Expr::BareWord { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::String { .. } => {
+            }
+        }
+    }
+
+    fn walk_assign_target(&mut self, expr: &Expr, current_scope: ScopeId, emit_unresolved: bool) {
+        match expr {
+            Expr::Ident { name, range } => {
+                let resolution = self.resolve_ident(name, current_scope);
+                if emit_unresolved
+                    && matches!(resolution, IdentTarget::Unresolved)
+                    && !self.is_visible_implicit_variable(name, current_scope)
+                {
+                    self.diagnostics.push(Diagnostic::warning(
+                        format!("unresolved variable \"{name}\""),
+                        *range,
+                    ));
+                }
+                if !emit_unresolved && matches!(resolution, IdentTarget::Unresolved) {
+                    self.mark_implicit_variable(name, current_scope);
+                }
+                self.ident_resolutions.push(IdentResolution {
+                    range: *range,
+                    scope: current_scope,
+                    name: name.clone(),
+                    resolution,
+                });
+            }
+            Expr::Index { target, index, .. } => {
+                self.walk_expr(target, current_scope);
+                self.walk_expr(index, current_scope);
+            }
+            Expr::MemberAccess { target, .. } | Expr::ComponentAccess { target, .. } => {
+                self.walk_expr(target, current_scope);
+            }
+            _ => self.walk_expr(expr, current_scope),
+        }
+    }
+
+    fn walk_invoke(&mut self, invoke: &mel_ast::InvokeExpr, current_scope: ScopeId) {
+        let resolution = match &invoke.surface {
+            mel_ast::InvokeSurface::Function { name, args } => {
+                for arg in args {
+                    self.walk_expr(arg, current_scope);
+                }
+                self.resolve_invoke(name, invoke.range, current_scope)
+            }
+            mel_ast::InvokeSurface::ShellLike { head, words, .. } => {
+                for word in words {
+                    self.walk_shell_word(word, current_scope);
+                }
+                let resolved = self.resolve_named_target(head, invoke.range, current_scope);
+                if let ResolvedInvokeTarget::Command(ref command) = resolved {
+                    let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
+                        command,
+                        current_scope,
+                        head,
+                        words,
+                        invoke.range,
+                    );
+                    self.diagnostics.extend(diagnostics);
+                    self.normalized_invokes.push(normalized);
+                }
+                resolved.into_callee_resolution()
+            }
+        };
+
+        self.invoke_resolutions.push(InvokeResolution {
+            range: invoke.range,
+            scope: current_scope,
+            resolution,
+        });
+    }
+
+    fn walk_shell_word(&mut self, word: &ShellWord, current_scope: ScopeId) {
+        match word {
+            ShellWord::Flag { .. }
+            | ShellWord::NumericLiteral { .. }
+            | ShellWord::BareWord { .. }
+            | ShellWord::QuotedString { .. } => {}
+            ShellWord::Variable { expr, .. }
+            | ShellWord::GroupedExpr { expr, .. }
+            | ShellWord::BraceList { expr, .. }
+            | ShellWord::VectorLiteral { expr, .. } => self.walk_expr(expr, current_scope),
+            ShellWord::Capture { invoke, .. } => self.walk_invoke(invoke, current_scope),
+        }
+    }
+
+    fn resolve_invoke(
+        &mut self,
+        name: &str,
+        range: TextRange,
+        current_scope: ScopeId,
+    ) -> CalleeResolution {
+        self.resolve_named_target(name, range, current_scope)
+            .into_callee_resolution()
+    }
+
+    fn resolve_named_target(
+        &mut self,
+        name: &str,
+        range: TextRange,
+        current_scope: ScopeId,
+    ) -> ResolvedInvokeTarget {
+        if let Some(symbol) =
+            self.collected
+                .find_visible_local_proc(name, current_scope, &self.visible_decl_orders)
+        {
+            return ResolvedInvokeTarget::Proc(symbol.name.clone());
+        }
+
+        if let Some(symbol) =
+            self.collected
+                .find_forward_local_proc(name, current_scope, &self.visible_decl_orders)
+        {
+            self.diagnostics.push(Diagnostic::error(
+                format!("local proc \"{name}\" is called before its definition"),
+                range,
+            ));
+            return ResolvedInvokeTarget::Proc(symbol.name.clone());
+        }
+
+        if let Some(symbol) = self.collected.find_global_proc(name) {
+            return ResolvedInvokeTarget::Proc(symbol.name.clone());
+        }
+
+        if let Some(command) = self.registry.lookup(name) {
+            return ResolvedInvokeTarget::Command(command);
+        }
+
+        ResolvedInvokeTarget::Unresolved
+    }
+
+    fn mark_proc_visible(&mut self, proc_def: &ProcDef) {
+        let symbol = self.collected.symbol_for_proc(proc_def);
+        if symbol.is_global {
+            return;
+        }
+
+        let visible_order = self
+            .visible_decl_orders
+            .entry(symbol.owner_scope)
+            .or_insert(0);
+        *visible_order = (*visible_order).max(symbol.decl_order);
+    }
+
+    fn mark_proc_params_visible(&mut self, proc_def: &ProcDef) {
+        for param_id in self.collected.param_symbols_for_proc(proc_def) {
+            let symbol = self.collected.variable_symbol(*param_id);
+            let visible_order = self
+                .visible_variable_decl_orders
+                .entry(symbol.owner_scope)
+                .or_insert(0);
+            *visible_order = (*visible_order).max(symbol.decl_order);
+        }
+    }
+
+    fn mark_stmt_variables_visible(&mut self, stmt: &Stmt) {
+        for variable_id in self.collected.variable_symbols_for_stmt(stmt) {
+            let symbol = self.collected.variable_symbol(*variable_id);
+            if matches!(symbol.kind, VariableKind::Global) {
+                continue;
+            }
+
+            let visible_order = self
+                .visible_variable_decl_orders
+                .entry(symbol.owner_scope)
+                .or_insert(0);
+            *visible_order = (*visible_order).max(symbol.decl_order);
+        }
+    }
+
+    fn resolve_ident(&self, name: &str, current_scope: ScopeId) -> IdentTarget {
+        if let Some(symbol) = self.collected.find_visible_local_variable(
+            name,
+            current_scope,
+            &self.visible_variable_decl_orders,
+        ) {
+            return IdentTarget::Variable(symbol.id);
+        }
+
+        if let Some(symbol) = self.collected.find_global_variable(name) {
+            return IdentTarget::Variable(symbol.id);
+        }
+
+        IdentTarget::Unresolved
+    }
+
+    fn mark_implicit_variable(&mut self, name: &str, current_scope: ScopeId) {
+        let names = self
+            .implicit_variables_by_scope
+            .entry(current_scope)
+            .or_default();
+        if !names.iter().any(|candidate| candidate == name) {
+            names.push(name.to_owned());
+        }
+    }
+
+    fn is_visible_implicit_variable(&self, name: &str, current_scope: ScopeId) -> bool {
+        let mut scope = Some(current_scope);
+        while let Some(scope_id) = scope {
+            if self
+                .implicit_variables_by_scope
+                .get(&scope_id)
+                .is_some_and(|names| names.iter().any(|candidate| candidate == name))
+            {
+                return true;
+            }
+            scope = self.collected.scopes.parent(scope_id);
+        }
+        false
+    }
+
+    fn validate_return_stmt(
+        &mut self,
+        expr: Option<&Expr>,
+        range: TextRange,
+        current_scope: ScopeId,
+    ) {
+        let actual = expr.map(|expr| self.infer_expr_type(expr, current_scope));
+        let Some(context) = self.proc_contexts.last_mut() else {
+            return;
+        };
+
+        match (&context.return_type, actual.as_ref()) {
+            (None, Some(_)) => self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "proc \"{}\" has no return type but returns a value",
+                    context.name
+                ),
+                range,
+            )),
+            (Some(expected), Some(actual)) => {
+                context.saw_value_return = true;
+                if !is_assignable(expected, actual) {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!(
+                            "proc \"{}\" returns {:?} but declares {:?}",
+                            context.name, actual, expected
+                        ),
+                        range,
+                    ));
+                }
+            }
+            (Some(_), None) | (None, None) => {}
+        }
+    }
+
+    fn finish_proc_context(&mut self) {
+        let Some(context) = self.proc_contexts.pop() else {
+            return;
+        };
+
+        if context.return_type.is_some() && !context.saw_value_return {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "proc \"{}\" declares a return type but never returns a value",
+                    context.name
+                ),
+                context.range,
+            ));
+        }
+    }
+
+    fn validate_var_initializer(
+        &mut self,
+        decl: &mel_ast::VarDecl,
+        declarator: &mel_ast::Declarator,
+        initializer: &Expr,
+        current_scope: ScopeId,
+    ) {
+        let expected = value_type_from_var_decl(decl, declarator);
+        let actual = self.infer_expr_type(initializer, current_scope);
+        if !is_assignable(&expected, &actual) {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "variable \"{}\" has declared type {:?} but initializer is {:?}",
+                    declarator.name, expected, actual
+                ),
+                declarator.range,
+            ));
+        }
+    }
+
+    fn infer_expr_type(&self, expr: &Expr, current_scope: ScopeId) -> ValueType {
+        match expr {
+            Expr::Ident { name, .. } => self.infer_ident_type(name, current_scope),
+            Expr::Int { .. } => ValueType::Int,
+            Expr::Float { .. } => ValueType::Float,
+            Expr::String { .. } | Expr::BareWord { .. } => ValueType::String,
+            Expr::Cast { ty, .. } => value_type_from_type_name(ty),
+            Expr::VectorLiteral { .. } => ValueType::Vector,
+            Expr::ArrayLiteral { elements, .. } => {
+                infer_array_literal_type(elements, self, current_scope)
+            }
+            Expr::Unary { expr, .. }
+            | Expr::PrefixUpdate { expr, .. }
+            | Expr::PostfixUpdate { expr, .. }
+            | Expr::ComponentAccess { target: expr, .. } => {
+                self.infer_expr_type(expr, current_scope)
+            }
+            Expr::MemberAccess { target, member, .. } => {
+                if matches!(
+                    self.infer_expr_type(target, current_scope),
+                    ValueType::Vector
+                ) && matches!(member.as_str(), "x" | "y" | "z")
+                {
+                    ValueType::Float
+                } else {
+                    ValueType::Unknown
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => combine_numeric_types(
+                self.infer_expr_type(lhs, current_scope),
+                self.infer_expr_type(rhs, current_scope),
+            ),
+            Expr::Ternary {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                let then_ty = self.infer_expr_type(then_expr, current_scope);
+                let else_ty = self.infer_expr_type(else_expr, current_scope);
+                if is_assignable(&then_ty, &else_ty) {
+                    then_ty
+                } else if is_assignable(&else_ty, &then_ty) {
+                    else_ty
+                } else {
+                    ValueType::Unknown
+                }
+            }
+            Expr::Index { target, .. } => match self.infer_expr_type(target, current_scope) {
+                ValueType::Array(inner) => *inner,
+                _ => ValueType::Unknown,
+            },
+            Expr::Invoke(invoke) => self.infer_invoke_type(invoke, current_scope),
+        }
+    }
+
+    fn infer_ident_type(&self, name: &str, current_scope: ScopeId) -> ValueType {
+        match self.resolve_ident(name, current_scope) {
+            IdentTarget::Unresolved => ValueType::Unknown,
+            IdentTarget::Variable(symbol_id) => {
+                let symbol = self.collected.variable_symbol(symbol_id);
+                let base = value_type_from_type_name(&symbol.ty);
+                if symbol.is_array {
+                    ValueType::Array(Box::new(base))
+                } else {
+                    base
+                }
+            }
+        }
+    }
+
+    fn infer_invoke_type(&self, invoke: &mel_ast::InvokeExpr, current_scope: ScopeId) -> ValueType {
+        let name = match &invoke.surface {
+            mel_ast::InvokeSurface::Function { name, .. }
+            | mel_ast::InvokeSurface::ShellLike { head: name, .. } => name,
+        };
+
+        let Some(symbol) = self.collected.find_resolved_proc_symbol(
+            name,
+            current_scope,
+            &self.visible_decl_orders,
+        ) else {
+            return ValueType::Unknown;
+        };
+
+        symbol
+            .return_type
+            .as_ref()
+            .map(value_type_from_proc_return_type)
+            .unwrap_or(ValueType::Unknown)
+    }
+}
+
+fn value_type_from_type_name(ty: &mel_ast::TypeName) -> ValueType {
+    match ty {
+        mel_ast::TypeName::Int => ValueType::Int,
+        mel_ast::TypeName::Float => ValueType::Float,
+        mel_ast::TypeName::String => ValueType::String,
+        mel_ast::TypeName::Vector => ValueType::Vector,
+        mel_ast::TypeName::Matrix => ValueType::Matrix,
+    }
+}
+
+fn value_type_from_proc_return_type(return_type: &mel_ast::ProcReturnType) -> ValueType {
+    let base = value_type_from_type_name(&return_type.ty);
+    if return_type.is_array {
+        ValueType::Array(Box::new(base))
+    } else {
+        base
+    }
+}
+
+fn value_type_from_var_decl(
+    decl: &mel_ast::VarDecl,
+    declarator: &mel_ast::Declarator,
+) -> ValueType {
+    let base = value_type_from_type_name(&decl.ty);
+    if declarator.array_size.is_some() {
+        ValueType::Array(Box::new(base))
+    } else {
+        base
+    }
+}
+
+fn is_assignable(expected: &ValueType, actual: &ValueType) -> bool {
+    match (expected, actual) {
+        (_, ValueType::Unknown) | (ValueType::Unknown, _) => true,
+        (ValueType::Float, ValueType::Int) => true,
+        (ValueType::Array(expected), ValueType::Array(actual)) => is_assignable(expected, actual),
+        _ => expected == actual,
+    }
+}
+
+fn combine_numeric_types(lhs: ValueType, rhs: ValueType) -> ValueType {
+    match (&lhs, &rhs) {
+        (ValueType::Float, ValueType::Int)
+        | (ValueType::Int, ValueType::Float)
+        | (ValueType::Float, ValueType::Float) => ValueType::Float,
+        (ValueType::Int, ValueType::Int) => ValueType::Int,
+        _ if lhs == rhs => lhs,
+        _ => ValueType::Unknown,
+    }
+}
+
+fn infer_array_literal_type<R>(
+    elements: &[Expr],
+    analyzer: &Analyzer<'_, R>,
+    current_scope: ScopeId,
+) -> ValueType
+where
+    R: CommandRegistry + ?Sized,
+{
+    let mut iter = elements.iter();
+    let Some(first) = iter.next() else {
+        return ValueType::Unknown;
+    };
+
+    let first_ty = analyzer.infer_expr_type(first, current_scope);
+    if iter.all(|expr| is_assignable(&first_ty, &analyzer.infer_expr_type(expr, current_scope))) {
+        ValueType::Array(Box::new(first_ty))
+    } else {
+        ValueType::Unknown
+    }
+}
