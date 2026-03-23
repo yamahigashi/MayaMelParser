@@ -319,6 +319,7 @@ dependencies = [
 name = "mel-maya"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
  "mel-ast",
  "mel-parser",
  "mel-sema",

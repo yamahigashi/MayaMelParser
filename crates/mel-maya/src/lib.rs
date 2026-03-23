@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
 use mel_ast::{Expr, InvokeSurface, Item, ProcDef, ShellWord, Stmt};
-use mel_parser::{LightCommandSurface, LightItem, LightParse, LightWord, Parse};
+use mel_parser::{
+    LightCommandSurface, LightItem, LightParse, LightWord, Parse, ParseOptions,
+    parse_source_view_range_with_options,
+};
 use mel_sema::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, NormalizedCommandItem,
@@ -36,6 +39,21 @@ pub struct MayaTopLevelFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MayaLightTopLevelFacts {
     pub items: Vec<MayaLightTopLevelItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum MayaPromotionPolicy {
+    #[default]
+    OpaqueTailOnly,
+    ByCommandName(Vec<String>),
+    Always,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaPromotionError {
+    pub command_span: TextRange,
+    pub head: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +405,71 @@ pub fn collect_top_level_facts_light(parse: &LightParse) -> MayaLightTopLevelFac
     collect_top_level_facts_light_with_registry(parse, &EmptyCommandRegistry)
 }
 
+pub fn collect_top_level_facts_hybrid(
+    parse: &LightParse,
+) -> Result<MayaTopLevelFacts, MayaPromotionError> {
+    collect_top_level_facts_hybrid_with_registry(
+        parse,
+        &EmptyCommandRegistry,
+        MayaPromotionPolicy::default(),
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_with_registry<R>(
+    parse: &LightParse,
+    registry: &R,
+    policy: MayaPromotionPolicy,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    let overlay = OverlayRegistry::new(registry);
+    let mut items = Vec::new();
+
+    for item in &parse.source.items {
+        match item {
+            LightItem::Proc(proc_def) => items.push(MayaTopLevelItem::Proc {
+                name: proc_def
+                    .name_range
+                    .map(|range| parse.source_slice(range).to_owned())
+                    .unwrap_or_default(),
+                is_global: proc_def.is_global,
+                span: proc_def.span,
+            }),
+            LightItem::Command(command) => {
+                let head = parse.source_slice(command.head_range).to_owned();
+                let canonical_name = overlay.lookup(&head).map(|schema| schema.name);
+                let promote =
+                    should_promote_command(command, canonical_name.as_deref(), &head, &policy);
+                let command = if promote {
+                    promote_light_top_level_command_with_registry(parse, command, &overlay)?
+                } else {
+                    build_nonopaque_top_level_command_with_registry(parse, command, &overlay)?
+                };
+                items.push(MayaTopLevelItem::Command(Box::new(command)));
+            }
+            LightItem::Other { span } => items.push(MayaTopLevelItem::Other { span: *span }),
+        }
+    }
+
+    Ok(MayaTopLevelFacts { items })
+}
+
+pub fn promote_light_top_level_command_with_registry<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    if command.opaque_tail.is_none() {
+        return build_nonopaque_top_level_command_with_registry(parse, command, registry);
+    }
+
+    promote_opaque_command_with_registry(parse, command, registry)
+}
+
 #[must_use]
 pub fn collect_top_level_facts_light_with_registry<R>(
     parse: &LightParse,
@@ -680,20 +763,31 @@ fn is_numeric_like(item: &MayaRawShellItem) -> bool {
 }
 
 fn raw_item_from_shell_word(parse: &Parse, word: &ShellWord) -> MayaRawShellItem {
+    raw_item_from_shell_word_with_source(parse.source_view(), word)
+}
+
+fn raw_item_from_shell_word_with_source(
+    source: mel_syntax::SourceView<'_>,
+    word: &ShellWord,
+) -> MayaRawShellItem {
     let (value_text, kind, span) = match word {
         ShellWord::Flag { range, .. } => (None, MayaRawShellItemKind::Flag, *range),
         ShellWord::NumericLiteral { text, range } => (
-            Some(parse.source_slice(*text).to_owned()),
+            Some(source.slice(*text).to_owned()),
             MayaRawShellItemKind::Numeric,
             *range,
         ),
         ShellWord::BareWord { text, range } => (
-            Some(parse.source_slice(*text).to_owned()),
+            Some(source.slice(*text).to_owned()),
             MayaRawShellItemKind::BareWord,
             *range,
         ),
         ShellWord::QuotedString { text, range } => (
-            parse.string_literal_contents(*text).map(str::to_owned),
+            source
+                .slice(*text)
+                .strip_prefix('"')
+                .and_then(|text| text.strip_suffix('"'))
+                .map(str::to_owned),
             MayaRawShellItemKind::QuotedString,
             *range,
         ),
@@ -706,15 +800,11 @@ fn raw_item_from_shell_word(parse: &Parse, word: &ShellWord) -> MayaRawShellItem
         ShellWord::Capture { range, .. } => (None, MayaRawShellItemKind::Capture, *range),
     };
     MayaRawShellItem {
-        source_text: slice_source_text(parse, span),
+        source_text: source.display_slice(span).to_owned(),
         value_text,
         kind,
         span,
     }
-}
-
-fn slice_source_text(parse: &Parse, range: TextRange) -> String {
-    parse.display_slice(range).to_owned()
 }
 
 fn stmt_range(stmt: &Stmt) -> TextRange {
@@ -740,8 +830,15 @@ fn maya_normalized_command_from_parse(
     parse: &Parse,
     value: mel_sema::NormalizedCommandInvoke,
 ) -> MayaNormalizedCommand {
+    maya_normalized_command_from_source(parse.source_view(), value)
+}
+
+fn maya_normalized_command_from_source(
+    source: mel_syntax::SourceView<'_>,
+    value: mel_sema::NormalizedCommandInvoke,
+) -> MayaNormalizedCommand {
     MayaNormalizedCommand {
-        head: parse.source_slice(value.head_range).to_owned(),
+        head: source.slice(value.head_range).to_owned(),
         head_range: value.head_range,
         schema_name: value.schema_name,
         kind: value.kind,
@@ -749,42 +846,288 @@ fn maya_normalized_command_from_parse(
         items: value
             .items
             .into_iter()
-            .map(|item| maya_normalized_command_item_from_parse(parse, item))
+            .map(|item| maya_normalized_command_item_from_source(source, item))
             .collect(),
         span: value.range,
     }
 }
 
-fn maya_normalized_command_item_from_parse(
-    parse: &Parse,
+fn maya_normalized_command_item_from_source(
+    source: mel_syntax::SourceView<'_>,
     value: NormalizedCommandItem,
 ) -> MayaNormalizedCommandItem {
     match value {
         NormalizedCommandItem::Flag(flag) => {
-            MayaNormalizedCommandItem::Flag(maya_normalized_flag_from_parse(parse, flag))
+            MayaNormalizedCommandItem::Flag(maya_normalized_flag_from_source(source, flag))
         }
         NormalizedCommandItem::Positional(arg) => {
-            MayaNormalizedCommandItem::Positional(maya_positional_arg_from_parse(parse, arg))
+            MayaNormalizedCommandItem::Positional(maya_positional_arg_from_source(source, arg))
         }
     }
 }
 
-fn maya_normalized_flag_from_parse(parse: &Parse, value: NormalizedFlag) -> MayaNormalizedFlag {
+fn maya_normalized_flag_from_source(
+    source: mel_syntax::SourceView<'_>,
+    value: NormalizedFlag,
+) -> MayaNormalizedFlag {
     MayaNormalizedFlag {
-        source_text: slice_source_text(parse, value.source_range),
+        source_text: source.display_slice(value.source_range).to_owned(),
         canonical_name: value.canonical_name,
         args: value
             .args
             .into_iter()
-            .map(|arg| maya_positional_arg_from_parse(parse, arg))
+            .map(|arg| maya_positional_arg_from_source(source, arg))
             .collect(),
         span: value.range,
     }
 }
-fn maya_positional_arg_from_parse(parse: &Parse, value: PositionalArg) -> MayaPositionalArg {
+
+fn maya_positional_arg_from_source(
+    source: mel_syntax::SourceView<'_>,
+    value: PositionalArg,
+) -> MayaPositionalArg {
     MayaPositionalArg {
-        item: raw_item_from_shell_word(parse, &value.word),
+        item: raw_item_from_shell_word_with_source(source, &value.word),
     }
+}
+
+fn should_promote_command(
+    command: &LightCommandSurface,
+    canonical_name: Option<&str>,
+    raw_head: &str,
+    policy: &MayaPromotionPolicy,
+) -> bool {
+    if command.opaque_tail.is_some() {
+        return true;
+    }
+
+    match policy {
+        MayaPromotionPolicy::OpaqueTailOnly => false,
+        MayaPromotionPolicy::Always => true,
+        MayaPromotionPolicy::ByCommandName(names) => names
+            .iter()
+            .any(|name| Some(name.as_str()) == canonical_name || name == raw_head),
+    }
+}
+
+fn build_nonopaque_top_level_command_with_registry<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    let head = parse.source_slice(command.head_range).to_owned();
+    let raw_items = command
+        .words
+        .iter()
+        .map(|word| raw_item_from_light_word(parse, word))
+        .collect::<Vec<_>>();
+    let promoted_span = command_payload_span(command.head_range, &raw_items);
+    let normalized = registry.lookup(&head).map(|schema| {
+        normalize_light_command(
+            &head,
+            command.head_range,
+            promoted_span,
+            &schema,
+            &raw_items,
+        )
+    });
+    let specialized = specialize_command(&head, promoted_span, normalized.as_ref(), &raw_items);
+
+    Ok(MayaTopLevelCommand {
+        head,
+        captured: command.captured,
+        raw_items,
+        normalized,
+        specialized,
+        span: promoted_span,
+    })
+}
+
+fn promote_opaque_command_with_registry<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    let head = parse.source_slice(command.head_range).to_owned();
+    let slice = parse_source_view_range_with_options(
+        parse.source_view(),
+        command.span,
+        ParseOptions::default(),
+    );
+    if !slice.lex_errors.is_empty() || !slice.errors.is_empty() {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command did not parse cleanly".to_owned(),
+        });
+    }
+
+    let overlay = OverlayRegistry::new(registry);
+    let analysis = mel_sema::analyze_with_registry(&slice.syntax, parse.source_view(), &overlay);
+    let mut remaining_normalized: Vec<Option<MayaNormalizedCommand>> = analysis
+        .normalized_invokes
+        .into_iter()
+        .map(|invoke| {
+            Some(maya_normalized_command_from_source(
+                parse.source_view(),
+                invoke,
+            ))
+        })
+        .collect();
+
+    let Some(item) = slice.syntax.items.first() else {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command slice was empty".to_owned(),
+        });
+    };
+    if slice.syntax.items.len() != 1 {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command slice contained multiple top-level items".to_owned(),
+        });
+    }
+
+    let Item::Stmt(stmt) = item else {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command slice was not a statement".to_owned(),
+        });
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command slice was not an invoke statement".to_owned(),
+        });
+    };
+    let InvokeSurface::ShellLike {
+        head_range,
+        words,
+        captured,
+    } = &invoke.surface
+    else {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command slice was not shell-like".to_owned(),
+        });
+    };
+
+    let promoted_head = parse.source_slice(*head_range).to_owned();
+    let normalized = take_matching_normalized(&mut remaining_normalized, *head_range, invoke.range);
+    let raw_items = words
+        .iter()
+        .map(|word| raw_item_from_shell_word_with_source(parse.source_view(), word))
+        .collect::<Vec<_>>();
+    let specialized = specialize_command(
+        &promoted_head,
+        invoke.range,
+        normalized.as_ref(),
+        &raw_items,
+    );
+
+    Ok(MayaTopLevelCommand {
+        head: promoted_head,
+        captured: *captured,
+        raw_items,
+        normalized,
+        specialized,
+        span: invoke.range,
+    })
+}
+
+fn normalize_light_command(
+    head: &str,
+    head_range: TextRange,
+    span: TextRange,
+    schema: &CommandSchema,
+    items: &[MayaRawShellItem],
+) -> MayaNormalizedCommand {
+    let mode = detect_light_mode(schema, items);
+    let mut normalized_items = Vec::new();
+    let mut index = 0;
+
+    while index < items.len() {
+        let item = &items[index];
+        if item.kind != MayaRawShellItemKind::Flag {
+            normalized_items.push(MayaNormalizedCommandItem::Positional(MayaPositionalArg {
+                item: item.clone(),
+            }));
+            index += 1;
+            continue;
+        }
+
+        let schema_flag = find_flag_schema(schema, &item.source_text);
+        let expected_arity = schema_flag
+            .as_ref()
+            .map(|flag| arity_for_mode(flag.arity_by_mode, mode))
+            .unwrap_or(FlagArity::None);
+        let (_, max_arity) = arity_bounds(expected_arity);
+        let mut args = Vec::new();
+        let mut consumed = 0;
+        while consumed < max_arity {
+            let Some(next_item) = items.get(index + 1 + consumed) else {
+                break;
+            };
+            if next_item.kind == MayaRawShellItemKind::Flag {
+                break;
+            }
+            args.push(MayaPositionalArg {
+                item: next_item.clone(),
+            });
+            consumed += 1;
+        }
+        let item_span = args.last().map_or(item.span, |arg| {
+            text_range(range_start(item.span), range_end(arg.item.span))
+        });
+        normalized_items.push(MayaNormalizedCommandItem::Flag(MayaNormalizedFlag {
+            source_text: item.source_text.clone(),
+            canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.clone()),
+            args,
+            span: item_span,
+        }));
+        index += 1 + consumed;
+    }
+
+    let normalized_span = normalized_items.last().map_or(span, |item| {
+        let end = match item {
+            MayaNormalizedCommandItem::Flag(flag) => range_end(flag.span),
+            MayaNormalizedCommandItem::Positional(arg) => range_end(arg.item.span),
+        };
+        text_range(range_start(head_range), end)
+    });
+
+    MayaNormalizedCommand {
+        head: head.to_owned(),
+        head_range,
+        schema_name: schema.name.clone(),
+        kind: schema.kind,
+        mode,
+        items: normalized_items,
+        span: normalized_span,
+    }
+}
+
+fn command_payload_span(head_range: TextRange, raw_items: &[MayaRawShellItem]) -> TextRange {
+    let end = raw_items
+        .last()
+        .map(|item| range_end(item.span))
+        .unwrap_or_else(|| range_end(head_range));
+    text_range(range_start(head_range), end)
 }
 
 fn maya_light_command_from_parse<R>(
@@ -1268,9 +1611,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use encoding_rs::SHIFT_JIS;
     use std::path::Path;
 
-    use mel_parser::{parse_bytes, parse_light_file, parse_light_source, parse_source};
+    use mel_parser::{
+        LightParseOptions, parse_bytes, parse_light_bytes_with_encoding, parse_light_file,
+        parse_light_source, parse_light_source_with_options, parse_source,
+    };
 
     struct TestRegistry {
         commands: Vec<CommandSchema>,
@@ -1581,5 +1928,148 @@ mod tests {
         assert!(parse.errors.is_empty());
         let facts = collect_top_level_facts_light(&parse);
         assert!(!facts.items.is_empty());
+    }
+
+    #[test]
+    fn hybrid_collector_matches_full_shape_for_non_opaque_command() {
+        let full = collect_top_level_facts(&parse_source(
+            "createNode transform -n \"pCube1\" -p \"|group1\";\n",
+        ));
+        let light = parse_light_source("createNode transform -n \"pCube1\" -p \"|group1\";\n");
+        let hybrid = collect_top_level_facts_hybrid(&light).expect("hybrid facts");
+
+        let MayaTopLevelItem::Command(full_command) = &full.items[0] else {
+            panic!("expected full command");
+        };
+        let MayaTopLevelItem::Command(hybrid_command) = &hybrid.items[0] else {
+            panic!("expected hybrid command");
+        };
+        assert_eq!(hybrid_command.head, full_command.head);
+        assert_eq!(hybrid_command.raw_items, full_command.raw_items);
+        assert_eq!(hybrid_command.normalized, full_command.normalized);
+        assert_eq!(hybrid_command.specialized, full_command.specialized);
+    }
+
+    #[test]
+    fn hybrid_collector_promotes_opaque_set_attr_tail_to_full_raw_items() {
+        let parse = parse_light_source_with_options(
+            "setAttr \".pt\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n",
+            LightParseOptions {
+                max_prefix_words: 5,
+                max_prefix_bytes: 32,
+            },
+        );
+        let hybrid = collect_top_level_facts_hybrid(&parse).expect("hybrid facts");
+        let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+            panic!("expected command");
+        };
+        assert!(command.raw_items.len() > 5);
+        let Some(MayaSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref() else {
+            panic!("expected setAttr specialization");
+        };
+        assert_eq!(set_attr.values.len(), 10);
+    }
+
+    #[test]
+    fn promoted_command_keeps_cp932_source_slices() {
+        let parse = parse_light_bytes_with_encoding(
+            SHIFT_JIS
+                .encode("setAttr \".名\" -type \"string\" \"値\";\n")
+                .0
+                .as_ref(),
+            mel_parser::SourceEncoding::Cp932,
+        );
+        let hybrid = collect_top_level_facts_hybrid_with_registry(
+            &parse,
+            &EmptyCommandRegistry,
+            MayaPromotionPolicy::Always,
+        )
+        .expect("hybrid facts");
+        let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[0].source_text, "\".名\"");
+        assert_eq!(command.raw_items[3].value_text.as_deref(), Some("値"));
+    }
+
+    #[test]
+    fn hybrid_always_policy_promotes_file_command_with_grouped_expr() {
+        let parse = parse_light_source("file -command (\"print \\\"hi\\\";\");\n");
+        let hybrid = collect_top_level_facts_hybrid_with_registry(
+            &parse,
+            &EmptyCommandRegistry,
+            MayaPromotionPolicy::Always,
+        )
+        .expect("hybrid facts");
+        let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.raw_items[1].kind, MayaRawShellItemKind::GroupedExpr);
+        let Some(MayaSpecializedCommand::File(file)) = command.specialized.as_ref() else {
+            panic!("expected file specialization");
+        };
+        assert_eq!(file.flags.len(), 1);
+    }
+
+    #[test]
+    fn hybrid_promotes_data_reference_edits_tail() {
+        let parse = parse_light_source_with_options(
+            "setAttr \".ed\" -type \"dataReferenceEdits\" \"rootRN\" \"\" 5;\n",
+            LightParseOptions {
+                max_prefix_words: 3,
+                max_prefix_bytes: 24,
+            },
+        );
+        let mut command = CommandSchema {
+            name: "setAttr".to_owned(),
+            kind: CommandKind::Builtin,
+            source_kind: CommandSourceKind::Command,
+            mode_mask: CommandModeMask {
+                create: true,
+                edit: true,
+                query: true,
+            },
+            return_behavior: ReturnBehavior::Unknown,
+            flags: vec![FlagSchema {
+                long_name: "type".to_owned(),
+                short_name: Some("typ".to_owned()),
+                mode_mask: CommandModeMask {
+                    create: true,
+                    edit: true,
+                    query: true,
+                },
+                arity_by_mode: FlagArityByMode {
+                    create: FlagArity::Exact(1),
+                    edit: FlagArity::Exact(1),
+                    query: FlagArity::Exact(1),
+                },
+                value_shapes: vec![ValueShape::String],
+                allows_multiple: false,
+            }],
+        };
+        push_synthetic_mode_flag(&mut command.flags, true, "create", "c");
+        push_synthetic_mode_flag(&mut command.flags, true, "edit", "e");
+        push_synthetic_mode_flag(&mut command.flags, true, "query", "q");
+        let registry = TestRegistry {
+            commands: vec![command],
+        };
+
+        let hybrid = collect_top_level_facts_hybrid_with_registry(
+            &parse,
+            &registry,
+            MayaPromotionPolicy::default(),
+        )
+        .expect("hybrid facts");
+        let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+            panic!("expected command");
+        };
+        let Some(MayaSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref() else {
+            panic!("expected setAttr specialization");
+        };
+        assert_eq!(
+            set_attr.value_kind,
+            MayaSetAttrValueKind::DataReferenceEdits
+        );
+        assert_eq!(set_attr.values.len(), 3);
     }
 }

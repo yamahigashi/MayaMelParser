@@ -1,7 +1,8 @@
 use super::{
     LightItem, LightParseOptions, LightWord, ParseMode, ParseOptions, SourceEncoding, parse_bytes,
     parse_bytes_with_encoding, parse_light_bytes, parse_light_source,
-    parse_light_source_with_options, parse_source, parse_source_with_options,
+    parse_light_source_with_options, parse_source, parse_source_view_range,
+    parse_source_with_options,
 };
 use encoding_rs::{GBK, SHIFT_JIS};
 use mel_ast::{
@@ -150,6 +151,58 @@ fn light_parse_bytes_preserves_safe_source_slices_for_non_utf8() {
     };
     assert_eq!(parse.source_slice(command.head_range), "setAttr");
     assert_eq!(parse.source_slice(command.words[0].range()), "\".名\"");
+}
+
+#[test]
+fn parse_source_view_range_rebases_utf8_spans_to_global_source_offsets() {
+    let parse = parse_light_source("print 1;\nsetAttr \".tx\" 1;\n");
+    let LightItem::Command(command) = &parse.source.items[1] else {
+        panic!("expected command");
+    };
+    let promoted = parse_source_view_range(parse.source_view(), command.span);
+    assert!(promoted.errors.is_empty());
+    let Item::Stmt(stmt) = &promoted.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { head_range, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    assert_eq!(parse.source_slice(*head_range), "setAttr");
+}
+
+#[test]
+fn parse_source_view_range_rebases_cp932_spans_to_original_bytes() {
+    let (bytes, _, _) = SHIFT_JIS.encode("print 1;\nsetAttr \".名\" -type \"string\" \"値\";\n");
+    let parse = parse_light_bytes(bytes.as_ref());
+    let LightItem::Command(command) = &parse.source.items[1] else {
+        panic!("expected command");
+    };
+    let promoted = parse_source_view_range(parse.source_view(), command.span);
+    assert!(promoted.errors.is_empty());
+    let Item::Stmt(stmt) = &promoted.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { words, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    let ShellWord::QuotedString { text, .. } = &words[0] else {
+        panic!("expected quoted attr path");
+    };
+    assert_eq!(parse.source_slice(*text), "\".名\"");
 }
 
 #[test]

@@ -22,7 +22,7 @@ pub use light::{
     parse_light_file_with_encoding, parse_light_source, parse_light_source_with_options,
 };
 use parser::Parser;
-use remap::remap_parse_ranges;
+use remap::{RangeMapper, remap_parse_ranges, remap_source_file_ranges};
 
 use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
 
@@ -66,6 +66,26 @@ pub struct Parse {
     pub decode_errors: Vec<DecodeDiagnostic>,
     pub lex_errors: Vec<LexDiagnostic>,
     pub errors: Vec<ParseError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseSlice<'a> {
+    pub syntax: mel_ast::SourceFile,
+    pub source: SourceView<'a>,
+    pub lex_errors: Vec<LexDiagnostic>,
+    pub errors: Vec<ParseError>,
+}
+
+impl ParseSlice<'_> {
+    #[must_use]
+    pub fn source_slice(&self, range: TextRange) -> &str {
+        self.source.slice(range)
+    }
+
+    #[must_use]
+    pub fn display_slice(&self, range: TextRange) -> &str {
+        self.source.display_slice(range)
+    }
 }
 
 impl Parse {
@@ -113,6 +133,40 @@ pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
 }
 
 #[must_use]
+pub fn parse_source_view_range(source: SourceView<'_>, range: TextRange) -> ParseSlice<'_> {
+    parse_source_view_range_with_options(source, range, ParseOptions::default())
+}
+
+#[must_use]
+pub fn parse_source_view_range_with_options(
+    source: SourceView<'_>,
+    range: TextRange,
+    options: ParseOptions,
+) -> ParseSlice<'_> {
+    let display_range = source.display_range(range);
+    let input = &source.text()[display_range.clone()];
+    let mut parse = parse_source_with_options(input, options);
+    let mapper = SourceViewRangeMapper {
+        source,
+        display_start: display_range.start,
+    };
+    remap_source_file_ranges(&mut parse.syntax, &mapper);
+    for diagnostic in &mut parse.lex_errors {
+        diagnostic.range = mapper.map_range(diagnostic.range);
+    }
+    for error in &mut parse.errors {
+        error.range = mapper.map_range(error.range);
+    }
+
+    ParseSlice {
+        syntax: parse.syntax,
+        source,
+        lex_errors: parse.lex_errors,
+        errors: parse.errors,
+    }
+}
+
+#[must_use]
 pub fn parse_bytes(input: &[u8]) -> Parse {
     let decoded = decode_source_auto(input);
     let source_text = decoded.text.into_owned();
@@ -151,4 +205,17 @@ pub fn parse_file_with_encoding(
 ) -> io::Result<Parse> {
     let bytes = fs::read(path)?;
     Ok(parse_bytes_with_encoding(&bytes, encoding))
+}
+
+struct SourceViewRangeMapper<'a> {
+    source: SourceView<'a>,
+    display_start: usize,
+}
+
+impl RangeMapper for SourceViewRangeMapper<'_> {
+    fn map_range(&self, range: TextRange) -> TextRange {
+        let start = self.display_start + usize::from(range.start());
+        let end = self.display_start + usize::from(range.end());
+        self.source.source_range_from_display_range(start..end)
+    }
 }

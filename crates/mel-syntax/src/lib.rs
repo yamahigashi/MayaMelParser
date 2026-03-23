@@ -67,6 +67,33 @@ impl SourceMap {
     pub fn display_range(&self, range: TextRange) -> Range<usize> {
         self.display_offset(range_start(range))..self.display_offset(range_end(range))
     }
+
+    #[must_use]
+    pub fn source_offset_for_display(&self, display_offset: usize) -> u32 {
+        match self
+            .source_to_display
+            .binary_search_by(|mapped| mapped.cmp(&(display_offset as u32)))
+        {
+            Ok(mut index) => {
+                while index + 1 < self.source_to_display.len()
+                    && self.source_to_display[index + 1] <= display_offset as u32
+                {
+                    index += 1;
+                }
+                u32::try_from(index).unwrap_or(u32::MAX)
+            }
+            Err(0) => 0,
+            Err(index) => u32::try_from(index - 1).unwrap_or(u32::MAX),
+        }
+    }
+
+    #[must_use]
+    pub fn source_range_from_display_range(&self, range: Range<usize>) -> TextRange {
+        text_range(
+            self.source_offset_for_display(range.start),
+            self.source_offset_for_display(range.end),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,6 +131,11 @@ impl<'a> SourceView<'a> {
     #[must_use]
     pub fn slice(self, range: TextRange) -> &'a str {
         self.display_slice(range)
+    }
+
+    #[must_use]
+    pub fn source_range_from_display_range(self, range: Range<usize>) -> TextRange {
+        self.source_map.source_range_from_display_range(range)
     }
 }
 
@@ -206,7 +238,7 @@ pub struct Lexed {
 
 #[cfg(test)]
 mod tests {
-    use super::{LexDiagnostic, Token, TokenKind, range_len, text_range};
+    use super::{LexDiagnostic, SourceMap, Token, TokenKind, range_len, text_range};
 
     #[test]
     fn text_range_helpers_keep_offsets() {
@@ -235,5 +267,14 @@ mod tests {
         assert!(TokenKind::LineComment.is_trivia());
         assert!(TokenKind::BlockComment.is_trivia());
         assert!(!TokenKind::Ident.is_trivia());
+    }
+
+    #[test]
+    fn source_map_can_map_display_offsets_back_to_source_offsets() {
+        let map = SourceMap::from_source_to_display(vec![0, 3, 3, 4]);
+        assert_eq!(map.source_offset_for_display(0), 0);
+        assert_eq!(map.source_offset_for_display(3), 2);
+        assert_eq!(map.source_offset_for_display(4), 3);
+        assert_eq!(map.source_range_from_display_range(0..3), text_range(0, 2));
     }
 }
