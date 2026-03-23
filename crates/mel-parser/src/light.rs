@@ -83,6 +83,57 @@ impl LightWord {
     }
 }
 
+pub trait LightItemSink {
+    fn on_item(&mut self, source: SourceView<'_>, item: LightItem);
+}
+
+impl<F> LightItemSink for F
+where
+    F: for<'a> FnMut(SourceView<'a>, LightItem),
+{
+    fn on_item(&mut self, source: SourceView<'_>, item: LightItem) {
+        self(source, item);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightScanReport {
+    pub source_text: String,
+    pub source_map: SourceMap,
+    pub source_encoding: SourceEncoding,
+    pub decode_errors: Vec<DecodeDiagnostic>,
+    pub errors: Vec<ParseError>,
+}
+
+impl LightScanReport {
+    #[must_use]
+    pub fn source_view(&self) -> SourceView<'_> {
+        SourceView::new(&self.source_text, &self.source_map)
+    }
+
+    #[must_use]
+    pub fn source_range(&self, range: TextRange) -> Range<usize> {
+        self.source_view().display_range(range)
+    }
+
+    #[must_use]
+    pub fn source_slice(&self, range: TextRange) -> &str {
+        self.source_view().slice(range)
+    }
+
+    #[must_use]
+    pub fn display_slice(&self, range: TextRange) -> &str {
+        self.source_view().display_slice(range)
+    }
+
+    #[must_use]
+    pub fn string_literal_contents(&self, range: TextRange) -> Option<&str> {
+        self.source_slice(range)
+            .strip_prefix('"')?
+            .strip_suffix('"')
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightParse {
     pub source: LightSourceFile,
@@ -122,6 +173,19 @@ impl LightParse {
     }
 }
 
+impl From<(LightSourceFile, LightScanReport)> for LightParse {
+    fn from((source, report): (LightSourceFile, LightScanReport)) -> Self {
+        Self {
+            source,
+            source_text: report.source_text,
+            source_map: report.source_map,
+            source_encoding: report.source_encoding,
+            decode_errors: report.decode_errors,
+            errors: report.errors,
+        }
+    }
+}
+
 #[must_use]
 pub fn parse_light_source(input: &str) -> LightParse {
     parse_light_source_with_options(input, LightParseOptions::default())
@@ -129,12 +193,27 @@ pub fn parse_light_source(input: &str) -> LightParse {
 
 #[must_use]
 pub fn parse_light_source_with_options(input: &str, options: LightParseOptions) -> LightParse {
+    let mut sink = CollectLightItems::default();
+    let report = scan_light_source_with_options_and_sink(input, options, &mut sink);
+    LightParse::from((sink.finish(), report))
+}
+
+pub fn scan_light_source_with_sink(input: &str, sink: &mut impl LightItemSink) -> LightScanReport {
+    scan_light_source_with_options_and_sink(input, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_source_with_options_and_sink(
+    input: &str,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> LightScanReport {
+    let source_map = SourceMap::identity(input.len());
+    let source_view = SourceView::new(input, &source_map);
     let mut scanner = LightScanner::new(input, options);
-    let source = scanner.scan();
-    LightParse {
-        source,
+    scanner.scan_with_sink(source_view, sink, None);
+    LightScanReport {
         source_text: input.to_owned(),
-        source_map: SourceMap::identity(input.len()),
+        source_map,
         source_encoding: SourceEncoding::Utf8,
         decode_errors: Vec::new(),
         errors: scanner.errors,
@@ -143,14 +222,52 @@ pub fn parse_light_source_with_options(input: &str, options: LightParseOptions) 
 
 #[must_use]
 pub fn parse_light_bytes(input: &[u8]) -> LightParse {
-    let decoded = decode_source_auto(input);
-    build_light_parse(decoded, LightParseOptions::default())
+    let mut sink = CollectLightItems::default();
+    let report = scan_light_bytes_with_sink(input, &mut sink);
+    LightParse::from((sink.finish(), report))
 }
 
 #[must_use]
 pub fn parse_light_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> LightParse {
+    let mut sink = CollectLightItems::default();
+    let report = scan_light_bytes_with_encoding_and_sink(input, encoding, &mut sink);
+    LightParse::from((sink.finish(), report))
+}
+
+pub fn scan_light_bytes_with_sink(input: &[u8], sink: &mut impl LightItemSink) -> LightScanReport {
+    scan_light_bytes_with_options_and_sink(input, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_bytes_with_options_and_sink(
+    input: &[u8],
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> LightScanReport {
+    let decoded = decode_source_auto(input);
+    build_light_scan(decoded, options, sink)
+}
+
+pub fn scan_light_bytes_with_encoding_and_sink(
+    input: &[u8],
+    encoding: SourceEncoding,
+    sink: &mut impl LightItemSink,
+) -> LightScanReport {
+    scan_light_bytes_with_encoding_and_options_and_sink(
+        input,
+        encoding,
+        LightParseOptions::default(),
+        sink,
+    )
+}
+
+pub fn scan_light_bytes_with_encoding_and_options_and_sink(
+    input: &[u8],
+    encoding: SourceEncoding,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> LightScanReport {
     let decoded = decode_source_with_encoding(input, encoding);
-    build_light_parse(decoded, LightParseOptions::default())
+    build_light_scan(decoded, options, sink)
 }
 
 pub fn parse_light_file(path: impl AsRef<Path>) -> io::Result<LightParse> {
@@ -166,14 +283,60 @@ pub fn parse_light_file_with_encoding(
     Ok(parse_light_bytes_with_encoding(&bytes, encoding))
 }
 
-fn build_light_parse(
+pub fn scan_light_file_with_sink(
+    path: impl AsRef<Path>,
+    sink: &mut impl LightItemSink,
+) -> io::Result<LightScanReport> {
+    scan_light_file_with_options_and_sink(path, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_file_with_options_and_sink(
+    path: impl AsRef<Path>,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> io::Result<LightScanReport> {
+    let bytes = fs::read(path)?;
+    Ok(scan_light_bytes_with_options_and_sink(
+        &bytes, options, sink,
+    ))
+}
+
+pub fn scan_light_file_with_encoding_and_sink(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+    sink: &mut impl LightItemSink,
+) -> io::Result<LightScanReport> {
+    scan_light_file_with_encoding_and_options_and_sink(
+        path,
+        encoding,
+        LightParseOptions::default(),
+        sink,
+    )
+}
+
+pub fn scan_light_file_with_encoding_and_options_and_sink(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> io::Result<LightScanReport> {
+    let bytes = fs::read(path)?;
+    Ok(scan_light_bytes_with_encoding_and_options_and_sink(
+        &bytes, encoding, options, sink,
+    ))
+}
+
+fn build_light_scan(
     decoded: crate::decode::DecodedSource<'_>,
     options: LightParseOptions,
-) -> LightParse {
+    sink: &mut impl LightItemSink,
+) -> LightScanReport {
     let source_text = decoded.text.into_owned();
+    let source_map =
+        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone());
+    let source_view = SourceView::new(&source_text, &source_map);
     let mut scanner = LightScanner::new(&source_text, options);
-    let mut source = scanner.scan();
-    remap_light_source_ranges(&mut source, &decoded.offset_map);
+    scanner.scan_with_sink(source_view, sink, Some(&decoded.offset_map));
     let errors = scanner
         .errors
         .into_iter()
@@ -182,52 +345,66 @@ fn build_light_parse(
             error
         })
         .collect();
-    LightParse {
-        source,
+    LightScanReport {
         source_text,
-        source_map: SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone()),
+        source_map,
         source_encoding: decoded.encoding,
         decode_errors: decoded.diagnostics,
         errors,
     }
 }
 
-fn remap_light_source_ranges(source: &mut LightSourceFile, map: &OffsetMap) {
-    for item in &mut source.items {
-        match item {
-            LightItem::Command(command) => {
-                command.head_range = map.map_range(command.head_range);
-                if let Some(opaque_tail) = &mut command.opaque_tail {
-                    *opaque_tail = map.map_range(*opaque_tail);
-                }
-                for word in &mut command.words {
-                    match word {
-                        LightWord::Flag { text, range }
-                        | LightWord::NumericLiteral { text, range }
-                        | LightWord::BareWord { text, range }
-                        | LightWord::QuotedString { text, range } => {
-                            *text = map.map_range(*text);
-                            *range = map.map_range(*range);
-                        }
-                        LightWord::Variable { range }
-                        | LightWord::GroupedExpr { range }
-                        | LightWord::BraceList { range }
-                        | LightWord::VectorLiteral { range }
-                        | LightWord::Capture { range } => {
-                            *range = map.map_range(*range);
-                        }
+#[derive(Default)]
+struct CollectLightItems {
+    items: Vec<LightItem>,
+}
+
+impl CollectLightItems {
+    fn finish(self) -> LightSourceFile {
+        LightSourceFile { items: self.items }
+    }
+}
+
+impl LightItemSink for CollectLightItems {
+    fn on_item(&mut self, _: SourceView<'_>, item: LightItem) {
+        self.items.push(item);
+    }
+}
+
+fn remap_light_item(item: &mut LightItem, map: &OffsetMap) {
+    match item {
+        LightItem::Command(command) => {
+            command.head_range = map.map_range(command.head_range);
+            if let Some(opaque_tail) = &mut command.opaque_tail {
+                *opaque_tail = map.map_range(*opaque_tail);
+            }
+            for word in &mut command.words {
+                match word {
+                    LightWord::Flag { text, range }
+                    | LightWord::NumericLiteral { text, range }
+                    | LightWord::BareWord { text, range }
+                    | LightWord::QuotedString { text, range } => {
+                        *text = map.map_range(*text);
+                        *range = map.map_range(*range);
+                    }
+                    LightWord::Variable { range }
+                    | LightWord::GroupedExpr { range }
+                    | LightWord::BraceList { range }
+                    | LightWord::VectorLiteral { range }
+                    | LightWord::Capture { range } => {
+                        *range = map.map_range(*range);
                     }
                 }
-                command.span = map.map_range(command.span);
             }
-            LightItem::Proc(proc_def) => {
-                if let Some(name_range) = &mut proc_def.name_range {
-                    *name_range = map.map_range(*name_range);
-                }
-                proc_def.span = map.map_range(proc_def.span);
-            }
-            LightItem::Other { span } => *span = map.map_range(*span),
+            command.span = map.map_range(command.span);
         }
+        LightItem::Proc(proc_def) => {
+            if let Some(name_range) = &mut proc_def.name_range {
+                *name_range = map.map_range(*name_range);
+            }
+            proc_def.span = map.map_range(proc_def.span);
+        }
+        LightItem::Other { span } => *span = map.map_range(*span),
     }
 }
 
@@ -246,24 +423,26 @@ impl<'a> LightScanner<'a> {
         }
     }
 
-    fn scan(&mut self) -> LightSourceFile {
-        let mut items = Vec::new();
+    fn scan_with_sink(
+        &mut self,
+        source: SourceView<'_>,
+        sink: &mut impl LightItemSink,
+        remap: Option<&OffsetMap>,
+    ) {
         let mut cursor = self.skip_trivia(0);
 
         while cursor < self.text.len() {
-            if self.is_proc_start(cursor) {
-                let (item, next_cursor) = self.scan_proc_item(cursor);
-                items.push(item);
-                cursor = self.skip_trivia(next_cursor);
-                continue;
+            let (mut item, next_cursor) = if self.is_proc_start(cursor) {
+                self.scan_proc_item(cursor)
+            } else {
+                self.scan_statement_item(cursor)
+            };
+            if let Some(map) = remap {
+                remap_light_item(&mut item, map);
             }
-
-            let (item, next_cursor) = self.scan_statement_item(cursor);
-            items.push(item);
+            sink.on_item(source, item);
             cursor = self.skip_trivia(next_cursor);
         }
-
-        LightSourceFile { items }
     }
 
     fn scan_proc_item(&mut self, start: usize) -> (LightItem, usize) {

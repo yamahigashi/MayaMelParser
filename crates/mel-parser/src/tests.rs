@@ -2,7 +2,7 @@ use super::{
     LightItem, LightParseOptions, LightWord, ParseMode, ParseOptions, SourceEncoding, parse_bytes,
     parse_bytes_with_encoding, parse_light_bytes, parse_light_source,
     parse_light_source_with_options, parse_source, parse_source_view_range,
-    parse_source_with_options,
+    parse_source_with_options, scan_light_bytes_with_sink, scan_light_source_with_options_and_sink,
 };
 use encoding_rs::{GBK, SHIFT_JIS};
 use mel_ast::{
@@ -100,6 +100,21 @@ fn light_parse_keeps_proc_body_as_single_item() {
 }
 
 #[test]
+fn streaming_light_scan_matches_materialized_items() {
+    let source = "global proc foo() { }\nsetAttr \".tx\" 1;\n";
+    let materialized = parse_light_source(source);
+    let mut streamed = Vec::new();
+    let report = scan_light_source_with_options_and_sink(
+        source,
+        LightParseOptions::default(),
+        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+    );
+
+    assert_eq!(streamed, materialized.source.items);
+    assert_eq!(report.errors, materialized.errors);
+}
+
+#[test]
 fn light_parse_tracks_multiline_command_tail_as_single_statement() {
     let source = "setAttr \".fc[0]\" -type \"polyFaces\"\n    f 4 0 1 2 3\n    mu 0 4 0 1 2 3;\n";
     let parse = parse_light_source_with_options(
@@ -151,6 +166,22 @@ fn light_parse_bytes_preserves_safe_source_slices_for_non_utf8() {
     };
     assert_eq!(parse.source_slice(command.head_range), "setAttr");
     assert_eq!(parse.source_slice(command.words[0].range()), "\".名\"");
+}
+
+#[test]
+fn streaming_light_scan_bytes_preserves_safe_source_slices_for_non_utf8() {
+    let (bytes, _, _) = SHIFT_JIS.encode("setAttr \".名\" -type \"string\" \"値\";\n");
+    let mut streamed = Vec::new();
+    let report = scan_light_bytes_with_sink(
+        bytes.as_ref(),
+        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+    );
+    assert!(report.errors.is_empty());
+    let LightItem::Command(command) = &streamed[0] else {
+        panic!("expected command item");
+    };
+    assert_eq!(report.source_slice(command.head_range), "setAttr");
+    assert_eq!(report.source_slice(command.words[0].range()), "\".名\"");
 }
 
 #[test]

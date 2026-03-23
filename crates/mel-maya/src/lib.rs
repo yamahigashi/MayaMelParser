@@ -2,8 +2,11 @@
 
 use mel_ast::{Expr, InvokeSurface, Item, ProcDef, ShellWord, Stmt};
 use mel_parser::{
-    LightCommandSurface, LightItem, LightParse, LightWord, Parse, ParseOptions,
-    parse_source_view_range_with_options,
+    LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightScanReport,
+    LightWord, Parse, ParseOptions, SourceEncoding, parse_source_view_range_with_options,
+    scan_light_bytes_with_encoding_and_options_and_sink, scan_light_bytes_with_options_and_sink,
+    scan_light_file_with_encoding_and_options_and_sink, scan_light_file_with_options_and_sink,
+    scan_light_source_with_options_and_sink,
 };
 use mel_sema::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
@@ -41,6 +44,126 @@ pub struct MayaLightTopLevelFacts {
     pub items: Vec<MayaLightTopLevelItem>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MayaSelectivePassthrough {
+    #[default]
+    TargetOnly,
+    IncludeOtherCommands,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MayaSelectiveOptions {
+    pub passthrough: MayaSelectivePassthrough,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MayaTrackedSetAttrAttr {
+    B,
+    St,
+    Stp,
+    Ftn,
+    Fn,
+    F,
+}
+
+pub trait MayaSelectiveSetAttrSelector {
+    fn classify(&self, attr_path: &str) -> Option<MayaTrackedSetAttrAttr>;
+}
+
+impl<F> MayaSelectiveSetAttrSelector for F
+where
+    F: Fn(&str) -> Option<MayaTrackedSetAttrAttr>,
+{
+    fn classify(&self, attr_path: &str) -> Option<MayaTrackedSetAttrAttr> {
+        self(attr_path)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultMayaSelectiveSetAttrSelector;
+
+impl MayaSelectiveSetAttrSelector for DefaultMayaSelectiveSetAttrSelector {
+    fn classify(&self, attr_path: &str) -> Option<MayaTrackedSetAttrAttr> {
+        let suffix = attr_path.rsplit('.').next()?;
+        match suffix {
+            "b" => Some(MayaTrackedSetAttrAttr::B),
+            "st" => Some(MayaTrackedSetAttrAttr::St),
+            "stp" => Some(MayaTrackedSetAttrAttr::Stp),
+            "ftn" => Some(MayaTrackedSetAttrAttr::Ftn),
+            "fn" => Some(MayaTrackedSetAttrAttr::Fn),
+            "f" => Some(MayaTrackedSetAttrAttr::F),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MayaSelectiveItem {
+    Requires(MayaSelectiveRequires),
+    File(MayaSelectiveFile),
+    CreateNode(MayaSelectiveCreateNode),
+    SetAttr(MayaSelectiveSetAttr),
+    OtherCommand {
+        head_range: TextRange,
+        span: TextRange,
+    },
+}
+
+pub trait MayaSelectiveItemSink {
+    fn on_item(&mut self, item: MayaSelectiveItem);
+}
+
+impl<F> MayaSelectiveItemSink for F
+where
+    F: FnMut(MayaSelectiveItem),
+{
+    fn on_item(&mut self, item: MayaSelectiveItem) {
+        self(item);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaSelectiveRequires {
+    pub head_range: TextRange,
+    pub argument_ranges: Vec<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaSelectiveFile {
+    pub head_range: TextRange,
+    pub path_range: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaSelectiveCreateNode {
+    pub head_range: TextRange,
+    pub node_type_range: Option<TextRange>,
+    pub name_range: Option<TextRange>,
+    pub parent_range: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaSelectiveSetAttr {
+    pub head_range: TextRange,
+    pub attr_path_range: Option<TextRange>,
+    pub type_name_range: Option<TextRange>,
+    pub tracked_attr: Option<MayaTrackedSetAttrAttr>,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MayaPromotionKind {
+    FullParse,
+    LightSynthesized,
+    OpaqueTailPromoted,
+    PolicyPromoted,
+    CustomDeciderPromoted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MayaPromotionPolicy {
     #[default]
@@ -54,6 +177,55 @@ pub struct MayaPromotionError {
     pub command_span: TextRange,
     pub head: Option<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaPromotionDiagnostic {
+    pub command_span: TextRange,
+    pub head: Option<String>,
+    pub attempted_kind: MayaPromotionKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MayaHybridTopLevelReport {
+    pub facts: MayaTopLevelFacts,
+    pub promotion_diagnostics: Vec<MayaPromotionDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MayaPromotionOptions {
+    pub policy: MayaPromotionPolicy,
+    pub parse_options: ParseOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MayaPromotionCandidate<'a> {
+    pub command: &'a LightCommandSurface,
+    pub raw_head: &'a str,
+    pub canonical_name: Option<&'a str>,
+}
+
+pub trait MayaPromotionDecider {
+    fn should_promote(&self, candidate: MayaPromotionCandidate<'_>) -> bool;
+}
+
+impl<F> MayaPromotionDecider for F
+where
+    F: for<'a> Fn(MayaPromotionCandidate<'a>) -> bool,
+{
+    fn should_promote(&self, candidate: MayaPromotionCandidate<'_>) -> bool {
+        self(candidate)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopPromotionDecider;
+
+impl MayaPromotionDecider for NoopPromotionDecider {
+    fn should_promote(&self, _: MayaPromotionCandidate<'_>) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +261,7 @@ pub struct MayaTopLevelCommand {
     pub raw_items: Vec<MayaRawShellItem>,
     pub normalized: Option<MayaNormalizedCommand>,
     pub specialized: Option<MayaSpecializedCommand>,
+    pub promotion_kind: MayaPromotionKind,
     pub span: TextRange,
 }
 
@@ -400,6 +573,276 @@ pub fn collect_top_level_facts(parse: &Parse) -> MayaTopLevelFacts {
     collect_top_level_facts_with_registry(parse, &EmptyCommandRegistry)
 }
 
+pub fn collect_selective_top_level_source_with_sink(
+    input: &str,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> LightScanReport {
+    collect_selective_top_level_source_with_options_and_sink(
+        input,
+        LightParseOptions::default(),
+        &MayaSelectiveOptions::default(),
+        &DefaultMayaSelectiveSetAttrSelector,
+        sink,
+    )
+}
+
+pub fn collect_selective_top_level_source_with_options_and_sink(
+    input: &str,
+    light_options: LightParseOptions,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> LightScanReport {
+    let mut bridge = MayaSelectiveBridge::new(options, selector, sink);
+    scan_light_source_with_options_and_sink(input, light_options, &mut bridge)
+}
+
+pub fn collect_selective_top_level_bytes_with_sink(
+    input: &[u8],
+    sink: &mut impl MayaSelectiveItemSink,
+) -> LightScanReport {
+    collect_selective_top_level_bytes_with_options_and_sink(
+        input,
+        LightParseOptions::default(),
+        &MayaSelectiveOptions::default(),
+        &DefaultMayaSelectiveSetAttrSelector,
+        sink,
+    )
+}
+
+pub fn collect_selective_top_level_bytes_with_options_and_sink(
+    input: &[u8],
+    light_options: LightParseOptions,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> LightScanReport {
+    let mut bridge = MayaSelectiveBridge::new(options, selector, sink);
+    scan_light_bytes_with_options_and_sink(input, light_options, &mut bridge)
+}
+
+pub fn collect_selective_top_level_bytes_with_encoding_and_sink(
+    input: &[u8],
+    encoding: SourceEncoding,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> LightScanReport {
+    collect_selective_top_level_bytes_with_encoding_and_options_and_sink(
+        input,
+        encoding,
+        LightParseOptions::default(),
+        options,
+        selector,
+        sink,
+    )
+}
+
+pub fn collect_selective_top_level_bytes_with_encoding_and_options_and_sink(
+    input: &[u8],
+    encoding: SourceEncoding,
+    light_options: LightParseOptions,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> LightScanReport {
+    let mut bridge = MayaSelectiveBridge::new(options, selector, sink);
+    scan_light_bytes_with_encoding_and_options_and_sink(input, encoding, light_options, &mut bridge)
+}
+
+pub fn collect_selective_top_level_file_with_sink(
+    path: impl AsRef<std::path::Path>,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> std::io::Result<LightScanReport> {
+    collect_selective_top_level_file_with_options_and_sink(
+        path,
+        &MayaSelectiveOptions::default(),
+        &DefaultMayaSelectiveSetAttrSelector,
+        sink,
+    )
+}
+
+pub fn collect_selective_top_level_file_with_options_and_sink(
+    path: impl AsRef<std::path::Path>,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> std::io::Result<LightScanReport> {
+    collect_selective_top_level_file_with_light_options_and_sink(
+        path,
+        LightParseOptions::default(),
+        options,
+        selector,
+        sink,
+    )
+}
+
+pub fn collect_selective_top_level_file_with_light_options_and_sink(
+    path: impl AsRef<std::path::Path>,
+    light_options: LightParseOptions,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> std::io::Result<LightScanReport> {
+    let mut bridge = MayaSelectiveBridge::new(options, selector, sink);
+    scan_light_file_with_options_and_sink(path, light_options, &mut bridge)
+}
+
+pub fn collect_selective_top_level_file_with_encoding_and_sink(
+    path: impl AsRef<std::path::Path>,
+    encoding: SourceEncoding,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> std::io::Result<LightScanReport> {
+    collect_selective_top_level_file_with_encoding_and_options_and_sink(
+        path,
+        encoding,
+        LightParseOptions::default(),
+        options,
+        selector,
+        sink,
+    )
+}
+
+pub fn collect_selective_top_level_file_with_encoding_and_options_and_sink(
+    path: impl AsRef<std::path::Path>,
+    encoding: SourceEncoding,
+    light_options: LightParseOptions,
+    options: &MayaSelectiveOptions,
+    selector: &impl MayaSelectiveSetAttrSelector,
+    sink: &mut impl MayaSelectiveItemSink,
+) -> std::io::Result<LightScanReport> {
+    let mut bridge = MayaSelectiveBridge::new(options, selector, sink);
+    scan_light_file_with_encoding_and_options_and_sink(path, encoding, light_options, &mut bridge)
+}
+
+struct MayaSelectiveBridge<'a, Sel: ?Sized, Sink: ?Sized> {
+    options: &'a MayaSelectiveOptions,
+    selector: &'a Sel,
+    sink: &'a mut Sink,
+}
+
+impl<'a, Sel: ?Sized, Sink: ?Sized> MayaSelectiveBridge<'a, Sel, Sink> {
+    fn new(options: &'a MayaSelectiveOptions, selector: &'a Sel, sink: &'a mut Sink) -> Self {
+        Self {
+            options,
+            selector,
+            sink,
+        }
+    }
+}
+
+impl<Sel, Sink> LightItemSink for MayaSelectiveBridge<'_, Sel, Sink>
+where
+    Sel: MayaSelectiveSetAttrSelector + ?Sized,
+    Sink: MayaSelectiveItemSink + ?Sized,
+{
+    fn on_item(&mut self, source: mel_syntax::SourceView<'_>, item: LightItem) {
+        let LightItem::Command(command) = item else {
+            return;
+        };
+        let Some(item) = selective_item_from_command(source, &command, self.options, self.selector)
+        else {
+            return;
+        };
+        self.sink.on_item(item);
+    }
+}
+
+fn selective_item_from_command(
+    source: mel_syntax::SourceView<'_>,
+    command: &LightCommandSurface,
+    options: &MayaSelectiveOptions,
+    selector: &(impl MayaSelectiveSetAttrSelector + ?Sized),
+) -> Option<MayaSelectiveItem> {
+    let head = source.slice(command.head_range);
+    match head {
+        "requires" => Some(MayaSelectiveItem::Requires(MayaSelectiveRequires {
+            head_range: command.head_range,
+            argument_ranges: collect_non_flag_ranges(&command.words),
+            span: command.span,
+        })),
+        "file" => Some(MayaSelectiveItem::File(MayaSelectiveFile {
+            head_range: command.head_range,
+            path_range: last_non_flag_range(&command.words),
+            span: command.span,
+        })),
+        "createNode" => Some(MayaSelectiveItem::CreateNode(MayaSelectiveCreateNode {
+            head_range: command.head_range,
+            node_type_range: first_non_flag_range(&command.words),
+            name_range: first_flag_arg_range(source, &command.words, &["name", "n"]),
+            parent_range: first_flag_arg_range(source, &command.words, &["parent", "p"]),
+            span: command.span,
+        })),
+        "setAttr" => {
+            let attr_path_range = first_non_flag_range(&command.words);
+            let type_name_range = first_flag_arg_range(source, &command.words, &["type", "typ"]);
+            let tracked_attr = attr_path_range
+                .and_then(|range| selector.classify(strip_outer_quotes(source.slice(range))));
+            Some(MayaSelectiveItem::SetAttr(MayaSelectiveSetAttr {
+                head_range: command.head_range,
+                attr_path_range,
+                type_name_range,
+                tracked_attr,
+                opaque_tail: command.opaque_tail,
+                span: command.span,
+            }))
+        }
+        _ => match options.passthrough {
+            MayaSelectivePassthrough::TargetOnly => None,
+            MayaSelectivePassthrough::IncludeOtherCommands => {
+                Some(MayaSelectiveItem::OtherCommand {
+                    head_range: command.head_range,
+                    span: command.span,
+                })
+            }
+        },
+    }
+}
+
+fn collect_non_flag_ranges(words: &[LightWord]) -> Vec<TextRange> {
+    words.iter().filter_map(non_flag_range).collect()
+}
+
+fn first_non_flag_range(words: &[LightWord]) -> Option<TextRange> {
+    words.iter().find_map(non_flag_range)
+}
+
+fn last_non_flag_range(words: &[LightWord]) -> Option<TextRange> {
+    words.iter().rev().find_map(non_flag_range)
+}
+
+fn non_flag_range(word: &LightWord) -> Option<TextRange> {
+    (!matches!(word, LightWord::Flag { .. })).then_some(word.range())
+}
+
+fn first_flag_arg_range(
+    source: mel_syntax::SourceView<'_>,
+    words: &[LightWord],
+    names: &[&str],
+) -> Option<TextRange> {
+    let mut index = 0;
+    while index < words.len() {
+        let LightWord::Flag { text, .. } = &words[index] else {
+            index += 1;
+            continue;
+        };
+        let normalized = source.slice(*text).trim_start_matches('-');
+        if names.contains(&normalized) {
+            return words.get(index + 1).and_then(non_flag_range);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn strip_outer_quotes(text: &str) -> &str {
+    text.strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .unwrap_or(text)
+}
+
 #[must_use]
 pub fn collect_top_level_facts_light(parse: &LightParse) -> MayaLightTopLevelFacts {
     collect_top_level_facts_light_with_registry(parse, &EmptyCommandRegistry)
@@ -408,10 +851,27 @@ pub fn collect_top_level_facts_light(parse: &LightParse) -> MayaLightTopLevelFac
 pub fn collect_top_level_facts_hybrid(
     parse: &LightParse,
 ) -> Result<MayaTopLevelFacts, MayaPromotionError> {
-    collect_top_level_facts_hybrid_with_registry(
+    collect_top_level_facts_hybrid_with_registry_and_decider(
         parse,
         &EmptyCommandRegistry,
-        MayaPromotionPolicy::default(),
+        &MayaPromotionOptions::default(),
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_with_decider<D>(
+    parse: &LightParse,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    D: MayaPromotionDecider + ?Sized,
+{
+    collect_top_level_facts_hybrid_with_registry_and_decider(
+        parse,
+        &EmptyCommandRegistry,
+        options,
+        decider,
     )
 }
 
@@ -422,6 +882,42 @@ pub fn collect_top_level_facts_hybrid_with_registry<R>(
 ) -> Result<MayaTopLevelFacts, MayaPromotionError>
 where
     R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_hybrid_with_registry_and_options(
+        parse,
+        registry,
+        &MayaPromotionOptions {
+            policy,
+            ..MayaPromotionOptions::default()
+        },
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_with_registry_and_options<R>(
+    parse: &LightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_hybrid_with_registry_and_decider(
+        parse,
+        registry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_with_registry_and_decider<R, D>(
+    parse: &LightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
 {
     let overlay = OverlayRegistry::new(registry);
     let mut items = Vec::new();
@@ -437,15 +933,14 @@ where
                 span: proc_def.span,
             }),
             LightItem::Command(command) => {
-                let head = parse.source_slice(command.head_range).to_owned();
-                let canonical_name = overlay.lookup(&head).map(|schema| schema.name);
-                let promote =
-                    should_promote_command(command, canonical_name.as_deref(), &head, &policy);
-                let command = if promote {
-                    promote_light_top_level_command_with_registry(parse, command, &overlay)?
-                } else {
-                    build_nonopaque_top_level_command_with_registry(parse, command, &overlay)?
-                };
+                let command = promote_or_synthesize_light_command(
+                    parse,
+                    command,
+                    &overlay,
+                    options,
+                    decider,
+                    PromotionErrorMode::Strict,
+                )?;
                 items.push(MayaTopLevelItem::Command(Box::new(command)));
             }
             LightItem::Other { span } => items.push(MayaTopLevelItem::Other { span: *span }),
@@ -453,6 +948,96 @@ where
     }
 
     Ok(MayaTopLevelFacts { items })
+}
+
+pub fn collect_top_level_facts_hybrid_report(
+    parse: &LightParse,
+    options: &MayaPromotionOptions,
+) -> MayaHybridTopLevelReport {
+    collect_top_level_facts_hybrid_report_with_registry_and_decider(
+        parse,
+        &EmptyCommandRegistry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_with_decider<D>(
+    parse: &LightParse,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> MayaHybridTopLevelReport
+where
+    D: MayaPromotionDecider + ?Sized,
+{
+    collect_top_level_facts_hybrid_report_with_registry_and_decider(
+        parse,
+        &EmptyCommandRegistry,
+        options,
+        decider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_with_registry<R>(
+    parse: &LightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> MayaHybridTopLevelReport
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_hybrid_report_with_registry_and_decider(
+        parse,
+        registry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_with_registry_and_decider<R, D>(
+    parse: &LightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> MayaHybridTopLevelReport
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    let overlay = OverlayRegistry::new(registry);
+    let mut items = Vec::new();
+    let mut promotion_diagnostics = Vec::new();
+
+    for item in &parse.source.items {
+        match item {
+            LightItem::Proc(proc_def) => items.push(MayaTopLevelItem::Proc {
+                name: proc_def
+                    .name_range
+                    .map(|range| parse.source_slice(range).to_owned())
+                    .unwrap_or_default(),
+                is_global: proc_def.is_global,
+                span: proc_def.span,
+            }),
+            LightItem::Command(command) => {
+                let command = promote_or_synthesize_light_command(
+                    parse,
+                    command,
+                    &overlay,
+                    options,
+                    decider,
+                    PromotionErrorMode::Report(&mut promotion_diagnostics),
+                )
+                .expect("report mode must synthesize on promotion error");
+                items.push(MayaTopLevelItem::Command(Box::new(command)));
+            }
+            LightItem::Other { span } => items.push(MayaTopLevelItem::Other { span: *span }),
+        }
+    }
+
+    MayaHybridTopLevelReport {
+        facts: MayaTopLevelFacts { items },
+        promotion_diagnostics,
+    }
 }
 
 pub fn promote_light_top_level_command_with_registry<R>(
@@ -463,11 +1048,85 @@ pub fn promote_light_top_level_command_with_registry<R>(
 where
     R: CommandRegistry + ?Sized,
 {
-    if command.opaque_tail.is_none() {
-        return build_nonopaque_top_level_command_with_registry(parse, command, registry);
-    }
+    promote_light_top_level_command_with_registry_and_decider(
+        parse,
+        command,
+        registry,
+        &MayaPromotionOptions::default(),
+        &NoopPromotionDecider,
+    )
+}
 
-    promote_opaque_command_with_registry(parse, command, registry)
+pub fn promote_light_top_level_command_with_registry_and_options<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    promote_light_top_level_command_with_registry_and_decider(
+        parse,
+        command,
+        registry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn promote_light_top_level_command_with_registry_and_decider<R, D>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    let head = parse.source_slice(command.head_range).to_owned();
+    let canonical_name = registry.lookup(&head).map(|schema| schema.name);
+    match promotion_attempt_kind(
+        command,
+        canonical_name.as_deref(),
+        &head,
+        &options.policy,
+        decider,
+    ) {
+        Some(MayaPromotionKind::OpaqueTailPromoted) => promote_opaque_command_with_registry(
+            parse,
+            command,
+            registry,
+            options,
+            MayaPromotionKind::OpaqueTailPromoted,
+        ),
+        Some(MayaPromotionKind::PolicyPromoted) => {
+            if command.opaque_tail.is_some() {
+                promote_opaque_command_with_registry(
+                    parse,
+                    command,
+                    registry,
+                    options,
+                    MayaPromotionKind::PolicyPromoted,
+                )
+            } else {
+                promote_policy_command_with_registry(parse, command, registry, options)
+            }
+        }
+        Some(MayaPromotionKind::CustomDeciderPromoted) => {
+            promote_custom_decider_command_with_registry(parse, command, registry, options)
+        }
+        Some(MayaPromotionKind::FullParse | MayaPromotionKind::LightSynthesized) | None => {
+            build_nonopaque_top_level_command_with_registry(
+                parse,
+                command,
+                registry,
+                MayaPromotionKind::LightSynthesized,
+            )
+        }
+    }
 }
 
 #[must_use]
@@ -551,6 +1210,7 @@ where
                             raw_items,
                             normalized,
                             specialized,
+                            promotion_kind: MayaPromotionKind::FullParse,
                             span: invoke.range,
                         })));
                     } else {
@@ -891,29 +1551,134 @@ fn maya_positional_arg_from_source(
     }
 }
 
-fn should_promote_command(
+enum PromotionErrorMode<'a> {
+    Strict,
+    Report(&'a mut Vec<MayaPromotionDiagnostic>),
+}
+
+fn promote_or_synthesize_light_command<R, D>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+    error_mode: PromotionErrorMode<'_>,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    let head = parse.source_slice(command.head_range).to_owned();
+    let canonical_name = registry.lookup(&head).map(|schema| schema.name);
+    let attempted_kind = promotion_attempt_kind(
+        command,
+        canonical_name.as_deref(),
+        &head,
+        &options.policy,
+        decider,
+    );
+    let Some(attempted_kind) = attempted_kind else {
+        return build_nonopaque_top_level_command_with_registry(
+            parse,
+            command,
+            registry,
+            MayaPromotionKind::LightSynthesized,
+        );
+    };
+
+    match promote_light_top_level_command_with_registry_and_decider(
+        parse, command, registry, options, decider,
+    ) {
+        Ok(command) => Ok(command),
+        Err(error) => match error_mode {
+            PromotionErrorMode::Strict => Err(error),
+            PromotionErrorMode::Report(diagnostics) => {
+                diagnostics.push(MayaPromotionDiagnostic {
+                    command_span: error.command_span,
+                    head: error.head.clone(),
+                    attempted_kind,
+                    message: error.message,
+                });
+                build_nonopaque_top_level_command_with_registry(
+                    parse,
+                    command,
+                    registry,
+                    MayaPromotionKind::LightSynthesized,
+                )
+            }
+        },
+    }
+}
+
+fn promotion_attempt_kind<D>(
     command: &LightCommandSurface,
     canonical_name: Option<&str>,
     raw_head: &str,
     policy: &MayaPromotionPolicy,
-) -> bool {
+    decider: &D,
+) -> Option<MayaPromotionKind>
+where
+    D: MayaPromotionDecider + ?Sized,
+{
     if command.opaque_tail.is_some() {
-        return true;
+        return Some(match policy {
+            MayaPromotionPolicy::OpaqueTailOnly => MayaPromotionKind::OpaqueTailPromoted,
+            MayaPromotionPolicy::Always => MayaPromotionKind::PolicyPromoted,
+            MayaPromotionPolicy::ByCommandName(names) => {
+                if names
+                    .iter()
+                    .any(|name| Some(name.as_str()) == canonical_name || name == raw_head)
+                {
+                    MayaPromotionKind::PolicyPromoted
+                } else {
+                    MayaPromotionKind::OpaqueTailPromoted
+                }
+            }
+        });
     }
 
     match policy {
-        MayaPromotionPolicy::OpaqueTailOnly => false,
-        MayaPromotionPolicy::Always => true,
+        MayaPromotionPolicy::OpaqueTailOnly => None,
+        MayaPromotionPolicy::Always => Some(MayaPromotionKind::PolicyPromoted),
         MayaPromotionPolicy::ByCommandName(names) => names
             .iter()
-            .any(|name| Some(name.as_str()) == canonical_name || name == raw_head),
+            .find(|name| Some(name.as_str()) == canonical_name || *name == raw_head)
+            .map(|_| MayaPromotionKind::PolicyPromoted),
     }
+    .or_else(|| {
+        decider
+            .should_promote(MayaPromotionCandidate {
+                command,
+                raw_head,
+                canonical_name,
+            })
+            .then_some(MayaPromotionKind::CustomDeciderPromoted)
+    })
+}
+
+fn promote_custom_decider_command_with_registry<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    promote_parsed_command_with_registry(
+        parse,
+        command,
+        registry,
+        options,
+        MayaPromotionKind::CustomDeciderPromoted,
+    )
 }
 
 fn build_nonopaque_top_level_command_with_registry<R>(
     parse: &LightParse,
     command: &LightCommandSurface,
     registry: &R,
+    promotion_kind: MayaPromotionKind,
 ) -> Result<MayaTopLevelCommand, MayaPromotionError>
 where
     R: CommandRegistry + ?Sized,
@@ -942,6 +1707,7 @@ where
         raw_items,
         normalized,
         specialized,
+        promotion_kind,
         span: promoted_span,
     })
 }
@@ -950,6 +1716,39 @@ fn promote_opaque_command_with_registry<R>(
     parse: &LightParse,
     command: &LightCommandSurface,
     registry: &R,
+    options: &MayaPromotionOptions,
+    promotion_kind: MayaPromotionKind,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    promote_parsed_command_with_registry(parse, command, registry, options, promotion_kind)
+}
+
+fn promote_policy_command_with_registry<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    promote_parsed_command_with_registry(
+        parse,
+        command,
+        registry,
+        options,
+        MayaPromotionKind::PolicyPromoted,
+    )
+}
+
+fn promote_parsed_command_with_registry<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    promotion_kind: MayaPromotionKind,
 ) -> Result<MayaTopLevelCommand, MayaPromotionError>
 where
     R: CommandRegistry + ?Sized,
@@ -958,7 +1757,7 @@ where
     let slice = parse_source_view_range_with_options(
         parse.source_view(),
         command.span,
-        ParseOptions::default(),
+        options.parse_options,
     );
     if !slice.lex_errors.is_empty() || !slice.errors.is_empty() {
         return Err(MayaPromotionError {
@@ -1046,6 +1845,7 @@ where
         raw_items,
         normalized,
         specialized,
+        promotion_kind,
         span: invoke.range,
     })
 }
@@ -1948,6 +2748,11 @@ mod tests {
         assert_eq!(hybrid_command.raw_items, full_command.raw_items);
         assert_eq!(hybrid_command.normalized, full_command.normalized);
         assert_eq!(hybrid_command.specialized, full_command.specialized);
+        assert_eq!(full_command.promotion_kind, MayaPromotionKind::FullParse);
+        assert_eq!(
+            hybrid_command.promotion_kind,
+            MayaPromotionKind::LightSynthesized
+        );
     }
 
     #[test]
@@ -1964,6 +2769,10 @@ mod tests {
             panic!("expected command");
         };
         assert!(command.raw_items.len() > 5);
+        assert_eq!(
+            command.promotion_kind,
+            MayaPromotionKind::OpaqueTailPromoted
+        );
         let Some(MayaSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref() else {
             panic!("expected setAttr specialization");
         };
@@ -1988,6 +2797,7 @@ mod tests {
         let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
             panic!("expected command");
         };
+        assert_eq!(command.promotion_kind, MayaPromotionKind::PolicyPromoted);
         assert_eq!(command.raw_items[0].source_text, "\".名\"");
         assert_eq!(command.raw_items[3].value_text.as_deref(), Some("値"));
     }
@@ -2004,11 +2814,64 @@ mod tests {
         let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
             panic!("expected command");
         };
+        assert_eq!(command.promotion_kind, MayaPromotionKind::PolicyPromoted);
         assert_eq!(command.raw_items[1].kind, MayaRawShellItemKind::GroupedExpr);
         let Some(MayaSpecializedCommand::File(file)) = command.specialized.as_ref() else {
             panic!("expected file specialization");
         };
         assert_eq!(file.flags.len(), 1);
+    }
+
+    #[test]
+    fn hybrid_custom_decider_promotes_grouped_expr_command() {
+        let parse = parse_light_source("file -command (\"print \\\"hi\\\";\");\n");
+        let decider: &dyn MayaPromotionDecider = &|candidate: MayaPromotionCandidate<'_>| {
+            candidate
+                .command
+                .words
+                .iter()
+                .any(|word| matches!(word, LightWord::GroupedExpr { .. }))
+        };
+        let hybrid = collect_top_level_facts_hybrid_with_decider(
+            &parse,
+            &MayaPromotionOptions::default(),
+            decider,
+        )
+        .expect("hybrid facts");
+
+        let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(
+            command.promotion_kind,
+            MayaPromotionKind::CustomDeciderPromoted
+        );
+        assert_eq!(command.raw_items[1].kind, MayaRawShellItemKind::GroupedExpr);
+    }
+
+    #[test]
+    fn opaque_tail_promotion_takes_precedence_over_custom_decider() {
+        let parse = parse_light_source_with_options(
+            "setAttr \".pt\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n",
+            LightParseOptions {
+                max_prefix_words: 5,
+                max_prefix_bytes: 32,
+            },
+        );
+        let hybrid = collect_top_level_facts_hybrid_with_decider(
+            &parse,
+            &MayaPromotionOptions::default(),
+            &|_: MayaPromotionCandidate<'_>| true,
+        )
+        .expect("hybrid facts");
+
+        let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(
+            command.promotion_kind,
+            MayaPromotionKind::OpaqueTailPromoted
+        );
     }
 
     #[test]
@@ -2063,6 +2926,10 @@ mod tests {
         let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
             panic!("expected command");
         };
+        assert_eq!(
+            command.promotion_kind,
+            MayaPromotionKind::OpaqueTailPromoted
+        );
         let Some(MayaSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref() else {
             panic!("expected setAttr specialization");
         };
@@ -2071,5 +2938,191 @@ mod tests {
             MayaSetAttrValueKind::DataReferenceEdits
         );
         assert_eq!(set_attr.values.len(), 3);
+    }
+
+    #[test]
+    fn hybrid_report_keeps_light_command_when_policy_promotion_fails() {
+        let parse = parse_light_source("createNode transform -n \"pCube1\"");
+        let report = collect_top_level_facts_hybrid_report(
+            &parse,
+            &MayaPromotionOptions {
+                policy: MayaPromotionPolicy::Always,
+                ..MayaPromotionOptions::default()
+            },
+        );
+
+        assert_eq!(report.promotion_diagnostics.len(), 1);
+        assert_eq!(
+            report.promotion_diagnostics[0].attempted_kind,
+            MayaPromotionKind::PolicyPromoted
+        );
+        let MayaTopLevelItem::Command(command) = &report.facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.promotion_kind, MayaPromotionKind::LightSynthesized);
+    }
+
+    #[test]
+    fn hybrid_report_keeps_light_command_when_custom_decider_promotion_fails() {
+        let parse = parse_light_source("file -command (\"print \\\"hi\\\";\")");
+        let report = collect_top_level_facts_hybrid_report_with_decider(
+            &parse,
+            &MayaPromotionOptions::default(),
+            &|candidate: MayaPromotionCandidate<'_>| {
+                candidate
+                    .command
+                    .words
+                    .iter()
+                    .any(|word| matches!(word, LightWord::GroupedExpr { .. }))
+            },
+        );
+
+        assert_eq!(report.promotion_diagnostics.len(), 1);
+        assert_eq!(
+            report.promotion_diagnostics[0].attempted_kind,
+            MayaPromotionKind::CustomDeciderPromoted
+        );
+        let MayaTopLevelItem::Command(command) = &report.facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.promotion_kind, MayaPromotionKind::LightSynthesized);
+    }
+
+    #[test]
+    fn hybrid_strict_options_forward_parse_mode_to_promotion() {
+        let parse = parse_light_source("createNode transform -n \"pCube1\"");
+        let facts = collect_top_level_facts_hybrid_with_registry_and_options(
+            &parse,
+            &EmptyCommandRegistry,
+            &MayaPromotionOptions {
+                policy: MayaPromotionPolicy::Always,
+                parse_options: ParseOptions {
+                    mode: mel_parser::ParseMode::AllowTrailingStmtWithoutSemi,
+                },
+            },
+        )
+        .expect("hybrid facts");
+
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        assert_eq!(command.promotion_kind, MayaPromotionKind::PolicyPromoted);
+        assert_eq!(command.raw_items[0].source_text, "transform");
+    }
+
+    #[test]
+    fn selective_collector_extracts_target_commands_only() {
+        let source =
+            "rename \"a\" \"b\";\ncreateNode mesh -n \"meshShape\";\nsetAttr \".b\" yes;\n";
+        let mut items = Vec::new();
+        let report =
+            collect_selective_top_level_source_with_sink(source, &mut |item: MayaSelectiveItem| {
+                items.push(item)
+            });
+
+        assert!(report.errors.is_empty());
+        assert_eq!(items.len(), 2);
+        let MayaSelectiveItem::CreateNode(create_node) = &items[0] else {
+            panic!("expected createNode item");
+        };
+        assert_eq!(
+            create_node
+                .node_type_range
+                .map(|range| report.source_slice(range)),
+            Some("mesh")
+        );
+        let MayaSelectiveItem::SetAttr(set_attr) = &items[1] else {
+            panic!("expected setAttr item");
+        };
+        assert_eq!(set_attr.tracked_attr, Some(MayaTrackedSetAttrAttr::B));
+    }
+
+    #[test]
+    fn selective_collector_can_include_other_commands_as_passthrough() {
+        let source = "rename \"a\" \"b\";\ncreateNode transform;\n";
+        let mut items = Vec::new();
+        let report = collect_selective_top_level_source_with_options_and_sink(
+            source,
+            LightParseOptions::default(),
+            &MayaSelectiveOptions {
+                passthrough: MayaSelectivePassthrough::IncludeOtherCommands,
+            },
+            &DefaultMayaSelectiveSetAttrSelector,
+            &mut |item: MayaSelectiveItem| items.push(item),
+        );
+
+        assert!(report.errors.is_empty());
+        assert_eq!(items.len(), 2);
+        let MayaSelectiveItem::OtherCommand { head_range, .. } = &items[0] else {
+            panic!("expected passthrough command");
+        };
+        assert_eq!(report.source_slice(*head_range), "rename");
+    }
+
+    #[test]
+    fn selective_collector_keeps_opaque_set_attr_without_promotion() {
+        let source = "setAttr \".f\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n";
+        let mut items = Vec::new();
+        let report = collect_selective_top_level_source_with_options_and_sink(
+            source,
+            LightParseOptions {
+                max_prefix_words: 4,
+                max_prefix_bytes: 24,
+            },
+            &MayaSelectiveOptions::default(),
+            &DefaultMayaSelectiveSetAttrSelector,
+            &mut |item: MayaSelectiveItem| items.push(item),
+        );
+
+        assert!(report.errors.is_empty());
+        let MayaSelectiveItem::SetAttr(set_attr) = &items[0] else {
+            panic!("expected setAttr item");
+        };
+        assert_eq!(set_attr.tracked_attr, Some(MayaTrackedSetAttrAttr::F));
+        assert!(set_attr.opaque_tail.is_some());
+    }
+
+    #[test]
+    fn selective_collector_uses_custom_set_attr_selector() {
+        let source = "setAttr \".custom\" 1;\n";
+        let mut items = Vec::new();
+        let report = collect_selective_top_level_source_with_options_and_sink(
+            source,
+            LightParseOptions::default(),
+            &MayaSelectiveOptions::default(),
+            &|attr_path: &str| (attr_path == ".custom").then_some(MayaTrackedSetAttrAttr::Fn),
+            &mut |item: MayaSelectiveItem| items.push(item),
+        );
+
+        assert!(report.errors.is_empty());
+        let MayaSelectiveItem::SetAttr(set_attr) = &items[0] else {
+            panic!("expected setAttr item");
+        };
+        assert_eq!(set_attr.tracked_attr, Some(MayaTrackedSetAttrAttr::Fn));
+    }
+
+    #[test]
+    fn selective_collector_preserves_cp932_source_slices() {
+        let bytes = SHIFT_JIS
+            .encode("setAttr \".名\" -type \"string\" \"値\";\n")
+            .0;
+        let mut items = Vec::new();
+        let report = collect_selective_top_level_bytes_with_encoding_and_sink(
+            bytes.as_ref(),
+            SourceEncoding::Cp932,
+            &MayaSelectiveOptions::default(),
+            &DefaultMayaSelectiveSetAttrSelector,
+            &mut |item: MayaSelectiveItem| items.push(item),
+        );
+
+        let MayaSelectiveItem::SetAttr(set_attr) = &items[0] else {
+            panic!("expected setAttr item");
+        };
+        assert_eq!(
+            set_attr
+                .attr_path_range
+                .map(|range| report.source_slice(range)),
+            Some("\".名\"")
+        );
     }
 }

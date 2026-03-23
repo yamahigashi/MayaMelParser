@@ -17,9 +17,15 @@ use std::{fs, io, ops::Range, path::Path};
 
 use decode::{decode_source_auto, decode_source_with_encoding};
 pub use light::{
-    LightCommandSurface, LightItem, LightParse, LightParseOptions, LightProcSurface, LightWord,
-    parse_light_bytes, parse_light_bytes_with_encoding, parse_light_file,
-    parse_light_file_with_encoding, parse_light_source, parse_light_source_with_options,
+    LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightProcSurface,
+    LightScanReport, LightWord, parse_light_bytes, parse_light_bytes_with_encoding,
+    parse_light_file, parse_light_file_with_encoding, parse_light_source,
+    parse_light_source_with_options, scan_light_bytes_with_encoding_and_options_and_sink,
+    scan_light_bytes_with_encoding_and_sink, scan_light_bytes_with_options_and_sink,
+    scan_light_bytes_with_sink, scan_light_file_with_encoding_and_options_and_sink,
+    scan_light_file_with_encoding_and_sink, scan_light_file_with_options_and_sink,
+    scan_light_file_with_sink, scan_light_source_with_options_and_sink,
+    scan_light_source_with_sink,
 };
 use parser::Parser;
 use remap::{RangeMapper, remap_parse_ranges, remap_source_file_ranges};
