@@ -17,9 +17,9 @@ semantic diagnostics: 0
  [38;5;240m  │[0m        [34m╰[0m[34m─[0m[34m─[0m[34m─[0m[34m─[0m[34m─[0m[34m─[0m[34m─[0m[34m─[0m unterminated string literal
 [38;5;246m───╯[0m
 [31mError:[0m parse: expected ';' after statement
-   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m lexer/strings/unterminated-string.mel:1:15 [38;5;246m][0m
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m lexer/strings/unterminated-string.mel:1:2 [38;5;246m][0m
    [38;5;246m│[0m
- [38;5;246m1 │[0m [38;5;249m"[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249mr[0m[38;5;249mm[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249md[0m
- [38;5;240m  │[0m               [31m│[0m 
- [38;5;240m  │[0m               [31m╰[0m[31m─[0m expected ';' after statement
+ [38;5;246m1 │[0m 
+ [38;5;240m  │[0m  [31m│[0m 
+ [38;5;240m  │[0m  [31m╰[0m[31m─[0m expected ';' after statement
 [38;5;246m───╯[0m

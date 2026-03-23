@@ -198,8 +198,8 @@ where
                 body,
                 ..
             } => {
-                self.walk_expr(binding, current_scope);
                 self.walk_expr(iterable, current_scope);
+                self.walk_assign_target(binding, current_scope, false);
                 self.walk_stmt_in_child_scope(body);
             }
             Stmt::Return { expr, .. } => {
@@ -273,6 +273,7 @@ where
                 let name = self.slice(*name_range);
                 let resolution = self.resolve_ident(name, current_scope);
                 if matches!(resolution, IdentTarget::Unresolved)
+                    && !is_boolean_alias(name)
                     && !self.is_visible_implicit_variable(name, current_scope)
                 {
                     self.diagnostics.push(Diagnostic::warning(
@@ -597,7 +598,7 @@ where
                     expected,
                     actual
                 ),
-                declarator.range,
+                initializer.range(),
             ));
         }
     }
@@ -653,6 +654,10 @@ where
     }
 
     fn infer_ident_type(&self, name: &str, current_scope: ScopeId) -> ValueType {
+        if is_boolean_alias(name) {
+            return ValueType::Int;
+        }
+
         match self.resolve_ident(name, current_scope) {
             IdentTarget::Unresolved => ValueType::Unknown,
             IdentTarget::Variable(symbol_id) => {
@@ -743,6 +748,10 @@ fn combine_numeric_types(lhs: ValueType, rhs: ValueType) -> ValueType {
         _ if lhs == rhs => lhs,
         _ => ValueType::Unknown,
     }
+}
+
+fn is_boolean_alias(name: &str) -> bool {
+    matches!(name, "true" | "false" | "on" | "off")
 }
 
 fn infer_array_literal_type<R>(

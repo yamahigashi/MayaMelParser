@@ -1,0 +1,5 @@
+global proc forInBindingImplicitCase(string $items[]) {
+    for ($item in $items) {
+        print($item);
+    }
+}

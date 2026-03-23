@@ -657,10 +657,15 @@ fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
     );
     assert_eq!(analysis.normalized_invokes.len(), 1);
     assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Query);
-    assert!(analysis.diagnostics.iter().any(|diagnostic| {
-        diagnostic.severity == DiagnosticSeverity::Warning
-            && diagnostic.message.contains("not available in query mode")
-    }));
+    let diagnostic = analysis
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message.contains("not available in query mode")
+        })
+        .expect("should report invalid query-mode flag usage");
+    assert_eq!(diagnostic.range, text_range(19, 25));
 }
 
 #[test]
@@ -1924,6 +1929,154 @@ fn unresolved_variable_compound_assignment_target_is_reported() {
 }
 
 #[test]
+fn unresolved_variable_for_in_binding_is_not_reported() {
+    let source = SourceFile {
+        items: vec![Item::Proc(Box::new(ProcDef {
+            return_type: None,
+            name_range: tr("helper"),
+            params: vec![ProcParam {
+                ty: TypeName::String,
+                name_range: tr("$items"),
+                is_array: true,
+                range: text_range(7, 21),
+            }],
+            body: Stmt::Block {
+                statements: vec![Stmt::ForIn {
+                    binding: Expr::Ident {
+                        name_range: tr("$item"),
+                        range: text_range(24, 29),
+                    },
+                    iterable: Expr::Ident {
+                        name_range: tr("$items"),
+                        range: text_range(33, 39),
+                    },
+                    body: Box::new(Stmt::Block {
+                        statements: vec![Stmt::Expr {
+                            expr: Expr::Invoke(InvokeExpr {
+                                surface: mel_ast::InvokeSurface::Function {
+                                    head_range: tr("print"),
+                                    args: vec![Expr::Ident {
+                                        name_range: tr("$item"),
+                                        range: text_range(49, 54),
+                                    }],
+                                },
+                                range: text_range(43, 55),
+                            }),
+                            range: text_range(43, 56),
+                        }],
+                        range: text_range(41, 58),
+                    }),
+                    range: text_range(20, 58),
+                }],
+                range: text_range(19, 59),
+            },
+            is_global: false,
+            range: text_range(0, 59),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert!(
+        !warning_messages(&analysis).contains(&"unresolved variable \"$item\""),
+        "for-in binding should not emit unresolved-variable warnings"
+    );
+}
+
+#[test]
+fn unresolved_variable_for_in_iterable_is_still_reported() {
+    let source = SourceFile {
+        items: vec![Item::Proc(Box::new(ProcDef {
+            return_type: None,
+            name_range: tr("helper"),
+            params: Vec::new(),
+            body: Stmt::Block {
+                statements: vec![Stmt::ForIn {
+                    binding: Expr::Ident {
+                        name_range: tr("$item"),
+                        range: text_range(13, 18),
+                    },
+                    iterable: Expr::Ident {
+                        name_range: tr("$missing"),
+                        range: text_range(22, 30),
+                    },
+                    body: Box::new(Stmt::Block {
+                        statements: vec![Stmt::Expr {
+                            expr: Expr::Invoke(InvokeExpr {
+                                surface: mel_ast::InvokeSurface::Function {
+                                    head_range: tr("print"),
+                                    args: vec![Expr::Ident {
+                                        name_range: tr("$item"),
+                                        range: text_range(40, 45),
+                                    }],
+                                },
+                                range: text_range(34, 46),
+                            }),
+                            range: text_range(34, 47),
+                        }],
+                        range: text_range(32, 49),
+                    }),
+                    range: text_range(9, 49),
+                }],
+                range: text_range(8, 50),
+            },
+            is_global: false,
+            range: text_range(0, 50),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    let warnings = warning_messages(&analysis);
+    let missing_count = warnings
+        .iter()
+        .filter(|message| **message == "unresolved variable \"$missing\"")
+        .count();
+    assert_eq!(missing_count, 1);
+    assert!(!warnings.contains(&"unresolved variable \"$item\""));
+}
+
+#[test]
+fn boolean_aliases_do_not_report_unresolved_variable_warnings() {
+    let source = SourceFile {
+        items: vec![Item::Proc(Box::new(ProcDef {
+            return_type: Some(mel_ast::ProcReturnType {
+                ty: TypeName::Int,
+                is_array: false,
+                range: text_range(0, 3),
+            }),
+            name_range: tr("helper"),
+            params: Vec::new(),
+            body: Stmt::Block {
+                statements: vec![
+                    Stmt::Expr {
+                        expr: Expr::Ident {
+                            name_range: tr("true"),
+                            range: text_range(13, 17),
+                        },
+                        range: text_range(13, 18),
+                    },
+                    Stmt::Return {
+                        expr: Some(Expr::Ident {
+                            name_range: tr("false"),
+                            range: text_range(26, 31),
+                        }),
+                        range: text_range(19, 32),
+                    },
+                ],
+                range: text_range(12, 33),
+            },
+            is_global: false,
+            range: text_range(0, 33),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    let warnings = warning_messages(&analysis);
+    assert!(!warnings.contains(&"unresolved variable \"true\""));
+    assert!(!warnings.contains(&"unresolved variable \"false\""));
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
 fn void_proc_returning_value_reports_diagnostic() {
     let source = SourceFile {
         items: vec![Item::Proc(Box::new(ProcDef {
@@ -2153,6 +2306,7 @@ fn proc_invoke_return_type_flows_into_initializer_check() {
         analysis.diagnostics[0].message,
         "variable \"$value\" has declared type Int but initializer is String"
     );
+    assert_eq!(analysis.diagnostics[0].range, text_range(44, 52));
 }
 
 #[test]

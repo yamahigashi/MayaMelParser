@@ -1,0 +1,1 @@
+			$panelName = `scriptedPanel -menuBarVisible true -parent $gMainPane -l "anyLabel" -tearOff -type "acPanelType"`;

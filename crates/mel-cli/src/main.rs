@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use ariadne::{Color, Label, Report, ReportKind, Source};
+use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 use clap::{CommandFactory, Parser, ValueEnum};
 use std::{
     collections::HashMap,
@@ -18,9 +18,10 @@ use mel_parser::{
     parse_source_with_options,
 };
 use mel_sema::{DiagnosticSeverity, analyze_with_registry};
-use mel_syntax::TextRange;
+use mel_syntax::{SourceMap, TextRange, text_range};
 
 const TOP_RANK_LIMIT: usize = 10;
+const DIAGNOSTIC_TAB_WIDTH: usize = 1;
 
 #[derive(Debug, Parser)]
 #[command(about = "Inspect MEL parse and diagnostic output", long_about = None)]
@@ -398,22 +399,95 @@ fn render_file_diagnostics(
         return Ok(String::new());
     }
 
+    let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
     let mut rendered = Vec::new();
     for diagnostic in diagnostics {
-        let span = source_map.display_range(diagnostic.range);
-        Report::build(report_kind(diagnostic.severity), (label, span.clone()))
-            .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message))
-            .with_label(
-                Label::new((label, span))
-                    .with_message(diagnostic.message)
-                    .with_color(stage_color(diagnostic.stage, diagnostic.severity)),
-            )
-            .finish()
-            .write((label, Source::from(source_text)), &mut rendered)
-            .map_err(io::Error::other)?;
+        let source_span = source_map.display_range(diagnostic.range);
+        let span =
+            display_map.display_range(text_range(source_span.start as u32, source_span.end as u32));
+        let (isolated_text, isolated_span) =
+            isolate_diagnostic_source_lines(display_text.as_str(), span.clone());
+        Report::build(
+            report_kind(diagnostic.severity),
+            (label, isolated_span.clone()),
+        )
+        .with_config(Config::default().with_tab_width(DIAGNOSTIC_TAB_WIDTH))
+        .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message))
+        .with_label(
+            Label::new((label, isolated_span))
+                .with_message(diagnostic.message)
+                .with_color(stage_color(diagnostic.stage, diagnostic.severity)),
+        )
+        .finish()
+        .write((label, Source::from(isolated_text.as_str())), &mut rendered)
+        .map_err(io::Error::other)?;
     }
 
     String::from_utf8(rendered).map_err(io::Error::other)
+}
+
+fn normalize_diagnostic_source_text(source_text: &str) -> (String, SourceMap) {
+    let bytes = source_text.as_bytes();
+    let mut display = Vec::with_capacity(bytes.len());
+    let mut source_to_display = vec![0u32; bytes.len() + 1];
+    let mut source_offset = 0usize;
+    let mut display_offset = 0u32;
+
+    while source_offset < bytes.len() {
+        source_to_display[source_offset] = display_offset;
+        match bytes[source_offset] {
+            b'\r' if bytes.get(source_offset + 1) == Some(&b'\n') => {
+                source_to_display[source_offset + 1] = display_offset;
+                display.push(b'\n');
+                display_offset += 1;
+                source_offset += 2;
+            }
+            b'\t' => {
+                display.push(b' ');
+                display_offset += 1;
+                source_offset += 1;
+            }
+            b'\r' => {
+                display.push(b'\n');
+                display_offset += 1;
+                source_offset += 1;
+            }
+            byte => {
+                display.push(byte);
+                display_offset += 1;
+                source_offset += 1;
+            }
+        }
+    }
+
+    source_to_display[bytes.len()] = display_offset;
+    (
+        String::from_utf8(display).expect("normalized diagnostic source should remain utf-8"),
+        SourceMap::from_source_to_display(source_to_display),
+    )
+}
+
+fn isolate_diagnostic_source_lines(
+    source_text: &str,
+    span: std::ops::Range<usize>,
+) -> (String, std::ops::Range<usize>) {
+    let line_start = source_text[..span.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let line_end = source_text[span.end..]
+        .find('\n')
+        .map_or(source_text.len(), |index| span.end + index);
+    let preceding_lines = source_text[..line_start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    let mut isolated = "\n".repeat(preceding_lines);
+    isolated.push_str(&source_text[line_start..line_end]);
+    let prefix_len = preceding_lines;
+    (
+        isolated,
+        (prefix_len + span.start - line_start)..(prefix_len + span.end - line_start),
+    )
 }
 
 fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
@@ -729,6 +803,20 @@ mod tests {
 
     fn render_snapshot(label: &str, source: &str) -> String {
         format_single_file_output(label, &parse_source(source)).expect("snapshot should render")
+    }
+
+    #[test]
+    fn normalize_diagnostic_source_text_collapses_crlf_offsets() {
+        let (display, map) = super::normalize_diagnostic_source_text("a\t\r\nb\r\n");
+        assert_eq!(display, "a \nb\n");
+        assert_eq!(map.display_offset(0), 0);
+        assert_eq!(map.display_offset(1), 1);
+        assert_eq!(map.display_offset(2), 2);
+        assert_eq!(map.display_offset(3), 2);
+        assert_eq!(map.display_offset(4), 3);
+        assert_eq!(map.display_offset(5), 4);
+        assert_eq!(map.display_offset(6), 4);
+        assert_eq!(map.display_offset(7), 5);
     }
 
     #[test]
@@ -1153,6 +1241,99 @@ mod tests {
                 include_str!("../../../tests/corpus/sema/lint/unresolved-variable.mel"),
             )
         );
+    }
+
+    #[test]
+    fn snapshot_sema_for_in_binding_implicit_fixture() {
+        insta::assert_snapshot!(
+            "sema_for_in_binding_implicit",
+            render_snapshot(
+                "sema/lint/for-in-binding-implicit.mel",
+                include_str!("../../../tests/corpus/sema/lint/for-in-binding-implicit.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_boolean_alias_return_fixture() {
+        insta::assert_snapshot!(
+            "sema_boolean_alias_return",
+            render_snapshot(
+                "sema/proc/boolean-alias-return.mel",
+                include_str!("../../../tests/corpus/sema/proc/boolean-alias-return.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_var_init_comparison_type_mismatch_span_fixture() {
+        insta::assert_snapshot!(
+            "sema_var_init_comparison_type_mismatch_span",
+            render_snapshot(
+                "sema/proc/var-init-comparison-type-mismatch-span.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/proc/var-init-comparison-type-mismatch-span.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_scripted_panel_flag_mode_span_fixture() {
+        insta::assert_snapshot!(
+            "sema_scripted_panel_flag_mode_span",
+            render_snapshot(
+                "sema/lint/scripted-panel-flag-mode-span.mel",
+                include_str!("../../../tests/corpus/sema/lint/scripted-panel-flag-mode-span.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_scripted_panel_flag_mode_span_tabbed_fixture() {
+        insta::assert_snapshot!(
+            "sema_scripted_panel_flag_mode_span_tabbed",
+            render_snapshot(
+                "sema/lint/scripted-panel-flag-mode-span-tabbed.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/lint/scripted-panel-flag-mode-span-tabbed.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_scripted_panel_flag_mode_span_tabbed_crlf_inline() {
+        insta::assert_snapshot!(
+            "sema_scripted_panel_flag_mode_span_tabbed_crlf_inline",
+            render_snapshot(
+                "inline-crlf-scripted-panel.mel",
+                concat!(
+                    "global string $gMainPane;\r\n",
+                    "proc string test() {\r\n",
+                    "\t\t\t$panelName = `scriptedPanel -menuBarVisible true -parent $gMainPane -l \"anyLabel\" -tearOff -type \"acPanelType\"`;\r\n",
+                    "}\r\n",
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn diagnostics_keep_correct_columns_on_triple_digit_line_numbers() {
+        let mut source = String::new();
+        source.push_str("global string $gMainPane;\n");
+        for _ in 0..98 {
+            source.push('\n');
+        }
+        source.push_str(
+            "\t\t\t$panelName = `scriptedPanel -menuBarVisible true -parent $gMainPane -l \"anyLabel\" -tearOff -type \"acPanelType\"`;\n",
+        );
+
+        let output = render_snapshot("inline-triple-digit-scripted-panel.mel", &source);
+        assert!(output.contains("inline-triple-digit-scripted-panel.mel:100:72"));
+        assert!(output.contains("inline-triple-digit-scripted-panel.mel:100:86"));
+        assert!(!output.contains("inline-triple-digit-scripted-panel.mel:100:80"));
+        assert!(!output.contains("inline-triple-digit-scripted-panel.mel:100:94"));
     }
 
     fn unique_test_path(label: &str) -> PathBuf {

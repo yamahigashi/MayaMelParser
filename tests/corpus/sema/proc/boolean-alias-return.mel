@@ -1,0 +1,7 @@
+global proc int booleanAliasReturnCase() {
+    if (true) {
+        return true;
+    }
+
+    return false;
+}

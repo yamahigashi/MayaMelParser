@@ -519,13 +519,13 @@ impl<'a> FlowLintAnalyzer<'a> {
 
         loop {
             let mut iter_state = head_state.clone();
+            self.walk_expr(iterable, current_scope, &mut iter_state);
             self.walk_assign_target(
                 binding,
                 current_scope,
                 &mut iter_state,
                 AssignAccess::WriteOnly,
             );
-            self.walk_expr(iterable, current_scope, &mut iter_state);
 
             let body_outcome = self.walk_stmt_in_child_scope(body, iter_state);
             break_state = meet_optional_states(break_state, body_outcome.breaks);

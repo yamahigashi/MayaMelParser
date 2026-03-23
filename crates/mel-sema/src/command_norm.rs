@@ -217,7 +217,7 @@ pub(crate) fn normalize_shell_like_invoke(
                     mode_label(mode),
                     command.name
                 ),
-                range: flag.range,
+                range: flag.source_range,
             });
         }
     }
