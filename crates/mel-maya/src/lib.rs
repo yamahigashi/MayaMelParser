@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 
 use mel_ast::{Expr, InvokeSurface, Item, ProcDef, ShellWord, Stmt};
-use mel_parser::Parse;
+use mel_parser::{LightCommandSurface, LightItem, LightParse, LightWord, Parse};
 use mel_sema::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, NormalizedCommandItem,
     NormalizedFlag, PositionalArg, ReturnBehavior, ValueShape,
 };
-use mel_syntax::TextRange;
+use mel_syntax::{TextRange, range_end, range_start, text_range};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MayaCommandRegistry;
@@ -33,11 +33,29 @@ pub struct MayaTopLevelFacts {
     pub items: Vec<MayaTopLevelItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MayaLightTopLevelFacts {
+    pub items: Vec<MayaLightTopLevelItem>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MayaTopLevelItem {
     Command(Box<MayaTopLevelCommand>),
     Proc {
         name: String,
+        is_global: bool,
+        span: TextRange,
+    },
+    Other {
+        span: TextRange,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MayaLightTopLevelItem {
+    Command(Box<MayaLightTopLevelCommand>),
+    Proc {
+        name: Option<String>,
         is_global: bool,
         span: TextRange,
     },
@@ -53,6 +71,16 @@ pub struct MayaTopLevelCommand {
     pub raw_items: Vec<MayaRawShellItem>,
     pub normalized: Option<MayaNormalizedCommand>,
     pub specialized: Option<MayaSpecializedCommand>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightTopLevelCommand {
+    pub head: String,
+    pub captured: bool,
+    pub prefix_items: Vec<MayaRawShellItem>,
+    pub opaque_tail: Option<TextRange>,
+    pub specialized: Option<MayaLightSpecializedCommand>,
     pub span: TextRange,
 }
 
@@ -84,6 +112,14 @@ pub struct MayaPositionalArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaNormalizedFlag {
+    pub source_text: String,
+    pub canonical_name: Option<String>,
+    pub args: Vec<MayaPositionalArg>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightFlag {
     pub source_text: String,
     pub canonical_name: Option<String>,
     pub args: Vec<MayaPositionalArg>,
@@ -123,9 +159,32 @@ pub enum MayaSpecializedCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MayaLightSpecializedCommand {
+    Requires(MayaLightRequiresCommand),
+    CurrentUnit(MayaLightCurrentUnitCommand),
+    FileInfo(MayaLightFileInfoCommand),
+    CreateNode(MayaLightCreateNodeCommand),
+    Rename(MayaLightRenameCommand),
+    Select(MayaLightSelectCommand),
+    SetAttr(MayaLightSetAttrCommand),
+    AddAttr(MayaLightAddAttrCommand),
+    ConnectAttr(MayaLightConnectAttrCommand),
+    Relationship(MayaLightRelationshipCommand),
+    File(MayaLightFileCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRequiresCommand {
     pub requirements: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightRequiresCommand {
+    pub requirements: Vec<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
 }
 
@@ -136,10 +195,26 @@ pub struct MayaCurrentUnitCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightCurrentUnitCommand {
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaFileInfoCommand {
     pub key: Option<MayaRawShellItem>,
     pub value: Option<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightFileInfoCommand {
+    pub key: Option<MayaRawShellItem>,
+    pub value: Option<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
 }
 
@@ -153,10 +228,29 @@ pub struct MayaCreateNodeCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightCreateNodeCommand {
+    pub node_type: Option<MayaRawShellItem>,
+    pub name: Option<MayaRawShellItem>,
+    pub parent: Option<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRenameCommand {
     pub source: Option<MayaRawShellItem>,
     pub target: Option<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightRenameCommand {
+    pub source: Option<MayaRawShellItem>,
+    pub target: Option<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
 }
 
@@ -168,12 +262,31 @@ pub struct MayaSelectCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightSelectCommand {
+    pub targets: Vec<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaSetAttrCommand {
     pub attr_path: Option<MayaRawShellItem>,
     pub type_name: Option<MayaRawShellItem>,
     pub value_kind: MayaSetAttrValueKind,
     pub values: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightSetAttrCommand {
+    pub attr_path: Option<MayaRawShellItem>,
+    pub type_name: Option<MayaRawShellItem>,
+    pub value_kind: MayaSetAttrValueKind,
+    pub prefix_values: Vec<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
 }
 
@@ -198,6 +311,15 @@ pub struct MayaAddAttrCommand {
     pub span: TextRange,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightAddAttrCommand {
+    pub flags: Vec<MayaLightFlag>,
+    pub tail: Vec<MayaRawShellItem>,
+    pub tail_kind: MayaAddAttrTailKind,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MayaAddAttrTailKind {
     None,
@@ -215,10 +337,28 @@ pub struct MayaConnectAttrCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightConnectAttrCommand {
+    pub source_attr: Option<MayaRawShellItem>,
+    pub target_attr: Option<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRelationshipCommand {
     pub relationship: Option<MayaRawShellItem>,
     pub members: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightRelationshipCommand {
+    pub relationship: Option<MayaRawShellItem>,
+    pub members: Vec<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
 }
 
@@ -229,9 +369,52 @@ pub struct MayaFileCommand {
     pub span: TextRange,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaLightFileCommand {
+    pub path: Option<MayaRawShellItem>,
+    pub flags: Vec<MayaLightFlag>,
+    pub opaque_tail: Option<TextRange>,
+    pub span: TextRange,
+}
+
 #[must_use]
 pub fn collect_top_level_facts(parse: &Parse) -> MayaTopLevelFacts {
     collect_top_level_facts_with_registry(parse, &EmptyCommandRegistry)
+}
+
+#[must_use]
+pub fn collect_top_level_facts_light(parse: &LightParse) -> MayaLightTopLevelFacts {
+    collect_top_level_facts_light_with_registry(parse, &EmptyCommandRegistry)
+}
+
+#[must_use]
+pub fn collect_top_level_facts_light_with_registry<R>(
+    parse: &LightParse,
+    registry: &R,
+) -> MayaLightTopLevelFacts
+where
+    R: CommandRegistry + ?Sized,
+{
+    let overlay = OverlayRegistry::new(registry);
+    let mut items = Vec::new();
+
+    for item in &parse.source.items {
+        match item {
+            LightItem::Proc(proc_def) => items.push(MayaLightTopLevelItem::Proc {
+                name: proc_def
+                    .name_range
+                    .map(|range| parse.source_slice(range).to_owned()),
+                is_global: proc_def.is_global,
+                span: proc_def.span,
+            }),
+            LightItem::Command(command) => items.push(MayaLightTopLevelItem::Command(Box::new(
+                maya_light_command_from_parse(parse, command, &overlay),
+            ))),
+            LightItem::Other { span } => items.push(MayaLightTopLevelItem::Other { span: *span }),
+        }
+    }
+
+    MayaLightTopLevelFacts { items }
 }
 
 #[must_use]
@@ -240,7 +423,7 @@ where
     R: CommandRegistry + ?Sized,
 {
     let overlay = OverlayRegistry::new(registry);
-    let analysis = mel_sema::analyze_with_registry(&parse.syntax, &parse.source_text, &overlay);
+    let analysis = mel_sema::analyze_with_registry(&parse.syntax, parse.source_view(), &overlay);
     let mut remaining_normalized: Vec<Option<MayaNormalizedCommand>> = analysis
         .normalized_invokes
         .into_iter()
@@ -604,6 +787,362 @@ fn maya_positional_arg_from_parse(parse: &Parse, value: PositionalArg) -> MayaPo
     }
 }
 
+fn maya_light_command_from_parse<R>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+) -> MayaLightTopLevelCommand
+where
+    R: CommandRegistry + ?Sized,
+{
+    let head = parse.source_slice(command.head_range).to_owned();
+    let prefix_items = command
+        .words
+        .iter()
+        .map(|word| raw_item_from_light_word(parse, word))
+        .collect::<Vec<_>>();
+    let specialized = registry.lookup(&head).and_then(|schema| {
+        specialize_light_command(
+            &head,
+            command.span,
+            command.opaque_tail,
+            &schema,
+            &prefix_items,
+        )
+    });
+
+    MayaLightTopLevelCommand {
+        head,
+        captured: command.captured,
+        prefix_items,
+        opaque_tail: command.opaque_tail,
+        specialized,
+        span: command.span,
+    }
+}
+
+fn raw_item_from_light_word(parse: &LightParse, word: &LightWord) -> MayaRawShellItem {
+    let span = word.range();
+    let (value_text, kind) = match word {
+        LightWord::Flag { .. } => (None, MayaRawShellItemKind::Flag),
+        LightWord::NumericLiteral { text, .. } => (
+            Some(parse.source_slice(*text).to_owned()),
+            MayaRawShellItemKind::Numeric,
+        ),
+        LightWord::BareWord { text, .. } => (
+            Some(parse.source_slice(*text).to_owned()),
+            MayaRawShellItemKind::BareWord,
+        ),
+        LightWord::QuotedString { text, .. } => (
+            parse.string_literal_contents(*text).map(str::to_owned),
+            MayaRawShellItemKind::QuotedString,
+        ),
+        LightWord::Variable { .. } => (None, MayaRawShellItemKind::Variable),
+        LightWord::GroupedExpr { .. } => (None, MayaRawShellItemKind::GroupedExpr),
+        LightWord::BraceList { .. } => (None, MayaRawShellItemKind::BraceList),
+        LightWord::VectorLiteral { .. } => (None, MayaRawShellItemKind::VectorLiteral),
+        LightWord::Capture { .. } => (None, MayaRawShellItemKind::Capture),
+    };
+    MayaRawShellItem {
+        source_text: parse.display_slice(span).to_owned(),
+        value_text,
+        kind,
+        span,
+    }
+}
+
+fn specialize_light_command(
+    head: &str,
+    span: TextRange,
+    opaque_tail: Option<TextRange>,
+    schema: &CommandSchema,
+    prefix_items: &[MayaRawShellItem],
+) -> Option<MayaLightSpecializedCommand> {
+    let (flags, positionals) = normalize_light_items(schema, prefix_items);
+    match schema.name.as_str() {
+        "requires" => Some(MayaLightSpecializedCommand::Requires(
+            MayaLightRequiresCommand {
+                requirements: positionals,
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "currentUnit" => Some(MayaLightSpecializedCommand::CurrentUnit(
+            MayaLightCurrentUnitCommand {
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "fileInfo" => Some(MayaLightSpecializedCommand::FileInfo(
+            MayaLightFileInfoCommand {
+                key: positionals.first().cloned(),
+                value: positionals.get(1).cloned(),
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "createNode" => Some(MayaLightSpecializedCommand::CreateNode(
+            MayaLightCreateNodeCommand {
+                node_type: positionals.first().cloned(),
+                name: first_light_flag_arg(&flags, "name"),
+                parent: first_light_flag_arg(&flags, "parent"),
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "rename" => Some(MayaLightSpecializedCommand::Rename(
+            MayaLightRenameCommand {
+                source: positionals.first().cloned(),
+                target: positionals.get(1).cloned(),
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "select" => Some(MayaLightSpecializedCommand::Select(
+            MayaLightSelectCommand {
+                targets: positionals,
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "setAttr" => Some(MayaLightSpecializedCommand::SetAttr(
+            specialize_light_set_attr(span, opaque_tail, &flags, &positionals),
+        )),
+        "addAttr" => Some(MayaLightSpecializedCommand::AddAttr(
+            MayaLightAddAttrCommand {
+                tail_kind: classify_add_attr_tail(&positionals),
+                tail: positionals,
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "connectAttr" => Some(MayaLightSpecializedCommand::ConnectAttr(
+            MayaLightConnectAttrCommand {
+                source_attr: positionals.first().cloned(),
+                target_attr: positionals.get(1).cloned(),
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "relationship" => Some(MayaLightSpecializedCommand::Relationship(
+            MayaLightRelationshipCommand {
+                relationship: positionals.first().cloned(),
+                members: positionals.into_iter().skip(1).collect(),
+                flags,
+                opaque_tail,
+                span,
+            },
+        )),
+        "file" => Some(MayaLightSpecializedCommand::File(MayaLightFileCommand {
+            path: positionals.last().cloned(),
+            flags,
+            opaque_tail,
+            span,
+        })),
+        _ => {
+            let _ = head;
+            None
+        }
+    }
+}
+
+fn specialize_light_set_attr(
+    span: TextRange,
+    opaque_tail: Option<TextRange>,
+    flags: &[MayaLightFlag],
+    positionals: &[MayaRawShellItem],
+) -> MayaLightSetAttrCommand {
+    let attr_path = positionals.first().cloned();
+    let prefix_values = positionals.iter().skip(1).cloned().collect::<Vec<_>>();
+    let type_name = first_light_flag_arg(flags, "type");
+    let type_text = type_name
+        .as_ref()
+        .and_then(|item| item.value_text.as_deref())
+        .unwrap_or_default();
+    let value_kind = match type_text {
+        "string" if prefix_values.len() == 1 && opaque_tail.is_none() => {
+            MayaSetAttrValueKind::String
+        }
+        "stringArray" => MayaSetAttrValueKind::StringArray,
+        "Int32Array" => MayaSetAttrValueKind::Int32Array,
+        "componentList" => MayaSetAttrValueKind::ComponentList,
+        "matrix" | "matrixXform" => MayaSetAttrValueKind::MatrixXform,
+        "dataReferenceEdits" => MayaSetAttrValueKind::DataReferenceEdits,
+        "" if prefix_values.len() == 1
+            && opaque_tail.is_none()
+            && matches!(prefix_values[0].kind, MayaRawShellItemKind::QuotedString) =>
+        {
+            MayaSetAttrValueKind::String
+        }
+        _ if opaque_tail.is_none() && prefix_values.iter().all(is_numeric_like) => {
+            MayaSetAttrValueKind::TypedNumbers
+        }
+        _ if !type_text.is_empty() => MayaSetAttrValueKind::OpaqueTyped,
+        _ => MayaSetAttrValueKind::Unknown,
+    };
+
+    MayaLightSetAttrCommand {
+        attr_path,
+        type_name,
+        value_kind,
+        prefix_values,
+        flags: flags.to_vec(),
+        opaque_tail,
+        span,
+    }
+}
+
+fn normalize_light_items(
+    schema: &CommandSchema,
+    items: &[MayaRawShellItem],
+) -> (Vec<MayaLightFlag>, Vec<MayaRawShellItem>) {
+    let mode = detect_light_mode(schema, items);
+    let mut index = 0;
+    let mut flags = Vec::new();
+    let mut positionals = Vec::new();
+
+    while index < items.len() {
+        let item = &items[index];
+        if item.kind != MayaRawShellItemKind::Flag {
+            positionals.push(item.clone());
+            index += 1;
+            continue;
+        }
+
+        let schema_flag = find_flag_schema(schema, &item.source_text);
+        let expected_arity = schema_flag
+            .as_ref()
+            .map(|flag| arity_for_mode(flag.arity_by_mode, mode))
+            .unwrap_or(FlagArity::None);
+        let (_, max_arity) = arity_bounds(expected_arity);
+        let mut args = Vec::new();
+        let mut consumed = 0;
+        while consumed < max_arity {
+            let Some(next_item) = items.get(index + 1 + consumed) else {
+                break;
+            };
+            if next_item.kind == MayaRawShellItemKind::Flag {
+                break;
+            }
+            args.push(MayaPositionalArg {
+                item: next_item.clone(),
+            });
+            consumed += 1;
+        }
+        let span = args.last().map_or(item.span, |arg| {
+            text_range(range_start(item.span), range_end(arg.item.span))
+        });
+        flags.push(MayaLightFlag {
+            source_text: item.source_text.clone(),
+            canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.clone()),
+            args,
+            span,
+        });
+        index += 1 + consumed;
+    }
+
+    (flags, positionals)
+}
+
+fn detect_light_mode(schema: &CommandSchema, items: &[MayaRawShellItem]) -> CommandMode {
+    let mut create = false;
+    let mut edit = false;
+    let mut query = false;
+    for item in items {
+        if item.kind != MayaRawShellItemKind::Flag {
+            continue;
+        }
+        match item.source_text.trim_start_matches('-') {
+            "create" | "c" if schema.mode_mask.create => create = true,
+            "edit" | "e" if schema.mode_mask.edit => edit = true,
+            "query" | "q" if schema.mode_mask.query => query = true,
+            _ => {}
+        }
+    }
+    match (create, edit, query) {
+        (false, false, false) | (true, false, false) => CommandMode::Create,
+        (false, true, false) => CommandMode::Edit,
+        (false, false, true) => CommandMode::Query,
+        _ => CommandMode::Unknown,
+    }
+}
+
+fn find_flag_schema(command: &CommandSchema, text: &str) -> Option<FlagSchema> {
+    let normalized = text.strip_prefix('-').unwrap_or(text);
+    command
+        .flags
+        .iter()
+        .find(|flag| {
+            normalized == flag.long_name
+                || flag
+                    .short_name
+                    .as_deref()
+                    .is_some_and(|short| short == normalized)
+        })
+        .cloned()
+        .or_else(|| synthetic_mode_flag_for_name(command, normalized))
+}
+
+fn synthetic_mode_flag_for_name(command: &CommandSchema, name: &str) -> Option<FlagSchema> {
+    match name {
+        "create" | "c" if command.mode_mask.create => Some(synthetic_mode_flag("create", "c")),
+        "edit" | "e" if command.mode_mask.edit => Some(synthetic_mode_flag("edit", "e")),
+        "query" | "q" if command.mode_mask.query => Some(synthetic_mode_flag("query", "q")),
+        _ => None,
+    }
+}
+
+fn synthetic_mode_flag(long_name: &str, short_name: &str) -> FlagSchema {
+    FlagSchema {
+        long_name: long_name.to_owned(),
+        short_name: Some(short_name.to_owned()),
+        mode_mask: CommandModeMask {
+            create: true,
+            edit: true,
+            query: true,
+        },
+        arity_by_mode: FlagArityByMode {
+            create: FlagArity::None,
+            edit: FlagArity::None,
+            query: FlagArity::None,
+        },
+        value_shapes: Vec::new(),
+        allows_multiple: false,
+    }
+}
+
+fn arity_for_mode(arity_by_mode: FlagArityByMode, mode: CommandMode) -> FlagArity {
+    match mode {
+        CommandMode::Create | CommandMode::Unknown => arity_by_mode.create,
+        CommandMode::Edit => arity_by_mode.edit,
+        CommandMode::Query => arity_by_mode.query,
+    }
+}
+
+fn arity_bounds(arity: FlagArity) -> (usize, usize) {
+    match arity {
+        FlagArity::None => (0, 0),
+        FlagArity::Exact(value) => (usize::from(value), usize::from(value)),
+        FlagArity::Range { min, max } => (usize::from(min), usize::from(max)),
+    }
+}
+
+fn first_light_flag_arg(flags: &[MayaLightFlag], canonical_name: &str) -> Option<MayaRawShellItem> {
+    flags
+        .iter()
+        .find(|flag| flag.canonical_name.as_deref() == Some(canonical_name))
+        .and_then(|flag| flag.args.first())
+        .map(|arg| arg.item.clone())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EmbeddedFlagSchema {
     long_name: &'static str,
@@ -729,7 +1268,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mel_parser::{parse_bytes, parse_source};
+    use std::path::Path;
+
+    use mel_parser::{parse_bytes, parse_light_file, parse_light_source, parse_source};
 
     struct TestRegistry {
         commands: Vec<CommandSchema>,
@@ -971,5 +1512,74 @@ mod tests {
         };
         assert_eq!(command.raw_items[3].kind, MayaRawShellItemKind::GroupedExpr);
         assert_eq!(command.raw_items[3].source_text, "(\"\u{FFFD}\")");
+    }
+
+    #[test]
+    fn light_collector_keeps_heavy_set_attr_tail_opaque() {
+        let parse = parse_light_source(
+            "createNode mesh -n \"meshShape\";\nsetAttr \".fc[0]\" -type \"polyFaces\" f 4 0 1 2 3 mu 0 4 0 1 2 3;\n",
+        );
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts_light(&parse);
+        assert!(matches!(facts.items[0], MayaLightTopLevelItem::Command(_)));
+        let MayaLightTopLevelItem::Command(command) = &facts.items[1] else {
+            panic!("expected command");
+        };
+        let Some(MayaLightSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref()
+        else {
+            panic!("expected light setAttr specialization");
+        };
+        assert_eq!(
+            set_attr
+                .attr_path
+                .as_ref()
+                .and_then(|item| item.value_text.as_deref()),
+            Some(".fc[0]")
+        );
+        assert_eq!(
+            set_attr
+                .type_name
+                .as_ref()
+                .and_then(|item| item.value_text.as_deref()),
+            Some("polyFaces")
+        );
+        assert!(command.opaque_tail.is_none());
+        assert_eq!(set_attr.prefix_values[0].value_text.as_deref(), Some("f"));
+    }
+
+    #[test]
+    fn light_collector_uses_opaque_tail_when_prefix_limit_hits() {
+        let parse = mel_parser::parse_light_source_with_options(
+            "setAttr \".pt\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n",
+            mel_parser::LightParseOptions {
+                max_prefix_words: 5,
+                max_prefix_bytes: 32,
+            },
+        );
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts_light(&parse);
+        let MayaLightTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        let Some(MayaLightSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref()
+        else {
+            panic!("expected light setAttr specialization");
+        };
+        assert!(command.opaque_tail.is_some());
+        assert!(set_attr.opaque_tail.is_some());
+        assert_eq!(set_attr.prefix_values.len(), 2);
+    }
+
+    #[test]
+    fn light_collector_can_smoke_tmp_mesh_sample_when_present() {
+        let path = Path::new("/mnt/e/Projects/RnD/MayaMelParser/tmp/Test_Mesh_Horizon.ma");
+        if !path.exists() {
+            return;
+        }
+        let parse = parse_light_file(path).expect("light parse sample");
+        assert!(parse.decode_errors.is_empty());
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts_light(&parse);
+        assert!(!facts.items.is_empty());
     }
 }

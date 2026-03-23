@@ -8,9 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use mel_maya::MayaCommandRegistry;
+use mel_maya::{
+    MayaCommandRegistry, MayaLightSpecializedCommand, MayaLightTopLevelItem,
+    collect_top_level_facts_light,
+};
 use mel_parser::{
-    Parse, ParseMode, ParseOptions, SourceEncoding, parse_file, parse_file_with_encoding,
+    LightParse, Parse, ParseMode, ParseOptions, SourceEncoding, parse_file,
+    parse_file_with_encoding, parse_light_file, parse_light_file_with_encoding,
     parse_source_with_options,
 };
 use mel_sema::{DiagnosticSeverity, analyze_with_registry};
@@ -23,6 +27,8 @@ const TOP_RANK_LIMIT: usize = 10;
 struct Args {
     #[arg(long, value_enum, default_value_t = CliEncoding::Auto)]
     encoding: CliEncoding,
+    #[arg(long, conflicts_with = "inline_input")]
+    lightweight: bool,
     #[arg(value_name = "PATH", conflicts_with = "inline_input")]
     path: Option<PathBuf>,
     #[arg(long = "inline", value_name = "SOURCE", conflicts_with = "path")]
@@ -87,7 +93,7 @@ fn run() -> Result<(), RunError> {
     let selected_encoding = args.encoding.into_source_encoding();
 
     if let Some(path) = args.path {
-        return print_path_output(&path, selected_encoding)
+        return print_path_output(&path, selected_encoding, args.lightweight)
             .map_err(|error| RunError::Message(error.to_string()));
     }
 
@@ -105,13 +111,17 @@ fn run() -> Result<(), RunError> {
     Ok(())
 }
 
-fn print_path_output(path: &Path, encoding: Option<SourceEncoding>) -> io::Result<()> {
+fn print_path_output(
+    path: &Path,
+    encoding: Option<SourceEncoding>,
+    lightweight: bool,
+) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
 
     if metadata.is_dir() {
-        print_corpus_summary(path, encoding)
+        print_corpus_summary(path, encoding, lightweight)
     } else if metadata.is_file() {
-        print_single_file(path, encoding)
+        print_single_file(path, encoding, lightweight)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -138,19 +148,62 @@ fn print_help() -> io::Result<()> {
     Ok(())
 }
 
-fn print_single_file(path: &Path, encoding: Option<SourceEncoding>) -> io::Result<()> {
-    let parse = if let Some(encoding) = encoding {
-        parse_file_with_encoding(path, encoding)?
-    } else {
-        parse_file(path)?
-    };
+fn print_single_file(
+    path: &Path,
+    encoding: Option<SourceEncoding>,
+    lightweight: bool,
+) -> io::Result<()> {
     let label = path.display().to_string();
-    print!("{}", format_single_file_output(&label, &parse)?);
+    if lightweight {
+        let parse = if let Some(encoding) = encoding {
+            parse_light_file_with_encoding(path, encoding)?
+        } else {
+            parse_light_file(path)?
+        };
+        print!("{}", format_light_single_file_output(&label, &parse)?);
+    } else {
+        let parse = if let Some(encoding) = encoding {
+            parse_file_with_encoding(path, encoding)?
+        } else {
+            parse_file(path)?
+        };
+        print!("{}", format_single_file_output(&label, &parse)?);
+    }
     Ok(())
 }
 
-fn print_corpus_summary(root: &Path, encoding: Option<SourceEncoding>) -> io::Result<()> {
-    let files = collect_mel_files(root)?;
+fn print_corpus_summary(
+    root: &Path,
+    encoding: Option<SourceEncoding>,
+    lightweight: bool,
+) -> io::Result<()> {
+    let files = collect_source_files(root, lightweight)?;
+    if lightweight {
+        let mut summary = LightCorpusSummary::default();
+        for path in files {
+            summary.files += 1;
+
+            match encoding
+                .map(|encoding| parse_light_file_with_encoding(&path, encoding))
+                .unwrap_or_else(|| parse_light_file(&path))
+            {
+                Ok(parse) => {
+                    let file_summary = light_file_summary(&path, &parse);
+                    summary.record(file_summary);
+                }
+                Err(error) => {
+                    summary.io_errors += 1;
+                    summary
+                        .samples
+                        .push(format!("io error: {} ({error})", path.display()));
+                }
+            }
+        }
+
+        println!("{}", format_light_corpus_summary(&summary));
+        return Ok(());
+    }
+
     let mut summary = CorpusSummary::default();
 
     for path in files {
@@ -227,22 +280,29 @@ fn print_corpus_summary(root: &Path, encoding: Option<SourceEncoding>) -> io::Re
     Ok(())
 }
 
-fn collect_mel_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+fn collect_source_files(root: &Path, lightweight: bool) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    collect_mel_files_recursive(root, &mut files)?;
+    collect_source_files_recursive(root, &mut files, lightweight)?;
     files.sort();
     Ok(files)
 }
 
-fn collect_mel_files_recursive(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+fn collect_source_files_recursive(
+    root: &Path,
+    files: &mut Vec<PathBuf>,
+    lightweight: bool,
+) -> io::Result<()> {
     let mut entries = fs::read_dir(root)?.collect::<Result<Vec<_>, io::Error>>()?;
     entries.sort_by_key(|entry| entry.path());
 
     for entry in entries {
         let path = entry.path();
         if entry.file_type()?.is_dir() {
-            collect_mel_files_recursive(&path, files)?;
-        } else if path.extension().is_some_and(|ext| ext == "mel") {
+            collect_source_files_recursive(&path, files, lightweight)?;
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext == "mel" || (lightweight && ext == "ma"))
+        {
             files.push(path);
         }
     }
@@ -273,6 +333,25 @@ fn format_single_file_output(label: &str, parse: &Parse) -> io::Result<String> {
     Ok(output)
 }
 
+fn format_light_single_file_output(label: &str, parse: &LightParse) -> io::Result<String> {
+    let summary = light_file_summary(Path::new(label), parse);
+    let mut output = format!(
+        "source: {label}\nmode: lightweight\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
+        parse.source_encoding.label(),
+        summary.items,
+        summary.command_items,
+        summary.proc_items,
+        summary.other_items,
+        summary.opaque_tail_commands,
+        summary.specialized_set_attr,
+        summary.set_attr_with_opaque_tail,
+        summary.decode_errors,
+        summary.light_parse_errors,
+    );
+    output.push_str(&render_light_diagnostics(label, parse)?);
+    Ok(output)
+}
+
 #[derive(Debug, Clone)]
 struct FileDiagnostic {
     stage: &'static str,
@@ -287,9 +366,41 @@ fn render_diagnostics(label: &str, parse: &Parse) -> io::Result<String> {
         return Ok(String::new());
     }
 
+    render_file_diagnostics(
+        label,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        diagnostics,
+    )
+}
+
+fn render_light_diagnostics(label: &str, parse: &LightParse) -> io::Result<String> {
+    let diagnostics = collect_light_diagnostics(parse);
+    if diagnostics.is_empty() {
+        return Ok(String::new());
+    }
+
+    render_file_diagnostics(
+        label,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        diagnostics,
+    )
+}
+
+fn render_file_diagnostics(
+    label: &str,
+    source_text: &str,
+    source_map: &mel_syntax::SourceMap,
+    diagnostics: Vec<FileDiagnostic>,
+) -> io::Result<String> {
+    if diagnostics.is_empty() {
+        return Ok(String::new());
+    }
+
     let mut rendered = Vec::new();
     for diagnostic in diagnostics {
-        let span = parse.source_map.display_range(diagnostic.range);
+        let span = source_map.display_range(diagnostic.range);
         Report::build(report_kind(diagnostic.severity), (label, span.clone()))
             .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message))
             .with_label(
@@ -298,10 +409,7 @@ fn render_diagnostics(label: &str, parse: &Parse) -> io::Result<String> {
                     .with_color(stage_color(diagnostic.stage, diagnostic.severity)),
             )
             .finish()
-            .write(
-                (label, Source::from(parse.source_text.as_str())),
-                &mut rendered,
-            )
+            .write((label, Source::from(source_text)), &mut rendered)
             .map_err(io::Error::other)?;
     }
 
@@ -342,10 +450,27 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
     diagnostics
 }
 
+fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
+        stage: "decode",
+        severity: DiagnosticSeverity::Error,
+        message: diagnostic.message.clone(),
+        range: diagnostic.range,
+    }));
+    diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
+        stage: "light",
+        severity: DiagnosticSeverity::Error,
+        message: diagnostic.message.clone(),
+        range: diagnostic.range,
+    }));
+    diagnostics
+}
+
 fn analyze_parse(parse: &Parse) -> mel_sema::Analysis {
     analyze_with_registry(
         &parse.syntax,
-        &parse.source_text,
+        parse.source_view(),
         &MayaCommandRegistry::new(),
     )
 }
@@ -367,6 +492,7 @@ fn stage_color(stage: &str, severity: DiagnosticSeverity) -> Color {
         "lex" => Color::Blue,
         "parse" => Color::Red,
         "sema" => Color::Magenta,
+        "light" => Color::Cyan,
         _ => Color::White,
     }
 }
@@ -455,14 +581,146 @@ struct FileSummary {
     semantic_diagnostics: usize,
 }
 
+#[derive(Debug, Default)]
+struct LightCorpusSummary {
+    files: usize,
+    files_with_decode_issues: usize,
+    files_with_light_parse_errors: usize,
+    io_errors: usize,
+    total_items: usize,
+    total_command_items: usize,
+    total_proc_items: usize,
+    total_opaque_tail_commands: usize,
+    total_specialized_set_attr: usize,
+    total_set_attr_with_opaque_tail: usize,
+    samples: Vec<String>,
+}
+
+impl LightCorpusSummary {
+    fn record(&mut self, file: LightFileSummary) {
+        if file.decode_errors > 0 {
+            self.files_with_decode_issues += 1;
+        }
+        if file.light_parse_errors > 0 {
+            self.files_with_light_parse_errors += 1;
+        }
+        self.total_items += file.items;
+        self.total_command_items += file.command_items;
+        self.total_proc_items += file.proc_items;
+        self.total_opaque_tail_commands += file.opaque_tail_commands;
+        self.total_specialized_set_attr += file.specialized_set_attr;
+        self.total_set_attr_with_opaque_tail += file.set_attr_with_opaque_tail;
+
+        if self.samples.len() < 10 && (file.decode_errors > 0 || file.light_parse_errors > 0) {
+            self.samples.push(format!(
+                "{} decode={} light={} commands={} opaque_tail={}",
+                file.path,
+                file.decode_errors,
+                file.light_parse_errors,
+                file.command_items,
+                file.opaque_tail_commands
+            ));
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LightFileSummary {
+    path: String,
+    decode_errors: usize,
+    light_parse_errors: usize,
+    items: usize,
+    command_items: usize,
+    proc_items: usize,
+    other_items: usize,
+    opaque_tail_commands: usize,
+    specialized_set_attr: usize,
+    set_attr_with_opaque_tail: usize,
+}
+
+fn light_file_summary(path: &Path, parse: &LightParse) -> LightFileSummary {
+    let facts = collect_top_level_facts_light(parse);
+    let mut command_items = 0;
+    let mut proc_items = 0;
+    let mut other_items = 0;
+    let mut opaque_tail_commands = 0;
+    let mut specialized_set_attr = 0;
+    let mut set_attr_with_opaque_tail = 0;
+
+    for item in &facts.items {
+        match item {
+            MayaLightTopLevelItem::Command(command) => {
+                command_items += 1;
+                if command.opaque_tail.is_some() {
+                    opaque_tail_commands += 1;
+                }
+                if let Some(MayaLightSpecializedCommand::SetAttr(set_attr)) =
+                    command.specialized.as_ref()
+                {
+                    specialized_set_attr += 1;
+                    if set_attr.opaque_tail.is_some() {
+                        set_attr_with_opaque_tail += 1;
+                    }
+                }
+            }
+            MayaLightTopLevelItem::Proc { .. } => proc_items += 1,
+            MayaLightTopLevelItem::Other { .. } => other_items += 1,
+        }
+    }
+
+    LightFileSummary {
+        path: path.display().to_string(),
+        decode_errors: parse.decode_errors.len(),
+        light_parse_errors: parse.errors.len(),
+        items: facts.items.len(),
+        command_items,
+        proc_items,
+        other_items,
+        opaque_tail_commands,
+        specialized_set_attr,
+        set_attr_with_opaque_tail,
+    }
+}
+
+fn format_light_corpus_summary(summary: &LightCorpusSummary) -> String {
+    let mut output = format!(
+        "corpus files: {}\nfiles with decode issues: {}\nfiles with light parse errors: {}\ntotal items: {}\ntotal command items: {}\ntotal proc items: {}\ntotal opaque-tail commands: {}\ntotal light-specialized setAttr: {}\ntotal setAttr with opaque tail: {}\nio errors: {}\n",
+        summary.files,
+        summary.files_with_decode_issues,
+        summary.files_with_light_parse_errors,
+        summary.total_items,
+        summary.total_command_items,
+        summary.total_proc_items,
+        summary.total_opaque_tail_commands,
+        summary.total_specialized_set_attr,
+        summary.total_set_attr_with_opaque_tail,
+        summary.io_errors,
+    );
+
+    if !summary.samples.is_empty() {
+        output.push_str("sample issues:\n");
+        for sample in summary.samples.iter().take(10) {
+            output.push_str("  ");
+            output.push_str(sample);
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, CorpusSummary, FileSummary, format_single_file_output, parse_cli_args,
-        print_path_output,
+        Args, CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary,
+        format_light_corpus_summary, format_light_single_file_output, format_single_file_output,
+        parse_cli_args, print_path_output,
     };
     use clap::{CommandFactory, error::ErrorKind};
-    use mel_parser::{ParseMode, ParseOptions, parse_source, parse_source_with_options};
+    use mel_parser::{
+        LightParseOptions, ParseMode, ParseOptions, SourceEncoding, parse_bytes_with_encoding,
+        parse_light_source_with_options, parse_source, parse_source_with_options,
+    };
     use std::{
         fs,
         path::PathBuf,
@@ -471,6 +729,26 @@ mod tests {
 
     fn render_snapshot(label: &str, source: &str) -> String {
         format_single_file_output(label, &parse_source(source)).expect("snapshot should render")
+    }
+
+    #[test]
+    fn format_single_file_output_handles_gbk_source_without_panicking() {
+        let parse = parse_bytes_with_encoding(b"print \"\xB0\xB4\xC5\xA5\";", SourceEncoding::Gbk);
+        let output =
+            format_single_file_output("gbk-fixture", &parse).expect("gbk output should render");
+        assert!(output.contains("encoding: gbk"));
+    }
+
+    #[test]
+    fn format_light_single_file_output_handles_gbk_source_without_panicking() {
+        let parse = mel_parser::parse_light_bytes_with_encoding(
+            b"setAttr \".\xB0\xB4\" -type \"string\" \"\xC5\xA5\";",
+            SourceEncoding::Gbk,
+        );
+        let output = format_light_single_file_output("gbk-fixture", &parse)
+            .expect("light gbk output should render");
+        assert!(output.contains("mode: lightweight"));
+        assert!(output.contains("encoding: gbk"));
     }
 
     #[test]
@@ -488,6 +766,13 @@ mod tests {
     fn cli_accepts_positional_path() {
         let args = parse_cli_args(["mel-cli", "tests/private-corpus"]).expect("path should parse");
         assert_eq!(args.path, Some(PathBuf::from("tests/private-corpus")));
+    }
+
+    #[test]
+    fn cli_accepts_lightweight_flag() {
+        let args =
+            parse_cli_args(["mel-cli", "--lightweight", "tests/private-corpus"]).expect("light");
+        assert!(args.lightweight);
     }
 
     #[test]
@@ -531,6 +816,13 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_lightweight_with_inline() {
+        let error = parse_cli_args(["mel-cli", "--lightweight", "--inline", "print 1"])
+            .expect_err("lightweight inline should fail");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn cli_rejects_invalid_encoding() {
         let error = parse_cli_args(["mel-cli", "--encoding", "latin1", "--inline", "`ls -sl`;"])
             .expect_err("invalid encoding should fail");
@@ -546,6 +838,7 @@ mod tests {
             .expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
         assert!(help.contains("[PATH]"));
+        assert!(help.contains("--lightweight"));
         assert!(help.contains("--inline <SOURCE>"));
         assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
     }
@@ -558,7 +851,7 @@ mod tests {
             use std::os::unix::net::UnixListener;
 
             let _listener = UnixListener::bind(&path).expect("socket should bind");
-            let error = print_path_output(&path, None).expect_err("socket path should fail");
+            let error = print_path_output(&path, None, false).expect_err("socket path should fail");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
 
@@ -641,6 +934,58 @@ mod tests {
                 ("missing ]".to_owned(), 1),
             ]
         );
+    }
+
+    #[test]
+    fn light_output_reports_opaque_tail_counts() {
+        let parse = parse_light_source_with_options(
+            "setAttr \".pt\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n",
+            LightParseOptions {
+                max_prefix_words: 5,
+                max_prefix_bytes: 32,
+            },
+        );
+        let output =
+            format_light_single_file_output("light-fixture", &parse).expect("light output");
+        assert!(output.contains("opaque-tail commands: 1"));
+        assert!(output.contains("setAttr with opaque tail: 1"));
+    }
+
+    #[test]
+    fn collect_source_files_in_lightweight_mode_includes_ma_files() {
+        let root = unique_test_path("light-corpus");
+        fs::create_dir_all(&root).expect("temp dir");
+        fs::write(root.join("a.mel"), "print 1;\n").expect("mel file");
+        fs::write(root.join("b.ma"), "setAttr \".tx\" 1;\n").expect("ma file");
+        fs::write(root.join("c.txt"), "ignore\n").expect("txt file");
+
+        let mel_only = super::collect_source_files(&root, false).expect("mel files");
+        let light_files = super::collect_source_files(&root, true).expect("light files");
+        assert_eq!(mel_only.len(), 1);
+        assert_eq!(light_files.len(), 2);
+
+        cleanup_test_path(&root);
+    }
+
+    #[test]
+    fn format_light_corpus_summary_reports_lightweight_counts() {
+        let mut summary = LightCorpusSummary::default();
+        summary.record(LightFileSummary {
+            path: "a.ma".to_owned(),
+            decode_errors: 1,
+            light_parse_errors: 0,
+            items: 10,
+            command_items: 8,
+            proc_items: 1,
+            other_items: 1,
+            opaque_tail_commands: 2,
+            specialized_set_attr: 3,
+            set_attr_with_opaque_tail: 2,
+        });
+        let output = format_light_corpus_summary(&summary);
+        assert!(output.contains("files with light parse errors: 0"));
+        assert!(output.contains("total opaque-tail commands: 2"));
+        assert!(output.contains("total light-specialized setAttr: 3"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use mel_ast::{
     AssignOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam, ShellWord,
     SourceFile, Stmt, TypeName, VarDecl,
 };
-use mel_syntax::text_range;
+use mel_syntax::{SourceMap, SourceView, text_range};
 use std::{cell::RefCell, mem};
 
 thread_local! {
@@ -82,7 +82,8 @@ fn flag_schema(long_name: &str, short_name: Option<&str>, arity: FlagArity) -> F
 
 fn analyze_source(source: &SourceFile) -> super::Analysis {
     let source_text = take_test_source();
-    analyze(source, &source_text)
+    let source_map = SourceMap::identity(source_text.len());
+    analyze(source, SourceView::new(&source_text, &source_map))
 }
 
 fn analyze_source_with_registry(
@@ -90,7 +91,8 @@ fn analyze_source_with_registry(
     registry: &impl CommandRegistry,
 ) -> super::Analysis {
     let source_text = take_test_source();
-    analyze_with_registry(source, &source_text, registry)
+    let source_map = SourceMap::identity(source_text.len());
+    analyze_with_registry(source, SourceView::new(&source_text, &source_map), registry)
 }
 
 fn resolved_variable(analysis: &super::Analysis, index: usize) -> Option<&super::VariableSymbol> {
@@ -107,6 +109,32 @@ fn warning_messages(analysis: &super::Analysis) -> Vec<&str> {
         .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
         .map(|diagnostic| diagnostic.message.as_str())
         .collect()
+}
+
+#[test]
+fn analyze_handles_non_utf8_source_ranges_via_source_view() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::Function {
+                    head_range: text_range(0, 4),
+                    args: Vec::new(),
+                },
+                range: text_range(0, 4),
+            }),
+            range: text_range(0, 4),
+        }))],
+    };
+    let source_text = "按钮";
+    let source_map = SourceMap::from_source_to_display(vec![0, 3, 3, 6, 6]);
+
+    let analysis = analyze(&source, SourceView::new(source_text, &source_map));
+    assert_eq!(analysis.invoke_resolutions.len(), 1);
+    assert!(analysis.diagnostics.is_empty());
+    assert!(matches!(
+        analysis.invoke_resolutions[0].resolution,
+        ResolvedCallee::Unresolved
+    ));
 }
 
 #[test]

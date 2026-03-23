@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Shared syntax primitives for the MEL parser workspace.
 
+use std::ops::Range;
+
 pub use text_size::{TextRange, TextSize};
 
 #[must_use]
@@ -31,6 +33,78 @@ pub fn range_len(range: TextRange) -> u32 {
 #[must_use]
 pub fn text_slice(text: &str, range: TextRange) -> &str {
     &text[range_start(range) as usize..range_end(range) as usize]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceMap {
+    source_to_display: Vec<u32>,
+}
+
+impl SourceMap {
+    #[must_use]
+    pub fn identity(len: usize) -> Self {
+        let source_to_display = (0..=len)
+            .map(|offset| u32::try_from(offset).unwrap_or(u32::MAX))
+            .collect();
+        Self { source_to_display }
+    }
+
+    #[must_use]
+    pub fn from_source_to_display(source_to_display: Vec<u32>) -> Self {
+        Self { source_to_display }
+    }
+
+    #[must_use]
+    pub fn display_offset(&self, offset: u32) -> usize {
+        self.source_to_display
+            .get(offset as usize)
+            .copied()
+            .or_else(|| self.source_to_display.last().copied())
+            .unwrap_or(offset) as usize
+    }
+
+    #[must_use]
+    pub fn display_range(&self, range: TextRange) -> Range<usize> {
+        self.display_offset(range_start(range))..self.display_offset(range_end(range))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SourceView<'a> {
+    text: &'a str,
+    source_map: &'a SourceMap,
+}
+
+impl<'a> SourceView<'a> {
+    #[must_use]
+    pub fn new(text: &'a str, source_map: &'a SourceMap) -> Self {
+        Self { text, source_map }
+    }
+
+    #[must_use]
+    pub fn text(self) -> &'a str {
+        self.text
+    }
+
+    #[must_use]
+    pub fn source_map(self) -> &'a SourceMap {
+        self.source_map
+    }
+
+    #[must_use]
+    pub fn display_range(self, range: TextRange) -> Range<usize> {
+        self.source_map.display_range(range)
+    }
+
+    #[must_use]
+    pub fn display_slice(self, range: TextRange) -> &'a str {
+        &self.text[self.display_range(range)]
+    }
+
+    #[must_use]
+    pub fn slice(self, range: TextRange) -> &'a str {
+        self.display_slice(range)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

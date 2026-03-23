@@ -1,5 +1,5 @@
 use mel_ast::ShellWord;
-use mel_syntax::{TextRange, range_end, range_start, text_range};
+use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 
 use crate::{
     CommandModeMask, CommandSchema, Diagnostic, DiagnosticSeverity, FlagArity, FlagArityByMode,
@@ -51,13 +51,13 @@ pub(crate) fn normalize_shell_like_invoke(
     head_range: TextRange,
     words: &[ShellWord],
     range: TextRange,
-    source_text: &str,
+    source: SourceView<'_>,
 ) -> (NormalizedCommandInvoke, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut items = Vec::new();
     let mut seen_flags = Vec::<String>::new();
     let (create_ranges, edit_ranges, query_ranges) =
-        collect_mode_flag_ranges(command, words, source_text);
+        collect_mode_flag_ranges(command, words, source);
     let active_mode_count = usize::from(!create_ranges.is_empty())
         + usize::from(!edit_ranges.is_empty())
         + usize::from(!query_ranges.is_empty());
@@ -86,7 +86,7 @@ pub(crate) fn normalize_shell_like_invoke(
                 text,
                 range: flag_range,
             } => {
-                let flag_text = mel_syntax::text_slice(source_text, *text);
+                let flag_text = source.slice(*text);
                 let Some(schema) = find_flag_schema(command, flag_text) else {
                     diagnostics.push(Diagnostic {
                         severity: DiagnosticSeverity::Warning,
@@ -295,7 +295,7 @@ fn synthetic_mode_flag(long_name: &str, short_name: &str) -> crate::FlagSchema {
 fn collect_mode_flag_ranges(
     command: &CommandSchema,
     words: &[ShellWord],
-    source_text: &str,
+    source: SourceView<'_>,
 ) -> (Vec<TextRange>, Vec<TextRange>, Vec<TextRange>) {
     let mut create_ranges = Vec::new();
     let mut edit_ranges = Vec::new();
@@ -305,8 +305,7 @@ fn collect_mode_flag_ranges(
         let ShellWord::Flag { text, range } = word else {
             continue;
         };
-        let Some(schema) = find_flag_schema(command, mel_syntax::text_slice(source_text, *text))
-        else {
+        let Some(schema) = find_flag_schema(command, source.slice(*text)) else {
             continue;
         };
         match schema.long_name.as_str() {

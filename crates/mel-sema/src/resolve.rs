@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::scope::CollectedScopes;
 use crate::*;
 use mel_ast::{Expr, Item, ProcDef, ShellWord, Stmt};
-use mel_syntax::{TextRange, text_slice};
+use mel_syntax::{SourceView, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ValueType {
@@ -18,7 +18,7 @@ enum ValueType {
 
 pub(crate) struct Analyzer<'a, R: ?Sized> {
     collected: &'a CollectedScopes,
-    source_text: &'a str,
+    source: SourceView<'a>,
     registry: &'a R,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) invoke_resolutions: Vec<InvokeResolution>,
@@ -62,12 +62,12 @@ where
 {
     pub(crate) fn new(
         collected: &'a CollectedScopes,
-        source_text: &'a str,
+        source: SourceView<'a>,
         registry: &'a R,
     ) -> Self {
         Self {
             collected,
-            source_text,
+            source,
             registry,
             diagnostics: Vec::new(),
             invoke_resolutions: Vec::new(),
@@ -350,7 +350,7 @@ where
                         *head_range,
                         words,
                         invoke.range,
-                        self.source_text,
+                        self.source,
                     );
                     self.diagnostics.extend(diagnostics);
                     self.normalized_invokes.push(normalized);
@@ -386,7 +386,8 @@ where
         range: TextRange,
         current_scope: ScopeId,
     ) -> ResolvedCallee {
-        let name = text_slice(self.source_text, name_range);
+        let source = self.source;
+        let name = source.slice(name_range);
         self.resolve_named_target(name, range, current_scope)
             .into_callee_resolution()
     }
@@ -398,7 +399,7 @@ where
         current_scope: ScopeId,
     ) -> ResolvedInvokeTarget {
         if let Some(symbol) = self.collected.find_visible_local_proc(
-            self.source_text,
+            self.source,
             name,
             current_scope,
             &self.visible_decl_orders,
@@ -407,7 +408,7 @@ where
         }
 
         if let Some(symbol) = self.collected.find_forward_local_proc(
-            self.source_text,
+            self.source,
             name,
             current_scope,
             &self.visible_decl_orders,
@@ -419,7 +420,7 @@ where
             return ResolvedInvokeTarget::Proc(symbol.id);
         }
 
-        if let Some(symbol) = self.collected.find_global_proc(self.source_text, name) {
+        if let Some(symbol) = self.collected.find_global_proc(self.source, name) {
             return ResolvedInvokeTarget::Proc(symbol.id);
         }
 
@@ -436,7 +437,8 @@ where
         range: TextRange,
         current_scope: ScopeId,
     ) -> ResolvedInvokeTarget {
-        let name = text_slice(self.source_text, name_range);
+        let source = self.source;
+        let name = source.slice(name_range);
         self.resolve_named_target(name, range, current_scope)
     }
 
@@ -481,7 +483,7 @@ where
 
     fn resolve_ident(&self, name: &str, current_scope: ScopeId) -> IdentTarget {
         if let Some(symbol) = self.collected.find_visible_local_variable(
-            self.source_text,
+            self.source,
             name,
             current_scope,
             &self.visible_variable_decl_orders,
@@ -489,7 +491,7 @@ where
             return IdentTarget::Variable(symbol.id);
         }
 
-        if let Some(symbol) = self.collected.find_global_variable(self.source_text, name) {
+        if let Some(symbol) = self.collected.find_global_variable(self.source, name) {
             return IdentTarget::Variable(symbol.id);
         }
 
@@ -497,15 +499,15 @@ where
     }
 
     fn mark_implicit_variable(&mut self, name_range: TextRange, current_scope: ScopeId) {
-        let source_text = self.source_text;
-        let name = text_slice(source_text, name_range);
+        let source = self.source;
+        let name = source.slice(name_range);
         let names = self
             .implicit_variables_by_scope
             .entry(current_scope)
             .or_default();
         if !names
             .iter()
-            .any(|candidate| text_slice(source_text, *candidate) == name)
+            .any(|candidate| source.slice(*candidate) == name)
         {
             names.push(name_range);
         }
@@ -533,11 +535,10 @@ where
         current_scope: ScopeId,
     ) {
         let actual = expr.map(|expr| self.infer_expr_type(expr, current_scope));
-        let source_text = self.source_text;
         let Some(context) = self.proc_contexts.last_mut() else {
             return;
         };
-        let context_name = text_slice(source_text, context.name_range);
+        let context_name = self.source.slice(context.name_range);
 
         match (&context.return_type, actual.as_ref()) {
             (None, Some(_)) => self.diagnostics.push(Diagnostic::error(
@@ -592,7 +593,7 @@ where
             self.diagnostics.push(Diagnostic::error(
                 format!(
                     "variable \"{}\" has declared type {:?} but initializer is {:?}",
-                    declarator.name_text(self.source_text),
+                    self.slice(declarator.name_range),
                     expected,
                     actual
                 ),
@@ -673,7 +674,7 @@ where
         };
 
         let Some(symbol) = self.collected.find_resolved_proc_symbol(
-            self.source_text,
+            self.source,
             name,
             current_scope,
             &self.visible_decl_orders,
@@ -689,7 +690,7 @@ where
     }
 
     fn slice(&self, range: TextRange) -> &str {
-        text_slice(self.source_text, range)
+        self.source.slice(range)
     }
 }
 

@@ -90,14 +90,21 @@ pub(crate) fn decode_source_auto(input: &[u8]) -> DecodedSource<'_> {
         };
     }
 
-    for encoding in [SourceEncoding::Cp932, SourceEncoding::Gbk] {
-        let decoded = decode_source_with_encoding(input, encoding);
-        if decoded.diagnostics.is_empty() {
-            return decoded;
-        }
-    }
+    let utf8_lossy = decode_lossy_utf8(input);
 
-    decode_lossy_utf8(input)
+    let cp932 = decode_source_with_encoding(input, SourceEncoding::Cp932);
+    let gbk = decode_source_with_encoding(input, SourceEncoding::Gbk);
+    let best_non_utf8 = if decode_candidate_rank(&cp932) <= decode_candidate_rank(&gbk) {
+        cp932
+    } else {
+        gbk
+    };
+
+    if should_prefer_non_utf8(&best_non_utf8, &utf8_lossy) {
+        best_non_utf8
+    } else {
+        utf8_lossy
+    }
 }
 
 pub(crate) fn decode_source_with_encoding(
@@ -148,6 +155,37 @@ fn decode_lossy_utf8(input: &[u8]) -> DecodedSource<'_> {
             diagnostics: Vec::new(),
         },
         Err(error) => decode_lossy_utf8_with_error(input, error.valid_up_to() as u32, error),
+    }
+}
+
+fn decode_candidate_rank(decoded: &DecodedSource<'_>) -> (u8, usize, u8) {
+    let has_decode_errors = u8::from(!decoded.diagnostics.is_empty());
+    let suspicious_score = suspicious_text_score(decoded.text.as_ref());
+    let encoding_bias = match decoded.encoding {
+        SourceEncoding::Cp932 => 0,
+        SourceEncoding::Gbk => 1,
+        SourceEncoding::Utf8 => 2,
+    };
+    (has_decode_errors, suspicious_score, encoding_bias)
+}
+
+fn should_prefer_non_utf8(non_utf8: &DecodedSource<'_>, utf8_lossy: &DecodedSource<'_>) -> bool {
+    non_utf8.diagnostics.is_empty()
+        && suspicious_text_score(non_utf8.text.as_ref())
+            < suspicious_text_score(utf8_lossy.text.as_ref())
+}
+
+fn suspicious_text_score(text: &str) -> usize {
+    text.chars().map(suspicious_char_weight).sum()
+}
+
+fn suspicious_char_weight(ch: char) -> usize {
+    match ch {
+        '\u{FFFD}' => 1,
+        '\u{0080}'..='\u{009F}' => 1,
+        '\u{E000}'..='\u{F8FF}' => 1,
+        '\u{FF61}'..='\u{FF9F}' => 1,
+        _ => 0,
     }
 }
 

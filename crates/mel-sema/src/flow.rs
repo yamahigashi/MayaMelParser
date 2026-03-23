@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::scope::CollectedScopes;
 use crate::*;
 use mel_ast::{Expr, Item, ProcDef, ShellWord, SourceFile, Stmt, SwitchClause};
-use mel_syntax::{TextRange, text_slice};
+use mel_syntax::{SourceView, TextRange};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct FlowState {
@@ -46,17 +46,17 @@ enum AssignAccess {
 
 pub(crate) struct FlowLintAnalyzer<'a> {
     collected: &'a CollectedScopes,
-    source_text: &'a str,
+    source: SourceView<'a>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     visible_variable_decl_orders: HashMap<ScopeId, usize>,
     emitted_warnings: HashSet<(TextRange, String)>,
 }
 
 impl<'a> FlowLintAnalyzer<'a> {
-    pub(crate) fn new(collected: &'a CollectedScopes, source_text: &'a str) -> Self {
+    pub(crate) fn new(collected: &'a CollectedScopes, source: SourceView<'a>) -> Self {
         Self {
             collected,
-            source_text,
+            source,
             diagnostics: Vec::new(),
             visible_variable_decl_orders: HashMap::new(),
             emitted_warnings: HashSet::new(),
@@ -156,8 +156,8 @@ impl<'a> FlowLintAnalyzer<'a> {
                     }
 
                     let declarator = decl.declarators.iter().find(|declarator| {
-                        self.collected.variable_name(self.source_text, symbol.id)
-                            == declarator.name_text(self.source_text)
+                        self.collected.variable_name(self.source, symbol.id)
+                            == self.source.slice(declarator.name_range)
                     });
                     if declarator.is_some_and(|declarator| declarator.initializer.is_some()) {
                         next.mark_written(*variable_id);
@@ -557,7 +557,7 @@ impl<'a> FlowLintAnalyzer<'a> {
     fn walk_expr(&mut self, expr: &Expr, current_scope: ScopeId, state: &mut FlowState) {
         match expr {
             Expr::Ident { name_range, range } => self.check_read_before_write(
-                text_slice(self.source_text, *name_range),
+                self.source.slice(*name_range),
                 *range,
                 current_scope,
                 state,
@@ -617,7 +617,7 @@ impl<'a> FlowLintAnalyzer<'a> {
     ) {
         match expr {
             Expr::Ident { name_range, range } => {
-                let name = text_slice(self.source_text, *name_range);
+                let name = self.source.slice(*name_range);
                 if matches!(access, AssignAccess::ReadWrite) {
                     self.check_read_before_write(name, *range, current_scope, state);
                 }
@@ -683,14 +683,14 @@ impl<'a> FlowLintAnalyzer<'a> {
 
         for declarator in &decl.declarators {
             if let Some(symbol) = self.find_visible_variable_for_shadowing(
-                declarator.name_text(self.source_text),
+                self.source.slice(declarator.name_range),
                 current_scope,
             ) {
                 self.push_warning_once(
                     declarator.range,
                     format!(
                         "local variable \"{}\" shadows visible {} variable",
-                        declarator.name_text(self.source_text),
+                        self.source.slice(declarator.name_range),
                         shadowed_variable_kind(symbol)
                     ),
                 );
@@ -762,7 +762,7 @@ impl<'a> FlowLintAnalyzer<'a> {
     ) -> Option<VariableSymbolId> {
         self.collected
             .find_visible_local_variable(
-                self.source_text,
+                self.source,
                 name,
                 current_scope,
                 &self.visible_variable_decl_orders,
@@ -777,12 +777,12 @@ impl<'a> FlowLintAnalyzer<'a> {
     ) -> Option<&VariableSymbol> {
         self.collected
             .find_visible_local_variable(
-                self.source_text,
+                self.source,
                 name,
                 current_scope,
                 &self.visible_variable_decl_orders,
             )
-            .or_else(|| self.collected.find_global_variable(self.source_text, name))
+            .or_else(|| self.collected.find_global_variable(self.source, name))
     }
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::*;
 use mel_ast::{Item, ProcDef, SourceFile, Stmt, SwitchClause};
-use mel_syntax::{TextRange, text_slice};
+use mel_syntax::{SourceView, TextRange};
 
 pub(crate) struct ScopeTree {
     parents: Vec<Option<ScopeId>>,
@@ -304,21 +304,25 @@ impl CollectedScopes {
         &self.proc_symbols[id.0]
     }
 
-    pub(crate) fn proc_name<'a>(&self, source_text: &'a str, id: ProcSymbolId) -> &'a str {
-        text_slice(source_text, self.symbol(id).name_range)
+    pub(crate) fn proc_name<'a>(&self, source: SourceView<'a>, id: ProcSymbolId) -> &'a str {
+        source.slice(self.symbol(id).name_range)
     }
 
     pub(crate) fn variable_symbol(&self, id: VariableSymbolId) -> &VariableSymbol {
         &self.variable_symbols[id.0]
     }
 
-    pub(crate) fn variable_name<'a>(&self, source_text: &'a str, id: VariableSymbolId) -> &'a str {
-        text_slice(source_text, self.variable_symbol(id).name_range)
+    pub(crate) fn variable_name<'a>(
+        &self,
+        source: SourceView<'a>,
+        id: VariableSymbolId,
+    ) -> &'a str {
+        source.slice(self.variable_symbol(id).name_range)
     }
 
     pub(crate) fn find_visible_local_proc(
         &self,
-        source_text: &str,
+        source: SourceView<'_>,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
@@ -334,7 +338,7 @@ impl CollectedScopes {
                         .iter()
                         .filter_map(|symbol_id| {
                             let symbol = self.symbol(*symbol_id);
-                            (self.proc_name(source_text, *symbol_id) == name
+                            (self.proc_name(source, *symbol_id) == name
                                 && symbol.decl_order <= visible_order)
                                 .then_some(symbol)
                         })
@@ -353,7 +357,7 @@ impl CollectedScopes {
 
     pub(crate) fn find_forward_local_proc(
         &self,
-        source_text: &str,
+        source: SourceView<'_>,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
@@ -366,7 +370,7 @@ impl CollectedScopes {
                     .iter()
                     .filter_map(|symbol_id| {
                         let symbol = self.symbol(*symbol_id);
-                        (self.proc_name(source_text, *symbol_id) == name
+                        (self.proc_name(source, *symbol_id) == name
                             && symbol.decl_order > visible_order)
                             .then_some(symbol)
                     })
@@ -374,28 +378,32 @@ impl CollectedScopes {
             })
     }
 
-    pub(crate) fn find_global_proc(&self, source_text: &str, name: &str) -> Option<&ProcSymbol> {
+    pub(crate) fn find_global_proc(
+        &self,
+        source: SourceView<'_>,
+        name: &str,
+    ) -> Option<&ProcSymbol> {
         self.global_symbol_ids.iter().find_map(|symbol_id| {
             let symbol = self.symbol(*symbol_id);
-            (text_slice(source_text, symbol.name_range) == name).then_some(symbol)
+            (source.slice(symbol.name_range) == name).then_some(symbol)
         })
     }
 
     pub(crate) fn find_resolved_proc_symbol(
         &self,
-        source_text: &str,
+        source: SourceView<'_>,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
     ) -> Option<&ProcSymbol> {
-        self.find_visible_local_proc(source_text, name, scope, visible_decl_orders)
-            .or_else(|| self.find_forward_local_proc(source_text, name, scope, visible_decl_orders))
-            .or_else(|| self.find_global_proc(source_text, name))
+        self.find_visible_local_proc(source, name, scope, visible_decl_orders)
+            .or_else(|| self.find_forward_local_proc(source, name, scope, visible_decl_orders))
+            .or_else(|| self.find_global_proc(source, name))
     }
 
     pub(crate) fn find_visible_local_variable(
         &self,
-        source_text: &str,
+        source: SourceView<'_>,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
@@ -411,7 +419,7 @@ impl CollectedScopes {
                         .iter()
                         .filter_map(|symbol_id| {
                             let symbol = self.variable_symbol(*symbol_id);
-                            (self.variable_name(source_text, *symbol_id) == name
+                            (self.variable_name(source, *symbol_id) == name
                                 && symbol.decl_order <= visible_order)
                                 .then_some(symbol)
                         })
@@ -430,12 +438,12 @@ impl CollectedScopes {
 
     pub(crate) fn find_global_variable(
         &self,
-        source_text: &str,
+        source: SourceView<'_>,
         name: &str,
     ) -> Option<&VariableSymbol> {
         self.global_variable_ids.iter().find_map(|symbol_id| {
             let symbol = self.variable_symbol(*symbol_id);
-            (text_slice(source_text, symbol.name_range) == name).then_some(symbol)
+            (source.slice(symbol.name_range) == name).then_some(symbol)
         })
     }
 

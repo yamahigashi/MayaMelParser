@@ -6,6 +6,7 @@
 //! indexing, and the first loop statements.
 
 mod decode;
+mod light;
 mod parser;
 mod remap;
 
@@ -15,10 +16,15 @@ mod tests;
 use std::{fs, io, ops::Range, path::Path};
 
 use decode::{decode_source_auto, decode_source_with_encoding};
+pub use light::{
+    LightCommandSurface, LightItem, LightParse, LightParseOptions, LightProcSurface, LightWord,
+    parse_light_bytes, parse_light_bytes_with_encoding, parse_light_file,
+    parse_light_file_with_encoding, parse_light_source, parse_light_source_with_options,
+};
 use parser::Parser;
 use remap::remap_parse_ranges;
 
-use mel_syntax::{LexDiagnostic, TextRange, range_end, range_start, text_slice};
+use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeDiagnostic {
@@ -62,49 +68,25 @@ pub struct Parse {
     pub errors: Vec<ParseError>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceMap {
-    source_to_display: Vec<u32>,
-}
-
-impl SourceMap {
-    fn identity(len: usize) -> Self {
-        let source_to_display = (0..=len)
-            .map(|offset| u32::try_from(offset).unwrap_or(u32::MAX))
-            .collect();
-        Self { source_to_display }
-    }
-
-    fn from_offset_map(offset_map: &decode::OffsetMap) -> Self {
-        Self {
-            source_to_display: offset_map.source_to_decoded.clone(),
-        }
-    }
-
-    #[must_use]
-    pub fn display_offset(&self, offset: u32) -> usize {
-        self.source_to_display
-            .get(offset as usize)
-            .copied()
-            .or_else(|| self.source_to_display.last().copied())
-            .unwrap_or(offset) as usize
-    }
-
-    #[must_use]
-    pub fn display_range(&self, range: TextRange) -> Range<usize> {
-        self.display_offset(range_start(range))..self.display_offset(range_end(range))
-    }
-}
-
 impl Parse {
     #[must_use]
+    pub fn source_view(&self) -> SourceView<'_> {
+        SourceView::new(&self.source_text, &self.source_map)
+    }
+
+    #[must_use]
+    pub fn source_range(&self, range: TextRange) -> Range<usize> {
+        self.source_view().display_range(range)
+    }
+
+    #[must_use]
     pub fn source_slice(&self, range: TextRange) -> &str {
-        text_slice(&self.source_text, range)
+        self.source_view().slice(range)
     }
 
     #[must_use]
     pub fn display_slice(&self, range: TextRange) -> &str {
-        &self.source_text[self.source_map.display_range(range)]
+        self.source_view().display_slice(range)
     }
 
     #[must_use]
@@ -136,7 +118,8 @@ pub fn parse_bytes(input: &[u8]) -> Parse {
     let source_text = decoded.text.into_owned();
     let mut parse = parse_source(&source_text);
     parse.source_text = source_text;
-    parse.source_map = SourceMap::from_offset_map(&decoded.offset_map);
+    parse.source_map =
+        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone());
     parse.source_encoding = decoded.encoding;
     remap_parse_ranges(&mut parse, &decoded.offset_map);
     parse.decode_errors = decoded.diagnostics;
@@ -149,7 +132,8 @@ pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Pars
     let source_text = decoded.text.into_owned();
     let mut parse = parse_source(&source_text);
     parse.source_text = source_text;
-    parse.source_map = SourceMap::from_offset_map(&decoded.offset_map);
+    parse.source_map =
+        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone());
     parse.source_encoding = decoded.encoding;
     remap_parse_ranges(&mut parse, &decoded.offset_map);
     parse.decode_errors = decoded.diagnostics;

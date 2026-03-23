@@ -4,9 +4,9 @@ use mel_ast::{
     UpdateOp, VarDecl, VectorComponent,
 };
 use mel_lexer::lex;
-use mel_syntax::{TextRange, Token, TokenKind, range_end, range_start, text_range};
+use mel_syntax::{SourceMap, TextRange, Token, TokenKind, range_end, range_start, text_range};
 
-use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding, SourceMap};
+use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding};
 
 pub(crate) struct Parser<'a> {
     input: &'a str,

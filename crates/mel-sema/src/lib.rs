@@ -23,7 +23,7 @@ use resolve::Analyzer;
 use scope::ScopeCollector;
 
 use mel_ast::{SourceFile, Stmt};
-use mel_syntax::TextRange;
+use mel_syntax::{SourceView, TextRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
@@ -135,24 +135,28 @@ pub struct Analysis {
 }
 
 #[must_use]
-pub fn analyze(source: &SourceFile, source_text: &str) -> Analysis {
-    analyze_with_registry(source, source_text, &EmptyCommandRegistry)
+pub fn analyze(syntax: &SourceFile, source: SourceView<'_>) -> Analysis {
+    analyze_with_registry(syntax, source, &EmptyCommandRegistry)
 }
 
 #[must_use]
-pub fn analyze_with_registry<R>(source: &SourceFile, source_text: &str, registry: &R) -> Analysis
+pub fn analyze_with_registry<R>(
+    syntax: &SourceFile,
+    source: SourceView<'_>,
+    registry: &R,
+) -> Analysis
 where
     R: CommandRegistry + ?Sized,
 {
-    let collected = ScopeCollector::collect(source);
-    let mut analyzer = Analyzer::new(&collected, source_text, registry);
+    let collected = ScopeCollector::collect(syntax);
+    let mut analyzer = Analyzer::new(&collected, source, registry);
 
-    for item in &source.items {
+    for item in &syntax.items {
         analyzer.walk_item(item, collected.root_scope);
     }
 
-    let mut flow_lint = FlowLintAnalyzer::new(&collected, source_text);
-    flow_lint.walk_source(source);
+    let mut flow_lint = FlowLintAnalyzer::new(&collected, source);
+    flow_lint.walk_source(syntax);
 
     let mut diagnostics = analyzer.diagnostics;
     diagnostics.extend(flow_lint.diagnostics);
