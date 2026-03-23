@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::*;
 use mel_ast::{Item, ProcDef, SourceFile, Stmt, SwitchClause};
-use mel_syntax::TextRange;
+use mel_syntax::{TextRange, text_slice};
 
 pub(crate) struct ScopeTree {
     parents: Vec<Option<ScopeId>>,
@@ -33,14 +33,12 @@ impl ScopeTree {
 pub(crate) struct ScopeCollector {
     scopes: ScopeTree,
     proc_symbols: Vec<ProcSymbol>,
-    proc_names: Vec<String>,
     variable_symbols: Vec<VariableSymbol>,
-    variable_names: Vec<String>,
     local_symbols_by_scope: HashMap<ScopeId, Vec<ProcSymbolId>>,
-    global_symbols_by_name: HashMap<String, ProcSymbolId>,
+    global_symbol_ids: Vec<ProcSymbolId>,
     next_decl_order_by_scope: HashMap<ScopeId, usize>,
     local_variables_by_scope: HashMap<ScopeId, Vec<VariableSymbolId>>,
-    global_variables_by_name: HashMap<String, VariableSymbolId>,
+    global_variable_ids: Vec<VariableSymbolId>,
     next_variable_decl_order_by_scope: HashMap<ScopeId, usize>,
     scope_by_range: HashMap<TextRange, ScopeId>,
     symbol_by_proc_range: HashMap<TextRange, ProcSymbolId>,
@@ -55,14 +53,12 @@ impl ScopeCollector {
         let mut collector = Self {
             scopes,
             proc_symbols: Vec::new(),
-            proc_names: Vec::new(),
             variable_symbols: Vec::new(),
-            variable_names: Vec::new(),
             local_symbols_by_scope: HashMap::new(),
-            global_symbols_by_name: HashMap::new(),
+            global_symbol_ids: Vec::new(),
             next_decl_order_by_scope: HashMap::new(),
             local_variables_by_scope: HashMap::new(),
-            global_variables_by_name: HashMap::new(),
+            global_variable_ids: Vec::new(),
             next_variable_decl_order_by_scope: HashMap::new(),
             scope_by_range: HashMap::new(),
             symbol_by_proc_range: HashMap::new(),
@@ -77,13 +73,11 @@ impl ScopeCollector {
         CollectedScopes {
             scopes: collector.scopes,
             proc_symbols: collector.proc_symbols,
-            proc_names: collector.proc_names,
             variable_symbols: collector.variable_symbols,
-            variable_names: collector.variable_names,
             local_symbols_by_scope: collector.local_symbols_by_scope,
-            global_symbols_by_name: collector.global_symbols_by_name,
+            global_symbol_ids: collector.global_symbol_ids,
             local_variables_by_scope: collector.local_variables_by_scope,
-            global_variables_by_name: collector.global_variables_by_name,
+            global_variable_ids: collector.global_variable_ids,
             scope_by_range: collector.scope_by_range,
             symbol_by_proc_range: collector.symbol_by_proc_range,
             variable_symbols_by_stmt_range: collector.variable_symbols_by_stmt_range,
@@ -102,21 +96,19 @@ impl ScopeCollector {
     fn collect_proc_def(&mut self, proc_def: &ProcDef, owner_scope: ScopeId) {
         let decl_order = self.next_decl_order(owner_scope);
         let symbol_id = ProcSymbolId(self.proc_symbols.len());
-        let name = proc_def.name.clone();
         self.proc_symbols.push(ProcSymbol {
             id: symbol_id,
-            name: proc_def.name.clone(),
+            name_range: proc_def.name_range,
             is_global: proc_def.is_global,
             return_type: proc_def.return_type.clone(),
             owner_scope,
             decl_order,
             range: proc_def.range,
         });
-        self.proc_names.push(name.clone());
         self.symbol_by_proc_range.insert(proc_def.range, symbol_id);
 
         if proc_def.is_global {
-            self.global_symbols_by_name.insert(name, symbol_id);
+            self.global_symbol_ids.push(symbol_id);
         } else {
             self.local_symbols_by_scope
                 .entry(owner_scope)
@@ -207,10 +199,9 @@ impl ScopeCollector {
         let mut param_ids = Vec::new();
         for param in &proc_def.params {
             let symbol_id = VariableSymbolId(self.variable_symbols.len());
-            self.variable_names.push(param.name.clone());
             self.variable_symbols.push(VariableSymbol {
                 id: symbol_id,
-                name: param.name.clone(),
+                name_range: param.name_range,
                 kind: VariableKind::Parameter,
                 ty: param.ty.clone(),
                 is_array: param.is_array,
@@ -249,11 +240,9 @@ impl ScopeCollector {
             };
 
             let symbol_id = VariableSymbolId(self.variable_symbols.len());
-            let name = declarator.name.clone();
-            self.variable_names.push(name.clone());
             self.variable_symbols.push(VariableSymbol {
                 id: symbol_id,
-                name: declarator.name.clone(),
+                name_range: declarator.name_range,
                 kind,
                 ty: decl.ty.clone(),
                 is_array: declarator.array_size.is_some(),
@@ -264,7 +253,7 @@ impl ScopeCollector {
 
             match kind {
                 VariableKind::Global => {
-                    self.global_variables_by_name.insert(name, symbol_id);
+                    self.global_variable_ids.push(symbol_id);
                 }
                 VariableKind::Local | VariableKind::Parameter => {
                     self.local_variables_by_scope
@@ -285,13 +274,11 @@ impl ScopeCollector {
 pub(crate) struct CollectedScopes {
     pub(crate) scopes: ScopeTree,
     pub(crate) proc_symbols: Vec<ProcSymbol>,
-    proc_names: Vec<String>,
     pub(crate) variable_symbols: Vec<VariableSymbol>,
-    variable_names: Vec<String>,
     local_symbols_by_scope: HashMap<ScopeId, Vec<ProcSymbolId>>,
-    global_symbols_by_name: HashMap<String, ProcSymbolId>,
+    global_symbol_ids: Vec<ProcSymbolId>,
     local_variables_by_scope: HashMap<ScopeId, Vec<VariableSymbolId>>,
-    global_variables_by_name: HashMap<String, VariableSymbolId>,
+    global_variable_ids: Vec<VariableSymbolId>,
     scope_by_range: HashMap<TextRange, ScopeId>,
     symbol_by_proc_range: HashMap<TextRange, ProcSymbolId>,
     variable_symbols_by_stmt_range: HashMap<TextRange, Vec<VariableSymbolId>>,
@@ -317,20 +304,21 @@ impl CollectedScopes {
         &self.proc_symbols[id.0]
     }
 
-    pub(crate) fn proc_name(&self, id: ProcSymbolId) -> &str {
-        &self.proc_names[id.0]
+    pub(crate) fn proc_name<'a>(&self, source_text: &'a str, id: ProcSymbolId) -> &'a str {
+        text_slice(source_text, self.symbol(id).name_range)
     }
 
     pub(crate) fn variable_symbol(&self, id: VariableSymbolId) -> &VariableSymbol {
         &self.variable_symbols[id.0]
     }
 
-    pub(crate) fn variable_name(&self, id: VariableSymbolId) -> &str {
-        &self.variable_names[id.0]
+    pub(crate) fn variable_name<'a>(&self, source_text: &'a str, id: VariableSymbolId) -> &'a str {
+        text_slice(source_text, self.variable_symbol(id).name_range)
     }
 
     pub(crate) fn find_visible_local_proc(
         &self,
+        source_text: &str,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
@@ -346,7 +334,7 @@ impl CollectedScopes {
                         .iter()
                         .filter_map(|symbol_id| {
                             let symbol = self.symbol(*symbol_id);
-                            (self.proc_name(*symbol_id) == name
+                            (self.proc_name(source_text, *symbol_id) == name
                                 && symbol.decl_order <= visible_order)
                                 .then_some(symbol)
                         })
@@ -365,6 +353,7 @@ impl CollectedScopes {
 
     pub(crate) fn find_forward_local_proc(
         &self,
+        source_text: &str,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
@@ -377,32 +366,36 @@ impl CollectedScopes {
                     .iter()
                     .filter_map(|symbol_id| {
                         let symbol = self.symbol(*symbol_id);
-                        (self.proc_name(*symbol_id) == name && symbol.decl_order > visible_order)
+                        (self.proc_name(source_text, *symbol_id) == name
+                            && symbol.decl_order > visible_order)
                             .then_some(symbol)
                     })
                     .min_by_key(|symbol| symbol.decl_order)
             })
     }
 
-    pub(crate) fn find_global_proc(&self, name: &str) -> Option<&ProcSymbol> {
-        self.global_symbols_by_name
-            .get(name)
-            .map(|symbol_id| self.symbol(*symbol_id))
+    pub(crate) fn find_global_proc(&self, source_text: &str, name: &str) -> Option<&ProcSymbol> {
+        self.global_symbol_ids.iter().find_map(|symbol_id| {
+            let symbol = self.symbol(*symbol_id);
+            (text_slice(source_text, symbol.name_range) == name).then_some(symbol)
+        })
     }
 
     pub(crate) fn find_resolved_proc_symbol(
         &self,
+        source_text: &str,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
     ) -> Option<&ProcSymbol> {
-        self.find_visible_local_proc(name, scope, visible_decl_orders)
-            .or_else(|| self.find_forward_local_proc(name, scope, visible_decl_orders))
-            .or_else(|| self.find_global_proc(name))
+        self.find_visible_local_proc(source_text, name, scope, visible_decl_orders)
+            .or_else(|| self.find_forward_local_proc(source_text, name, scope, visible_decl_orders))
+            .or_else(|| self.find_global_proc(source_text, name))
     }
 
     pub(crate) fn find_visible_local_variable(
         &self,
+        source_text: &str,
         name: &str,
         scope: ScopeId,
         visible_decl_orders: &HashMap<ScopeId, usize>,
@@ -418,7 +411,7 @@ impl CollectedScopes {
                         .iter()
                         .filter_map(|symbol_id| {
                             let symbol = self.variable_symbol(*symbol_id);
-                            (self.variable_name(*symbol_id) == name
+                            (self.variable_name(source_text, *symbol_id) == name
                                 && symbol.decl_order <= visible_order)
                                 .then_some(symbol)
                         })
@@ -435,10 +428,15 @@ impl CollectedScopes {
         None
     }
 
-    pub(crate) fn find_global_variable(&self, name: &str) -> Option<&VariableSymbol> {
-        self.global_variables_by_name
-            .get(name)
-            .map(|symbol_id| self.variable_symbol(*symbol_id))
+    pub(crate) fn find_global_variable(
+        &self,
+        source_text: &str,
+        name: &str,
+    ) -> Option<&VariableSymbol> {
+        self.global_variable_ids.iter().find_map(|symbol_id| {
+            let symbol = self.variable_symbol(*symbol_id);
+            (text_slice(source_text, symbol.name_range) == name).then_some(symbol)
+        })
     }
 
     pub(crate) fn variable_symbols_for_stmt(&self, stmt: &Stmt) -> &[VariableSymbolId] {

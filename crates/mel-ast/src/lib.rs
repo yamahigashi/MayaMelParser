@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Typed AST shapes used by the parser and semantic layers.
 
-use mel_syntax::TextRange;
+use mel_syntax::{TextRange, text_slice};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SourceFile {
@@ -17,7 +17,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcDef {
     pub return_type: Option<ProcReturnType>,
-    pub name: String,
+    pub name_range: TextRange,
     pub params: Vec<ProcParam>,
     pub body: Stmt,
     pub is_global: bool,
@@ -94,11 +94,11 @@ pub enum Stmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Ident {
-        name: String,
+        name_range: TextRange,
         range: TextRange,
     },
     BareWord {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     Int {
@@ -106,11 +106,11 @@ pub enum Expr {
         range: TextRange,
     },
     Float {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     String {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     Cast {
@@ -150,7 +150,7 @@ pub enum Expr {
     },
     MemberAccess {
         target: Box<Expr>,
-        member: String,
+        member: TextRange,
         range: TextRange,
     },
     ComponentAccess {
@@ -214,7 +214,7 @@ pub struct VarDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcParam {
     pub ty: TypeName,
-    pub name: String,
+    pub name_range: TextRange,
     pub is_array: bool,
     pub range: TextRange,
 }
@@ -250,7 +250,7 @@ pub enum TypeName {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declarator {
-    pub name: String,
+    pub name_range: TextRange,
     pub array_size: Option<Option<Expr>>,
     pub initializer: Option<Expr>,
     pub range: TextRange,
@@ -305,11 +305,11 @@ pub enum UpdateOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvokeSurface {
     Function {
-        name: String,
+        head_range: TextRange,
         args: Vec<Expr>,
     },
     ShellLike {
-        head: String,
+        head_range: TextRange,
         words: Vec<ShellWord>,
         captured: bool,
     },
@@ -318,19 +318,19 @@ pub enum InvokeSurface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellWord {
     Flag {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     NumericLiteral {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     BareWord {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     QuotedString {
-        text: String,
+        text: TextRange,
         range: TextRange,
     },
     Variable {
@@ -356,51 +356,48 @@ pub enum ShellWord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CalleeResolution {
-    Unresolved,
-    Proc(String),
-    BuiltinCommand(String),
-    PluginCommand(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvokeExpr {
     pub surface: InvokeSurface,
-    pub resolution: CalleeResolution,
     pub range: TextRange,
 }
 
 impl ProcDef {
     #[must_use]
-    pub fn name_text(&self, source_text: &str) -> &str {
-        let _ = source_text;
-        self.name.as_str()
+    pub fn name_text<'a>(&self, source_text: &'a str) -> &'a str {
+        text_slice(source_text, self.name_range)
     }
 }
 
 impl ProcParam {
     #[must_use]
-    pub fn name_text(&self, source_text: &str) -> &str {
-        let _ = source_text;
-        self.name.as_str()
+    pub fn name_text<'a>(&self, source_text: &'a str) -> &'a str {
+        text_slice(source_text, self.name_range)
     }
 }
 
 impl Declarator {
     #[must_use]
-    pub fn name_text(&self, source_text: &str) -> &str {
-        let _ = source_text;
-        self.name.as_str()
+    pub fn name_text<'a>(&self, source_text: &'a str) -> &'a str {
+        text_slice(source_text, self.name_range)
+    }
+}
+
+impl Expr {
+    #[must_use]
+    pub fn ident_text<'a>(&self, source_text: &'a str) -> Option<&'a str> {
+        match self {
+            Self::Ident { name_range, .. } => Some(text_slice(source_text, *name_range)),
+            _ => None,
+        }
     }
 }
 
 impl InvokeSurface {
     #[must_use]
-    pub fn head_text(&self, source_text: &str) -> Option<&str> {
+    pub fn head_text<'a>(&self, source_text: &'a str) -> Option<&'a str> {
         match self {
-            Self::Function { name, .. } | Self::ShellLike { head: name, .. } => {
-                let _ = source_text;
-                Some(name.as_str())
+            Self::Function { head_range, .. } | Self::ShellLike { head_range, .. } => {
+                Some(text_slice(source_text, *head_range))
             }
         }
     }
@@ -410,10 +407,10 @@ impl ShellWord {
     #[must_use]
     pub fn text_range(&self) -> Option<TextRange> {
         match self {
-            Self::Flag { range, .. }
-            | Self::NumericLiteral { range, .. }
-            | Self::BareWord { range, .. }
-            | Self::QuotedString { range, .. } => Some(*range),
+            Self::Flag { text, .. }
+            | Self::NumericLiteral { text, .. }
+            | Self::BareWord { text, .. }
+            | Self::QuotedString { text, .. } => Some(*text),
             Self::Variable { .. }
             | Self::GroupedExpr { .. }
             | Self::BraceList { .. }
@@ -423,15 +420,12 @@ impl ShellWord {
     }
 
     #[must_use]
-    pub fn text(&self, source_text: &str) -> Option<&str> {
+    pub fn text<'a>(&'a self, source_text: &'a str) -> Option<&'a str> {
         match self {
             Self::Flag { text, .. }
             | Self::NumericLiteral { text, .. }
             | Self::BareWord { text, .. }
-            | Self::QuotedString { text, .. } => {
-                let _ = source_text;
-                Some(text.as_str())
-            }
+            | Self::QuotedString { text, .. } => Some(text_slice(source_text, *text)),
             Self::Variable { .. }
             | Self::GroupedExpr { .. }
             | Self::BraceList { .. }
@@ -443,22 +437,22 @@ impl ShellWord {
 
 #[cfg(test)]
 mod tests {
-    use super::{CalleeResolution, Expr, InvokeExpr, InvokeSurface, ShellWord};
+    use super::{Expr, InvokeExpr, InvokeSurface, ShellWord};
     use mel_syntax::text_range;
 
     #[test]
     fn unresolved_invoke_is_constructible() {
         let invoke = InvokeExpr {
             surface: InvokeSurface::ShellLike {
-                head: "ls".to_owned(),
+                head_range: text_range(0, 2),
                 words: vec![
                     ShellWord::NumericLiteral {
-                        text: "1".to_owned(),
+                        text: text_range(3, 4),
                         range: text_range(3, 4),
                     },
                     ShellWord::Variable {
                         expr: Expr::Ident {
-                            name: "$items".to_owned(),
+                            name_range: text_range(5, 11),
                             range: text_range(5, 11),
                         },
                         range: text_range(5, 11),
@@ -466,10 +460,10 @@ mod tests {
                 ],
                 captured: true,
             },
-            resolution: CalleeResolution::Unresolved,
             range: text_range(0, 12),
         };
 
-        assert!(matches!(invoke.resolution, CalleeResolution::Unresolved));
+        assert!(matches!(invoke.surface, InvokeSurface::ShellLike { .. }));
+        assert_eq!(invoke.range, text_range(0, 12));
     }
 }

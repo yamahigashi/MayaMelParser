@@ -31,10 +31,12 @@ fn remap_proc_def_ranges(proc_def: &mut mel_ast::ProcDef, map: &OffsetMap) {
     }
 
     for param in &mut proc_def.params {
+        param.name_range = map.map_range(param.name_range);
         param.range = map.map_range(param.range);
     }
 
     remap_stmt_ranges(&mut proc_def.body, map);
+    proc_def.name_range = map.map_range(proc_def.name_range);
     proc_def.range = map.map_range(proc_def.range);
 }
 
@@ -161,6 +163,7 @@ fn remap_var_decl_ranges(decl: &mut VarDecl, map: &OffsetMap) {
         if let Some(initializer) = &mut declarator.initializer {
             remap_expr_ranges(initializer, map);
         }
+        declarator.name_range = map.map_range(declarator.name_range);
         declarator.range = map.map_range(declarator.range);
     }
     decl.range = map.map_range(decl.range);
@@ -168,11 +171,17 @@ fn remap_var_decl_ranges(decl: &mut VarDecl, map: &OffsetMap) {
 
 fn remap_expr_ranges(expr: &mut Expr, map: &OffsetMap) {
     match expr {
-        Expr::Ident { range, .. }
-        | Expr::BareWord { range, .. }
-        | Expr::Int { range, .. }
-        | Expr::Float { range, .. }
-        | Expr::String { range, .. } => *range = map.map_range(*range),
+        Expr::Ident { name_range, range } => {
+            *name_range = map.map_range(*name_range);
+            *range = map.map_range(*range);
+        }
+        Expr::BareWord { text, range }
+        | Expr::Float { text, range }
+        | Expr::String { text, range } => {
+            *text = map.map_range(*text);
+            *range = map.map_range(*range);
+        }
+        Expr::Int { range, .. } => *range = map.map_range(*range),
         Expr::Cast { expr, range, .. } => {
             remap_expr_ranges(expr, map);
             *range = map.map_range(*range);
@@ -219,7 +228,16 @@ fn remap_expr_ranges(expr: &mut Expr, map: &OffsetMap) {
             remap_expr_ranges(index, map);
             *range = map.map_range(*range);
         }
-        Expr::MemberAccess { target, range, .. } | Expr::ComponentAccess { target, range, .. } => {
+        Expr::MemberAccess {
+            target,
+            member,
+            range,
+        } => {
+            remap_expr_ranges(target, map);
+            *member = map.map_range(*member);
+            *range = map.map_range(*range);
+        }
+        Expr::ComponentAccess { target, range, .. } => {
             remap_expr_ranges(target, map);
             *range = map.map_range(*range);
         }
@@ -229,12 +247,18 @@ fn remap_expr_ranges(expr: &mut Expr, map: &OffsetMap) {
 
 fn remap_invoke_ranges(invoke: &mut InvokeExpr, map: &OffsetMap) {
     match &mut invoke.surface {
-        InvokeSurface::Function { args, .. } => {
+        InvokeSurface::Function {
+            head_range, args, ..
+        } => {
+            *head_range = map.map_range(*head_range);
             for arg in args {
                 remap_expr_ranges(arg, map);
             }
         }
-        InvokeSurface::ShellLike { words, .. } => {
+        InvokeSurface::ShellLike {
+            head_range, words, ..
+        } => {
+            *head_range = map.map_range(*head_range);
             for word in words {
                 remap_shell_word_ranges(word, map);
             }
@@ -245,10 +269,14 @@ fn remap_invoke_ranges(invoke: &mut InvokeExpr, map: &OffsetMap) {
 
 fn remap_shell_word_ranges(word: &mut ShellWord, map: &OffsetMap) {
     match word {
-        ShellWord::Flag { range, .. }
-        | ShellWord::NumericLiteral { range, .. }
-        | ShellWord::BareWord { range, .. }
-        | ShellWord::QuotedString { range, .. } => {
+        ShellWord::Flag { text, range } => {
+            *text = map.map_range(*text);
+            *range = map.map_range(*range);
+        }
+        ShellWord::NumericLiteral { text, range }
+        | ShellWord::BareWord { text, range }
+        | ShellWord::QuotedString { text, range } => {
+            *text = map.map_range(*text);
             *range = map.map_range(*range);
         }
         ShellWord::Variable { expr, range }

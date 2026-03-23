@@ -19,7 +19,7 @@ fn parses_proc_fixtures() {
     match &parse.syntax.items[0] {
         Item::Proc(proc_def) => {
             assert!(proc_def.is_global);
-            assert_eq!(proc_def.name, "greetUser");
+            assert_eq!(parse.source_slice(proc_def.name_range), "greetUser");
             assert!(matches!(
                 proc_def.return_type,
                 Some(mel_ast::ProcReturnType {
@@ -30,7 +30,7 @@ fn parses_proc_fixtures() {
             ));
             assert_eq!(proc_def.params.len(), 1);
             assert!(matches!(proc_def.params[0].ty, TypeName::String));
-            assert_eq!(proc_def.params[0].name, "$name");
+            assert_eq!(parse.source_slice(proc_def.params[0].name_range), "$name");
             assert!(!proc_def.params[0].is_array);
             assert!(matches!(proc_def.body, Stmt::Block { .. }));
         }
@@ -145,8 +145,10 @@ fn parses_command_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "print");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "print");
                     assert!(matches!(words[0], ShellWord::BareWord { .. }));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -170,11 +172,13 @@ fn parses_command_dotdot_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "setParent");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "setParent");
                     assert!(matches!(
                         words[0],
-                        ShellWord::BareWord { ref text, .. } if text == ".."
+                        ShellWord::BareWord { ref text, .. } if parse.source_slice(*text) == ".."
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -202,7 +206,7 @@ fn parses_command_dotdot_after_flag_fixture() {
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
-                        ShellWord::BareWord { ref text, .. } if text == ".."
+                        ShellWord::BareWord { ref text, .. } if parse.source_slice(*text) == ".."
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -224,11 +228,13 @@ fn parses_command_dotdot_without_whitespace() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "setParent");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "setParent");
                     assert!(matches!(
                         words[0],
-                        ShellWord::BareWord { ref text, .. } if text == ".."
+                        ShellWord::BareWord { ref text, .. } if parse.source_slice(*text) == ".."
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -253,7 +259,7 @@ fn keeps_quoted_dotdot_as_quoted_string() {
                 InvokeSurface::ShellLike { words, .. } => {
                     assert!(matches!(
                         words[0],
-                        ShellWord::QuotedString { ref text, .. } if text == "\"..\""
+                        ShellWord::QuotedString { ref text, .. } if parse.source_slice(*text) == "\"..\""
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -275,8 +281,10 @@ fn keeps_no_whitespace_ident_lparen_as_function_stmt() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::Function { name, args } => {
-                    assert_eq!(name, "doItDRA");
+                InvokeSurface::Function {
+                    head_range, args, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "doItDRA");
                     assert!(args.is_empty());
                 }
                 _ => panic!("expected function invoke"),
@@ -300,8 +308,10 @@ fn parses_function_stmt_spaced_lparen_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::Function { name, args } => {
-                    assert_eq!(name, "tmBuildSet");
+                InvokeSurface::Function {
+                    head_range, args, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "tmBuildSet");
                     assert_eq!(args.len(), 2);
                 }
                 _ => panic!("expected function invoke"),
@@ -325,8 +335,10 @@ fn parses_command_leading_grouped_arg_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "renameAttr");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "renameAttr");
                     assert!(matches!(
                         words[0],
                         ShellWord::GroupedExpr {
@@ -362,7 +374,7 @@ fn parses_command_numeric_arg_fixture() {
                     assert!(matches!(words[1], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[2],
-                        ShellWord::NumericLiteral { ref text, .. } if text == "0"
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == "0"
                     ));
                     assert!(matches!(words[3], ShellWord::Variable { .. }));
                 }
@@ -390,7 +402,7 @@ fn parses_command_signed_numeric_arg_fixture() {
                 InvokeSurface::ShellLike { words, .. } => {
                     assert!(matches!(
                         words[3],
-                        ShellWord::NumericLiteral { ref text, .. } if text == "-10"
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == "-10"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -418,12 +430,12 @@ fn parses_command_leading_dot_float_fixture() {
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
-                        ShellWord::NumericLiteral { ref text, .. } if text == ".7"
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == ".7"
                     ));
                     assert!(matches!(words[2], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[3],
-                        ShellWord::NumericLiteral { ref text, .. } if text == ".001"
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == ".001"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -452,12 +464,12 @@ fn parses_command_trailing_dot_float_fixture() {
                     assert!(matches!(words[1], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[2],
-                        ShellWord::NumericLiteral { ref text, .. } if text == "-1000."
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == "-1000."
                     ));
                     assert!(matches!(words[3], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[4],
-                        ShellWord::NumericLiteral { ref text, .. } if text == "1000."
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == "1000."
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -509,16 +521,18 @@ fn parses_command_spaced_flag_fixture() {
         Item::Stmt(stmt) => match &**stmt {
             Stmt::VarDecl { decl, .. } => match &decl.declarators[0].initializer {
                 Some(Expr::Invoke(invoke)) => match &invoke.surface {
-                    InvokeSurface::ShellLike { head, words, .. } => {
-                        assert_eq!(head, "optionVar");
+                    InvokeSurface::ShellLike {
+                        head_range, words, ..
+                    } => {
+                        assert_eq!(parse.source_slice(*head_range), "optionVar");
                         assert!(matches!(
                             words[0],
-                            ShellWord::Flag { ref text, .. } if text == "- q"
+                            ShellWord::Flag { ref text, .. } if parse.source_slice(*text) == "- q"
                         ));
                         assert!(matches!(
                             words[1],
                             ShellWord::BareWord { ref text, .. }
-                            if text == "LayoutPreviewResolution"
+                            if parse.source_slice(*text) == "LayoutPreviewResolution"
                         ));
                     }
                     _ => panic!("expected shell-like invoke"),
@@ -545,8 +559,10 @@ fn parses_command_multiline_grouped_args_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "connectAttr");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "connectAttr");
                     assert_eq!(words.len(), 2);
                     assert!(matches!(words[0], ShellWord::GroupedExpr { .. }));
                     assert!(matches!(words[1], ShellWord::GroupedExpr { .. }));
@@ -564,15 +580,17 @@ fn parses_command_multiline_grouped_args_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "setAttr");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "setAttr");
                     assert!(matches!(words[0], ShellWord::GroupedExpr { .. }));
                     assert!(
-                        matches!(words[1], ShellWord::Flag { ref text, .. } if text == "-type")
+                        matches!(words[1], ShellWord::Flag { ref text, .. } if parse.source_slice(*text) == "-type")
                     );
                     assert!(matches!(
                         words[2],
-                        ShellWord::BareWord { ref text, .. } if text == "double3"
+                        ShellWord::BareWord { ref text, .. } if parse.source_slice(*text) == "double3"
                     ));
                     assert!(matches!(words[3], ShellWord::GroupedExpr { .. }));
                     assert!(matches!(words[4], ShellWord::GroupedExpr { .. }));
@@ -599,11 +617,13 @@ fn parses_command_point_constraint_brace_list_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "applyPointConstraintArgs");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "applyPointConstraintArgs");
                     assert!(matches!(
                         words[0],
-                        ShellWord::NumericLiteral { ref text, .. } if text == "2"
+                        ShellWord::NumericLiteral { ref text, .. } if parse.source_slice(*text) == "2"
                     ));
                     assert!(matches!(
                         words[1],
@@ -634,8 +654,10 @@ fn parses_command_orient_constraint_brace_list_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "applyOrientConstraintArgs");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "applyOrientConstraintArgs");
                     match &words[1] {
                         ShellWord::BraceList {
                             expr: Expr::ArrayLiteral { elements, .. },
@@ -643,15 +665,15 @@ fn parses_command_orient_constraint_brace_list_fixture() {
                         } => {
                             assert!(matches!(
                                 elements[0],
-                                Expr::String { ref text, .. } if text == "\"1\""
+                                Expr::String { ref text, .. } if parse.source_slice(*text) == "\"1\""
                             ));
                             assert!(matches!(
                                 elements[7],
-                                Expr::String { ref text, .. } if text == "\"8\""
+                                Expr::String { ref text, .. } if parse.source_slice(*text) == "\"8\""
                             ));
                             assert!(matches!(
                                 elements[8],
-                                Expr::String { ref text, .. } if text == "\"\""
+                                Expr::String { ref text, .. } if parse.source_slice(*text) == "\"\""
                             ));
                         }
                         _ => panic!("expected brace-list shell word"),
@@ -677,11 +699,12 @@ fn parses_command_capture_vector_literal_fixture() {
             Stmt::VarDecl { decl, .. } => match &decl.declarators[0].initializer {
                 Some(Expr::Invoke(invoke)) => match &invoke.surface {
                     InvokeSurface::ShellLike {
-                        head,
+                        head_range,
                         words,
                         captured,
+                        ..
                     } => {
-                        assert_eq!(head, "hsv_to_rgb");
+                        assert_eq!(parse.source_slice(*head_range), "hsv_to_rgb");
                         assert!(*captured);
                         assert!(matches!(
                             words[0],
@@ -706,8 +729,10 @@ fn parses_command_capture_vector_literal_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "text");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "text");
                     assert!(matches!(
                         words[2],
                         ShellWord::GroupedExpr {
@@ -737,18 +762,20 @@ fn parses_command_dotted_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "setDrivenKeyframe");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "setDrivenKeyframe");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "N_arm_01.rotateX"
+                            if parse.source_slice(*text) == "N_arm_01.rotateX"
                     ));
                     assert!(matches!(
                         words[2],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "N_arm_01_H.rotateX"
+                            if parse.source_slice(*text) == "N_arm_01_H.rotateX"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -772,17 +799,19 @@ fn parses_command_dotted_indexed_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "connectAttr");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "connectAttr");
                     assert!(matches!(
                         words[0],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "foo.worldMatrix[0]"
+                            if parse.source_slice(*text) == "foo.worldMatrix[0]"
                     ));
                     assert!(matches!(
                         words[1],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "bar.inputWorldMatrix"
+                            if parse.source_slice(*text) == "bar.inputWorldMatrix"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -806,8 +835,10 @@ fn parses_command_dotted_variable_indexed_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "connectAttr");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "connectAttr");
                     assert!(matches!(
                         words[0],
                         ShellWord::GroupedExpr {
@@ -818,7 +849,7 @@ fn parses_command_dotted_variable_indexed_bareword_fixture() {
                     assert!(matches!(
                         words[1],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "LayerRegistry.layerSlot[$index]"
+                            if parse.source_slice(*text) == "LayerRegistry.layerSlot[$index]"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -842,12 +873,14 @@ fn parses_command_dotted_global_attr_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "getAttr");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "getAttr");
                     assert!(matches!(
                         words[0],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "defaultRenderGlobals.hyperShadeBinList"
+                            if parse.source_slice(*text) == "defaultRenderGlobals.hyperShadeBinList"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -871,13 +904,15 @@ fn parses_command_pipe_dag_path_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "select");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "select");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "Null|Spine_00|Tail_00"
+                            if parse.source_slice(*text) == "Null|Spine_00|Tail_00"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -901,12 +936,14 @@ fn parses_command_pipe_wildcard_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "select");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "select");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
-                        ShellWord::BareWord { ref text, .. } if text == "*|_x005"
+                        ShellWord::BareWord { ref text, .. } if parse.source_slice(*text) == "*|_x005"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -930,17 +967,19 @@ fn parses_command_absolute_plug_path_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "defaultNavigation");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "defaultNavigation");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(
-                        matches!(words[1], ShellWord::BareWord { ref text, .. } if text == "shaderNodePreview1")
+                        matches!(words[1], ShellWord::BareWord { ref text, .. } if parse.source_slice(*text) == "shaderNodePreview1")
                     );
                     assert!(matches!(words[2], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[3],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "|geoPreview1|geoPreviewShape1.instObjGroups[0]"
+                            if parse.source_slice(*text) == "|geoPreview1|geoPreviewShape1.instObjGroups[0]"
                     ));
                     assert!(matches!(words[4], ShellWord::Flag { .. }));
                 }
@@ -965,13 +1004,15 @@ fn parses_command_namespace_pipe_bareword_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "select");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "select");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
                         ShellWord::BareWord { ref text, .. }
-                            if text == "ns:root|ns:spine|ns:ctrl"
+                            if parse.source_slice(*text) == "ns:root|ns:spine|ns:ctrl"
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -993,13 +1034,15 @@ fn parses_command_leading_colon_bareword_fixture() {
         Item::Stmt(stmt) => match &**stmt {
             Stmt::VarDecl { decl, .. } => match &decl.declarators[0].initializer {
                 Some(Expr::Invoke(invoke)) => match &invoke.surface {
-                    InvokeSurface::ShellLike { head, words, .. } => {
-                        assert_eq!(head, "camera");
+                    InvokeSurface::ShellLike {
+                        head_range, words, ..
+                    } => {
+                        assert_eq!(parse.source_slice(*head_range), "camera");
                         assert!(matches!(words[0], ShellWord::Flag { .. }));
                         assert!(matches!(
                             words[1],
                             ShellWord::BareWord { ref text, .. }
-                                if text == ":previewViewportCamera"
+                                if parse.source_slice(*text) == ":previewViewportCamera"
                         ));
                     }
                     _ => panic!("expected shell-like invoke"),
@@ -1026,8 +1069,10 @@ fn parses_command_grouped_args_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "iconTextButton");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "iconTextButton");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(words[1], ShellWord::QuotedString { .. }));
                     assert!(matches!(
@@ -1058,8 +1103,10 @@ fn parses_command_grouped_args_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "menuItem");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "menuItem");
                     assert!(matches!(
                         words[1],
                         ShellWord::GroupedExpr {
@@ -1072,7 +1119,7 @@ fn parses_command_grouped_args_fixture() {
                         ShellWord::Variable {
                             expr: Expr::MemberAccess { ref member, .. },
                             ..
-                        } if member == "name"
+                        } if parse.source_slice(*member) == "name"
                     ));
                     assert!(matches!(words[5], ShellWord::Capture { .. }));
                 }
@@ -1098,11 +1145,12 @@ fn parses_command_capture_grouped_function_call_fixture() {
                 Some(Expr::Unary { expr, .. }) => match &**expr {
                     Expr::Invoke(invoke) => match &invoke.surface {
                         InvokeSurface::ShellLike {
-                            head,
+                            head_range,
                             words,
                             captured,
+                            ..
                         } => {
-                            assert_eq!(head, "optionVar");
+                            assert_eq!(parse.source_slice(*head_range), "optionVar");
                             assert!(*captured);
                             assert!(matches!(words[0], ShellWord::Flag { .. }));
                             assert!(matches!(
@@ -1130,8 +1178,10 @@ fn parses_command_capture_grouped_function_call_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "optionVar");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "optionVar");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],
@@ -1258,7 +1308,7 @@ fn parses_exponent_float_fixture() {
                 ..
             } => assert!(matches!(
                 **rhs,
-                Expr::Float { ref text, .. } if text == "1.0e-3"
+                Expr::Float { ref text, .. } if parse.source_slice(*text) == "1.0e-3"
             )),
             _ => panic!("expected exponent assignment"),
         },
@@ -1279,11 +1329,11 @@ fn parses_exponent_float_fixture() {
                 Expr::Binary { lhs, rhs, .. } => {
                     assert!(matches!(
                         **lhs,
-                        Expr::Float { ref text, .. } if text == "1e+3"
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "1e+3"
                     ));
                     assert!(matches!(
                         **rhs,
-                        Expr::Float { ref text, .. } if text == "0.0e0"
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "0.0e0"
                     ));
                 }
                 _ => panic!("expected exponent binary expression"),
@@ -1327,7 +1377,7 @@ fn parses_trailing_dot_float_fixture() {
                 ..
             } => assert!(matches!(
                 **rhs,
-                Expr::Float { ref text, .. } if text == "1000."
+                Expr::Float { ref text, .. } if parse.source_slice(*text) == "1000."
             )),
             _ => panic!("expected trailing-dot float assignment"),
         },
@@ -1348,11 +1398,11 @@ fn parses_trailing_dot_float_fixture() {
                 Expr::Binary { lhs, rhs, .. } => {
                     assert!(matches!(
                         **lhs,
-                        Expr::Float { ref text, .. } if text == "0."
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "0."
                     ));
                     assert!(matches!(
                         **rhs,
-                        Expr::Float { ref text, .. } if text == "1."
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "1."
                     ));
                 }
                 _ => panic!("expected binary expression"),
@@ -1377,15 +1427,15 @@ fn parses_trailing_dot_float_fixture() {
                     assert_eq!(elements.len(), 3);
                     assert!(matches!(
                         elements[0],
-                        Expr::Float { ref text, .. } if text == "0."
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "0."
                     ));
                     assert!(matches!(
                         elements[1],
-                        Expr::Float { ref text, .. } if text == "1."
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "1."
                     ));
                     assert!(matches!(
                         elements[2],
-                        Expr::Float { ref text, .. } if text == "2."
+                        Expr::Float { ref text, .. } if parse.source_slice(*text) == "2."
                     ));
                 }
                 _ => panic!("expected brace-list assignment"),
@@ -1592,7 +1642,7 @@ fn parses_variable_declaration_fixtures() {
             Stmt::VarDecl { decl, .. } => {
                 assert!(matches!(decl.ty, TypeName::Int));
                 assert_eq!(decl.declarators.len(), 1);
-                assert_eq!(decl.declarators[0].name, "$count");
+                assert_eq!(parse.source_slice(decl.declarators[0].name_range), "$count");
             }
             _ => panic!("expected variable declaration"),
         },
@@ -1732,7 +1782,7 @@ fn parses_path_like_bareword_expression_fixture() {
         Item::Stmt(stmt) => match &**stmt {
             Stmt::VarDecl { decl, .. } => match decl.declarators[0].initializer.as_ref() {
                 Some(Expr::BareWord { text, .. }) => {
-                    assert_eq!(text, "AA_Bar*|mdl|_XXa0|");
+                    assert_eq!(parse.source_slice(*text), "AA_Bar*|mdl|_XXa0|");
                 }
                 _ => panic!("expected path-like bareword initializer"),
             },
@@ -1935,11 +1985,11 @@ fn parses_member_access_fixture() {
                 Expr::Binary { lhs, rhs, .. } => {
                     assert!(matches!(
                         **lhs,
-                        Expr::MemberAccess { ref member, .. } if member == "foo"
+                        Expr::MemberAccess { ref member, .. } if parse.source_slice(*member) == "foo"
                     ));
                     assert!(matches!(
                         **rhs,
-                        Expr::MemberAccess { ref member, .. } if member == "bar"
+                        Expr::MemberAccess { ref member, .. } if parse.source_slice(*member) == "bar"
                     ));
                 }
                 _ => panic!("expected binary member access"),
@@ -1961,7 +2011,7 @@ fn parses_member_access_fixture() {
                 ..
             } => assert!(matches!(
                 **rhs,
-                Expr::MemberAccess { ref member, .. } if member == "name"
+                Expr::MemberAccess { ref member, .. } if parse.source_slice(*member) == "name"
             )),
             _ => panic!("expected indexed member access"),
         },
@@ -2215,8 +2265,10 @@ fn reports_missing_closing_backquote_without_command_cascade_fixture() {
                 expr: Expr::Invoke(invoke),
                 ..
             } => match &invoke.surface {
-                InvokeSurface::ShellLike { head, words, .. } => {
-                    assert_eq!(head, "optionVar");
+                InvokeSurface::ShellLike {
+                    head_range, words, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "optionVar");
                     assert!(matches!(words[0], ShellWord::Flag { .. }));
                     assert!(matches!(
                         words[1],

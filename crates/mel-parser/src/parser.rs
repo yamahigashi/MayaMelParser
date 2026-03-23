@@ -1,7 +1,7 @@
 use mel_ast::{
-    AssignOp, BinaryOp, CalleeResolution, Declarator, Expr, InvokeExpr, InvokeSurface, Item,
-    ProcDef, ProcParam, ProcReturnType, ShellWord, SourceFile, Stmt, SwitchClause, SwitchLabel,
-    TypeName, UnaryOp, UpdateOp, VarDecl, VectorComponent,
+    AssignOp, BinaryOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam,
+    ProcReturnType, ShellWord, SourceFile, Stmt, SwitchClause, SwitchLabel, TypeName, UnaryOp,
+    UpdateOp, VarDecl, VectorComponent,
 };
 use mel_lexer::lex;
 use mel_syntax::{TextRange, Token, TokenKind, range_end, range_start, text_range};
@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
             self.error("expected proc name before parameter list", range);
             return Some(ProcDef {
                 return_type,
-                name: String::new(),
+                name_range: range,
                 params: Vec::new(),
                 body: Stmt::Block {
                     statements: Vec::new(),
@@ -143,7 +143,7 @@ impl<'a> Parser<'a> {
 
         Some(ProcDef {
             return_type,
-            name: self.token_text(name_token).to_owned(),
+            name_range: name_token.range,
             params,
             body,
             is_global,
@@ -194,7 +194,7 @@ impl<'a> Parser<'a> {
             self.error("expected '$' before proc parameter name", range);
             return Some(ProcParam {
                 ty,
-                name: String::new(),
+                name_range: range,
                 is_array: false,
                 range: type_token.range,
             });
@@ -207,7 +207,7 @@ impl<'a> Parser<'a> {
             self.error("expected identifier after '$'", range);
             return Some(ProcParam {
                 ty,
-                name: self.token_text(dollar).to_owned(),
+                name_range: dollar.range,
                 is_array: false,
                 range: text_range(start, range_end(dollar.range)),
             });
@@ -222,7 +222,7 @@ impl<'a> Parser<'a> {
 
         Some(ProcParam {
             ty,
-            name: format!("{}{}", self.token_text(dollar), self.token_text(ident)),
+            name_range: text_range(range_start(dollar.range), range_end(ident.range)),
             is_array,
             range: text_range(start, end),
         })
@@ -410,7 +410,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected while condition", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         } else if let Some(expr) = self.parse_expr() {
@@ -419,7 +419,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected while condition", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         };
@@ -463,7 +463,7 @@ impl<'a> Parser<'a> {
             return Some(Stmt::DoWhile {
                 body: Box::new(body),
                 condition: Expr::Ident {
-                    name: String::new(),
+                    name_range: range,
                     range,
                 },
                 range: text_range(range_start(do_token.range), body_end.max(range_end(range))),
@@ -476,7 +476,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected do-while condition", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         } else if let Some(expr) = self.parse_expr() {
@@ -485,7 +485,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected do-while condition", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         };
@@ -522,7 +522,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected switch control expression", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         } else if let Some(expr) = self.parse_expr() {
@@ -531,7 +531,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected switch control expression", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         };
@@ -591,7 +591,7 @@ impl<'a> Parser<'a> {
                 let range = self.current().range;
                 self.error("expected case value", range);
                 Expr::Ident {
-                    name: String::new(),
+                    name_range: range,
                     range,
                 }
             } else if let Some(expr) = self.parse_expr() {
@@ -600,7 +600,7 @@ impl<'a> Parser<'a> {
                 let range = self.current().range;
                 self.error("expected case value", range);
                 Expr::Ident {
-                    name: String::new(),
+                    name_range: range,
                     range,
                 }
             };
@@ -878,7 +878,7 @@ impl<'a> Parser<'a> {
         } else {
             self.error("expected identifier after '$'", self.current().range);
             return Some(Declarator {
-                name: self.token_text(dollar).to_owned(),
+                name_range: dollar.range,
                 array_size: None,
                 initializer: None,
                 range: dollar.range,
@@ -909,7 +909,7 @@ impl<'a> Parser<'a> {
         };
 
         Some(Declarator {
-            name: format!("{}{}", self.token_text(dollar), self.token_text(ident)),
+            name_range: text_range(range_start(dollar.range), range_end(ident.range)),
             array_size,
             initializer,
             range: text_range(range_start(dollar.range), end),
@@ -968,7 +968,7 @@ impl<'a> Parser<'a> {
                     Expr::MemberAccess {
                         range,
                         target: Box::new(lhs),
-                        member: member_name.to_owned(),
+                        member: member_token.range,
                     }
                 };
                 continue;
@@ -1172,7 +1172,7 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let token = self.bump();
                 Some(Expr::Ident {
-                    name: self.token_text(token).to_owned(),
+                    name_range: token.range,
                     range: token.range,
                 })
             }
@@ -1193,14 +1193,14 @@ impl<'a> Parser<'a> {
             TokenKind::FloatLiteral => {
                 let token = self.bump();
                 Some(Expr::Float {
-                    text: self.token_text(token).to_owned(),
+                    text: token.range,
                     range: token.range,
                 })
             }
             TokenKind::StringLiteral => {
                 let token = self.bump();
                 Some(Expr::String {
-                    text: self.token_text(token).to_owned(),
+                    text: token.range,
                     range: token.range,
                 })
             }
@@ -1218,7 +1218,7 @@ impl<'a> Parser<'a> {
         if start_index == end_index && self.token_at(start_index).kind == TokenKind::Ident {
             let token = self.bump();
             return Some(Expr::Ident {
-                name: self.token_text(token).to_owned(),
+                name_range: token.range,
                 range: token.range,
             });
         }
@@ -1228,10 +1228,7 @@ impl<'a> Parser<'a> {
         let range = text_range(start, end);
         self.pos = end_index + 1;
 
-        Some(Expr::BareWord {
-            text: self.input[start as usize..end as usize].to_owned(),
-            range,
-        })
+        Some(Expr::BareWord { text: range, range })
     }
 
     fn at_path_like_bareword_expr(&self) -> bool {
@@ -1256,13 +1253,13 @@ impl<'a> Parser<'a> {
         } else {
             self.error("expected identifier after '$'", self.current().range);
             return Some(Expr::Ident {
-                name: self.token_text(dollar).to_owned(),
+                name_range: dollar.range,
                 range: dollar.range,
             });
         };
 
         Some(Expr::Ident {
-            name: format!("{}{}", self.token_text(dollar), self.token_text(ident)),
+            name_range: text_range(range_start(dollar.range), range_end(ident.range)),
             range: text_range(range_start(dollar.range), range_end(ident.range)),
         })
     }
@@ -1295,7 +1292,7 @@ impl<'a> Parser<'a> {
             let range = self.current().range;
             self.error("expected expression after cast", range);
             Expr::Ident {
-                name: String::new(),
+                name_range: range,
                 range,
             }
         };
@@ -1433,10 +1430,9 @@ impl<'a> Parser<'a> {
 
         Some(InvokeExpr {
             surface: InvokeSurface::Function {
-                name: self.token_text(name_token).to_owned(),
+                head_range: name_token.range,
                 args,
             },
-            resolution: CalleeResolution::Unresolved,
             range: text_range(range_start(name_token.range), end),
         })
     }
@@ -1453,7 +1449,7 @@ impl<'a> Parser<'a> {
             if self.at(TokenKind::Flag) {
                 let flag = self.bump();
                 words.push(ShellWord::Flag {
-                    text: self.token_text(flag).to_owned(),
+                    text: flag.range,
                     range: flag.range,
                 });
                 continue;
@@ -1477,11 +1473,10 @@ impl<'a> Parser<'a> {
         let end = range_end(self.previous_range()).max(range_end(head_token.range));
         Some(InvokeExpr {
             surface: InvokeSurface::ShellLike {
-                head: self.token_text(head_token).to_owned(),
+                head_range: head_token.range,
                 words,
                 captured,
             },
-            resolution: CalleeResolution::Unresolved,
             range: text_range(range_start(head_token.range), end),
         })
     }
@@ -1492,11 +1487,10 @@ impl<'a> Parser<'a> {
         let invoke = if self.current().kind == TokenKind::Ident {
             self.parse_shell_like_invoke(true).unwrap_or(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
-                    head: String::new(),
+                    head_range: open.range,
                     words: Vec::new(),
                     captured: true,
                 },
-                resolution: CalleeResolution::Unresolved,
                 range: open.range,
             })
         } else {
@@ -1506,11 +1500,10 @@ impl<'a> Parser<'a> {
             );
             InvokeExpr {
                 surface: InvokeSurface::ShellLike {
-                    head: String::new(),
+                    head_range: open.range,
                     words: Vec::new(),
                     captured: true,
                 },
-                resolution: CalleeResolution::Unresolved,
                 range: open.range,
             }
         };
@@ -1549,7 +1542,7 @@ impl<'a> Parser<'a> {
             TokenKind::StringLiteral => {
                 let token = self.bump();
                 Some(ShellWord::QuotedString {
-                    text: self.token_text(token).to_owned(),
+                    text: token.range,
                     range: token.range,
                 })
             }
@@ -1593,10 +1586,7 @@ impl<'a> Parser<'a> {
         let range = text_range(start, end);
         self.pos = end_index + 1;
 
-        Some(ShellWord::BareWord {
-            text: self.input[start as usize..end as usize].to_owned(),
-            range,
-        })
+        Some(ShellWord::BareWord { text: range, range })
     }
 
     fn scan_shell_path_like_bareword_end(&self, start_index: usize) -> Option<usize> {
@@ -1896,10 +1886,7 @@ impl<'a> Parser<'a> {
             let first = self.bump();
             let second = self.bump();
             let range = text_range(range_start(first.range), range_end(second.range));
-            return Some(ShellWord::BareWord {
-                text: self.input[range_start(range) as usize..range_end(range) as usize].to_owned(),
-                range,
-            });
+            return Some(ShellWord::BareWord { text: range, range });
         }
 
         None
@@ -1910,7 +1897,7 @@ impl<'a> Parser<'a> {
             TokenKind::IntLiteral | TokenKind::FloatLiteral => {
                 let token = self.bump();
                 Some(ShellWord::NumericLiteral {
-                    text: self.token_text(token).to_owned(),
+                    text: token.range,
                     range: token.range,
                 })
             }
@@ -1923,11 +1910,7 @@ impl<'a> Parser<'a> {
                 let minus = self.bump();
                 let literal = self.bump();
                 let range = text_range(range_start(minus.range), range_end(literal.range));
-                Some(ShellWord::NumericLiteral {
-                    text: self.input[range_start(range) as usize..range_end(range) as usize]
-                        .to_owned(),
-                    range,
-                })
+                Some(ShellWord::NumericLiteral { text: range, range })
             }
             TokenKind::Dot
                 if self.peek_kind().is_some_and(|kind| {
@@ -1937,11 +1920,7 @@ impl<'a> Parser<'a> {
                 let dot = self.bump();
                 let literal = self.bump();
                 let range = text_range(range_start(dot.range), range_end(literal.range));
-                Some(ShellWord::NumericLiteral {
-                    text: self.input[range_start(range) as usize..range_end(range) as usize]
-                        .to_owned(),
-                    range,
-                })
+                Some(ShellWord::NumericLiteral { text: range, range })
             }
             _ => None,
         }
@@ -1963,10 +1942,7 @@ impl<'a> Parser<'a> {
         let minus = self.bump();
         let ident = self.bump();
         let range = text_range(range_start(minus.range), range_end(ident.range));
-        Some(ShellWord::Flag {
-            text: self.input[range_start(range) as usize..range_end(range) as usize].to_owned(),
-            range,
-        })
+        Some(ShellWord::Flag { text: range, range })
     }
 
     fn parse_brace_list_shell_word(&mut self) -> Option<ShellWord> {
@@ -2005,7 +1981,7 @@ impl<'a> Parser<'a> {
                     Expr::MemberAccess {
                         range,
                         target: Box::new(expr),
-                        member: member_name.to_owned(),
+                        member: member_token.range,
                     }
                 };
                 continue;

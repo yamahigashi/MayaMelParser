@@ -99,6 +99,7 @@ pub enum MayaNormalizedCommandItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaNormalizedCommand {
     pub head: String,
+    head_range: TextRange,
     pub schema_name: String,
     pub kind: CommandKind,
     pub mode: CommandMode,
@@ -239,7 +240,7 @@ where
     R: CommandRegistry + ?Sized,
 {
     let overlay = OverlayRegistry::new(registry);
-    let analysis = mel_sema::analyze_with_registry(&parse.syntax, &overlay);
+    let analysis = mel_sema::analyze_with_registry(&parse.syntax, &parse.source_text, &overlay);
     let mut remaining_normalized: Vec<Option<MayaNormalizedCommand>> = analysis
         .normalized_invokes
         .into_iter()
@@ -249,29 +250,37 @@ where
 
     for item in &parse.syntax.items {
         match item {
-            Item::Proc(proc_def) => items.push(proc_item(proc_def)),
+            Item::Proc(proc_def) => items.push(proc_item(parse, proc_def)),
             Item::Stmt(stmt) => match &**stmt {
-                Stmt::Proc { proc_def, .. } => items.push(proc_item(proc_def)),
+                Stmt::Proc { proc_def, .. } => items.push(proc_item(parse, proc_def)),
                 Stmt::Expr {
                     expr: Expr::Invoke(invoke),
                     ..
                 } => {
                     if let InvokeSurface::ShellLike {
-                        head,
+                        head_range,
                         words,
                         captured,
                     } = &invoke.surface
                     {
-                        let normalized =
-                            take_matching_normalized(&mut remaining_normalized, head, invoke.range);
+                        let head = parse.source_slice(*head_range).to_owned();
+                        let normalized = take_matching_normalized(
+                            &mut remaining_normalized,
+                            *head_range,
+                            invoke.range,
+                        );
                         let raw_items = words
                             .iter()
                             .map(|word| raw_item_from_shell_word(parse, word))
                             .collect::<Vec<_>>();
-                        let specialized =
-                            specialize_command(head, invoke.range, normalized.as_ref(), &raw_items);
+                        let specialized = specialize_command(
+                            &head,
+                            invoke.range,
+                            normalized.as_ref(),
+                            &raw_items,
+                        );
                         items.push(MayaTopLevelItem::Command(Box::new(MayaTopLevelCommand {
-                            head: head.clone(),
+                            head,
                             captured: *captured,
                             raw_items,
                             normalized,
@@ -294,9 +303,9 @@ where
     MayaTopLevelFacts { items }
 }
 
-fn proc_item(proc_def: &ProcDef) -> MayaTopLevelItem {
+fn proc_item(parse: &Parse, proc_def: &ProcDef) -> MayaTopLevelItem {
     MayaTopLevelItem::Proc {
-        name: proc_def.name.clone(),
+        name: parse.source_slice(proc_def.name_range).to_owned(),
         is_global: proc_def.is_global,
         span: proc_def.range,
     }
@@ -304,13 +313,13 @@ fn proc_item(proc_def: &ProcDef) -> MayaTopLevelItem {
 
 fn take_matching_normalized(
     invokes: &mut [Option<MayaNormalizedCommand>],
-    head: &str,
+    head_range: TextRange,
     range: TextRange,
 ) -> Option<MayaNormalizedCommand> {
     let index = invokes.iter().position(|invoke| {
         invoke
             .as_ref()
-            .is_some_and(|invoke| invoke.head == head && invoke.span == range)
+            .is_some_and(|invoke| invoke.head_range == head_range && invoke.span == range)
     })?;
     invokes[index].take()
 }
@@ -490,14 +499,18 @@ fn is_numeric_like(item: &MayaRawShellItem) -> bool {
 fn raw_item_from_shell_word(parse: &Parse, word: &ShellWord) -> MayaRawShellItem {
     let (value_text, kind, span) = match word {
         ShellWord::Flag { range, .. } => (None, MayaRawShellItemKind::Flag, *range),
-        ShellWord::NumericLiteral { text, range } => {
-            (Some(text.clone()), MayaRawShellItemKind::Numeric, *range)
-        }
-        ShellWord::BareWord { text, range } => {
-            (Some(text.clone()), MayaRawShellItemKind::BareWord, *range)
-        }
+        ShellWord::NumericLiteral { text, range } => (
+            Some(parse.source_slice(*text).to_owned()),
+            MayaRawShellItemKind::Numeric,
+            *range,
+        ),
+        ShellWord::BareWord { text, range } => (
+            Some(parse.source_slice(*text).to_owned()),
+            MayaRawShellItemKind::BareWord,
+            *range,
+        ),
         ShellWord::QuotedString { text, range } => (
-            unquote_shell_string(text).map(str::to_owned),
+            parse.string_literal_contents(*text).map(str::to_owned),
             MayaRawShellItemKind::QuotedString,
             *range,
         ),
@@ -518,7 +531,7 @@ fn raw_item_from_shell_word(parse: &Parse, word: &ShellWord) -> MayaRawShellItem
 }
 
 fn slice_source_text(parse: &Parse, range: TextRange) -> String {
-    parse.source_text[parse.source_map.display_range(range)].to_owned()
+    parse.display_slice(range).to_owned()
 }
 
 fn stmt_range(stmt: &Stmt) -> TextRange {
@@ -545,7 +558,8 @@ fn maya_normalized_command_from_parse(
     value: mel_sema::NormalizedCommandInvoke,
 ) -> MayaNormalizedCommand {
     MayaNormalizedCommand {
-        head: value.head,
+        head: parse.source_slice(value.head_range).to_owned(),
+        head_range: value.head_range,
         schema_name: value.schema_name,
         kind: value.kind,
         mode: value.mode,
@@ -584,11 +598,6 @@ fn maya_normalized_flag_from_parse(parse: &Parse, value: NormalizedFlag) -> Maya
         span: value.range,
     }
 }
-
-fn unquote_shell_string(text: &str) -> Option<&str> {
-    text.strip_prefix('"')?.strip_suffix('"')
-}
-
 fn maya_positional_arg_from_parse(parse: &Parse, value: PositionalArg) -> MayaPositionalArg {
     MayaPositionalArg {
         item: raw_item_from_shell_word(parse, &value.word),

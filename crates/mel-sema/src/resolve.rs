@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::scope::CollectedScopes;
 use crate::*;
-use mel_ast::{CalleeResolution, Expr, Item, ProcDef, ShellWord, Stmt};
-use mel_syntax::TextRange;
+use mel_ast::{Expr, Item, ProcDef, ShellWord, Stmt};
+use mel_syntax::{TextRange, text_slice};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ValueType {
@@ -18,6 +18,7 @@ enum ValueType {
 
 pub(crate) struct Analyzer<'a, R: ?Sized> {
     collected: &'a CollectedScopes,
+    source_text: &'a str,
     registry: &'a R,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) invoke_resolutions: Vec<InvokeResolution>,
@@ -25,32 +26,32 @@ pub(crate) struct Analyzer<'a, R: ?Sized> {
     pub(crate) normalized_invokes: Vec<NormalizedCommandInvoke>,
     visible_decl_orders: HashMap<ScopeId, usize>,
     visible_variable_decl_orders: HashMap<ScopeId, usize>,
-    implicit_variables_by_scope: HashMap<ScopeId, Vec<String>>,
+    implicit_variables_by_scope: HashMap<ScopeId, Vec<TextRange>>,
     proc_contexts: Vec<ProcContext>,
 }
 
 struct ProcContext {
-    name: String,
+    name_range: TextRange,
     range: TextRange,
     return_type: Option<ValueType>,
     saw_value_return: bool,
 }
 
 enum ResolvedInvokeTarget {
-    Proc(String),
+    Proc(ProcSymbolId),
     Command(CommandSchema),
     Unresolved,
 }
 
 impl ResolvedInvokeTarget {
-    fn into_callee_resolution(self) -> CalleeResolution {
+    fn into_callee_resolution(self) -> ResolvedCallee {
         match self {
-            Self::Proc(name) => CalleeResolution::Proc(name),
+            Self::Proc(symbol_id) => ResolvedCallee::Proc(symbol_id),
             Self::Command(command) => match command.kind {
-                CommandKind::Builtin => CalleeResolution::BuiltinCommand(command.name.clone()),
-                CommandKind::Plugin => CalleeResolution::PluginCommand(command.name.clone()),
+                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.name.clone()),
+                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.name.clone()),
             },
-            Self::Unresolved => CalleeResolution::Unresolved,
+            Self::Unresolved => ResolvedCallee::Unresolved,
         }
     }
 }
@@ -59,9 +60,14 @@ impl<'a, R> Analyzer<'a, R>
 where
     R: CommandRegistry + ?Sized,
 {
-    pub(crate) fn new(collected: &'a CollectedScopes, registry: &'a R) -> Self {
+    pub(crate) fn new(
+        collected: &'a CollectedScopes,
+        source_text: &'a str,
+        registry: &'a R,
+    ) -> Self {
         Self {
             collected,
+            source_text,
             registry,
             diagnostics: Vec::new(),
             invoke_resolutions: Vec::new(),
@@ -86,7 +92,7 @@ where
         let body_scope = self.collected.scope_for_stmt(&proc_def.body);
         self.mark_proc_params_visible(proc_def);
         self.proc_contexts.push(ProcContext {
-            name: proc_def.name.clone(),
+            name_range: proc_def.name_range,
             range: proc_def.range,
             return_type: proc_def
                 .return_type
@@ -263,7 +269,8 @@ where
                 }
             }
             Expr::Invoke(invoke) => self.walk_invoke(invoke, current_scope),
-            Expr::Ident { name, range } => {
+            Expr::Ident { name_range, range } => {
+                let name = self.slice(*name_range);
                 let resolution = self.resolve_ident(name, current_scope);
                 if matches!(resolution, IdentTarget::Unresolved)
                     && !self.is_visible_implicit_variable(name, current_scope)
@@ -276,7 +283,7 @@ where
                 self.ident_resolutions.push(IdentResolution {
                     range: *range,
                     scope: current_scope,
-                    name: name.clone(),
+                    name_range: *name_range,
                     resolution,
                 });
             }
@@ -287,7 +294,8 @@ where
 
     fn walk_assign_target(&mut self, expr: &Expr, current_scope: ScopeId, emit_unresolved: bool) {
         match expr {
-            Expr::Ident { name, range } => {
+            Expr::Ident { name_range, range } => {
+                let name = self.slice(*name_range);
                 let resolution = self.resolve_ident(name, current_scope);
                 if emit_unresolved
                     && matches!(resolution, IdentTarget::Unresolved)
@@ -299,12 +307,12 @@ where
                     ));
                 }
                 if !emit_unresolved && matches!(resolution, IdentTarget::Unresolved) {
-                    self.mark_implicit_variable(name, current_scope);
+                    self.mark_implicit_variable(*name_range, current_scope);
                 }
                 self.ident_resolutions.push(IdentResolution {
                     range: *range,
                     scope: current_scope,
-                    name: name.clone(),
+                    name_range: *name_range,
                     resolution,
                 });
             }
@@ -321,24 +329,28 @@ where
 
     fn walk_invoke(&mut self, invoke: &mel_ast::InvokeExpr, current_scope: ScopeId) {
         let resolution = match &invoke.surface {
-            mel_ast::InvokeSurface::Function { name, args } => {
+            mel_ast::InvokeSurface::Function { head_range, args } => {
                 for arg in args {
                     self.walk_expr(arg, current_scope);
                 }
-                self.resolve_invoke(name, invoke.range, current_scope)
+                self.resolve_invoke_range(*head_range, invoke.range, current_scope)
             }
-            mel_ast::InvokeSurface::ShellLike { head, words, .. } => {
+            mel_ast::InvokeSurface::ShellLike {
+                head_range, words, ..
+            } => {
                 for word in words {
                     self.walk_shell_word(word, current_scope);
                 }
-                let resolved = self.resolve_named_target(head, invoke.range, current_scope);
+                let resolved =
+                    self.resolve_named_target_range(*head_range, invoke.range, current_scope);
                 if let ResolvedInvokeTarget::Command(ref command) = resolved {
                     let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
                         command,
                         current_scope,
-                        head,
+                        *head_range,
                         words,
                         invoke.range,
+                        self.source_text,
                     );
                     self.diagnostics.extend(diagnostics);
                     self.normalized_invokes.push(normalized);
@@ -368,12 +380,13 @@ where
         }
     }
 
-    fn resolve_invoke(
+    fn resolve_invoke_range(
         &mut self,
-        name: &str,
+        name_range: TextRange,
         range: TextRange,
         current_scope: ScopeId,
-    ) -> CalleeResolution {
+    ) -> ResolvedCallee {
+        let name = text_slice(self.source_text, name_range);
         self.resolve_named_target(name, range, current_scope)
             .into_callee_resolution()
     }
@@ -384,26 +397,30 @@ where
         range: TextRange,
         current_scope: ScopeId,
     ) -> ResolvedInvokeTarget {
-        if let Some(symbol) =
-            self.collected
-                .find_visible_local_proc(name, current_scope, &self.visible_decl_orders)
-        {
-            return ResolvedInvokeTarget::Proc(symbol.name.clone());
+        if let Some(symbol) = self.collected.find_visible_local_proc(
+            self.source_text,
+            name,
+            current_scope,
+            &self.visible_decl_orders,
+        ) {
+            return ResolvedInvokeTarget::Proc(symbol.id);
         }
 
-        if let Some(symbol) =
-            self.collected
-                .find_forward_local_proc(name, current_scope, &self.visible_decl_orders)
-        {
+        if let Some(symbol) = self.collected.find_forward_local_proc(
+            self.source_text,
+            name,
+            current_scope,
+            &self.visible_decl_orders,
+        ) {
             self.diagnostics.push(Diagnostic::error(
                 format!("local proc \"{name}\" is called before its definition"),
                 range,
             ));
-            return ResolvedInvokeTarget::Proc(symbol.name.clone());
+            return ResolvedInvokeTarget::Proc(symbol.id);
         }
 
-        if let Some(symbol) = self.collected.find_global_proc(name) {
-            return ResolvedInvokeTarget::Proc(symbol.name.clone());
+        if let Some(symbol) = self.collected.find_global_proc(self.source_text, name) {
+            return ResolvedInvokeTarget::Proc(symbol.id);
         }
 
         if let Some(command) = self.registry.lookup(name) {
@@ -411,6 +428,16 @@ where
         }
 
         ResolvedInvokeTarget::Unresolved
+    }
+
+    fn resolve_named_target_range(
+        &mut self,
+        name_range: TextRange,
+        range: TextRange,
+        current_scope: ScopeId,
+    ) -> ResolvedInvokeTarget {
+        let name = text_slice(self.source_text, name_range);
+        self.resolve_named_target(name, range, current_scope)
     }
 
     fn mark_proc_visible(&mut self, proc_def: &ProcDef) {
@@ -454,6 +481,7 @@ where
 
     fn resolve_ident(&self, name: &str, current_scope: ScopeId) -> IdentTarget {
         if let Some(symbol) = self.collected.find_visible_local_variable(
+            self.source_text,
             name,
             current_scope,
             &self.visible_variable_decl_orders,
@@ -461,20 +489,25 @@ where
             return IdentTarget::Variable(symbol.id);
         }
 
-        if let Some(symbol) = self.collected.find_global_variable(name) {
+        if let Some(symbol) = self.collected.find_global_variable(self.source_text, name) {
             return IdentTarget::Variable(symbol.id);
         }
 
         IdentTarget::Unresolved
     }
 
-    fn mark_implicit_variable(&mut self, name: &str, current_scope: ScopeId) {
+    fn mark_implicit_variable(&mut self, name_range: TextRange, current_scope: ScopeId) {
+        let source_text = self.source_text;
+        let name = text_slice(source_text, name_range);
         let names = self
             .implicit_variables_by_scope
             .entry(current_scope)
             .or_default();
-        if !names.iter().any(|candidate| candidate == name) {
-            names.push(name.to_owned());
+        if !names
+            .iter()
+            .any(|candidate| text_slice(source_text, *candidate) == name)
+        {
+            names.push(name_range);
         }
     }
 
@@ -484,7 +517,7 @@ where
             if self
                 .implicit_variables_by_scope
                 .get(&scope_id)
-                .is_some_and(|names| names.iter().any(|candidate| candidate == name))
+                .is_some_and(|names| names.iter().any(|candidate| self.slice(*candidate) == name))
             {
                 return true;
             }
@@ -500,15 +533,17 @@ where
         current_scope: ScopeId,
     ) {
         let actual = expr.map(|expr| self.infer_expr_type(expr, current_scope));
+        let source_text = self.source_text;
         let Some(context) = self.proc_contexts.last_mut() else {
             return;
         };
+        let context_name = text_slice(source_text, context.name_range);
 
         match (&context.return_type, actual.as_ref()) {
             (None, Some(_)) => self.diagnostics.push(Diagnostic::error(
                 format!(
                     "proc \"{}\" has no return type but returns a value",
-                    context.name
+                    context_name
                 ),
                 range,
             )),
@@ -518,7 +553,7 @@ where
                     self.diagnostics.push(Diagnostic::error(
                         format!(
                             "proc \"{}\" returns {:?} but declares {:?}",
-                            context.name, actual, expected
+                            context_name, actual, expected
                         ),
                         range,
                     ));
@@ -537,7 +572,7 @@ where
             self.diagnostics.push(Diagnostic::error(
                 format!(
                     "proc \"{}\" declares a return type but never returns a value",
-                    context.name
+                    self.slice(context.name_range)
                 ),
                 context.range,
             ));
@@ -557,7 +592,9 @@ where
             self.diagnostics.push(Diagnostic::error(
                 format!(
                     "variable \"{}\" has declared type {:?} but initializer is {:?}",
-                    declarator.name, expected, actual
+                    declarator.name_text(self.source_text),
+                    expected,
+                    actual
                 ),
                 declarator.range,
             ));
@@ -566,7 +603,9 @@ where
 
     fn infer_expr_type(&self, expr: &Expr, current_scope: ScopeId) -> ValueType {
         match expr {
-            Expr::Ident { name, .. } => self.infer_ident_type(name, current_scope),
+            Expr::Ident { name_range, .. } => {
+                self.infer_ident_type(self.slice(*name_range), current_scope)
+            }
             Expr::Int { .. } => ValueType::Int,
             Expr::Float { .. } => ValueType::Float,
             Expr::String { .. } | Expr::BareWord { .. } => ValueType::String,
@@ -581,16 +620,9 @@ where
             | Expr::ComponentAccess { target: expr, .. } => {
                 self.infer_expr_type(expr, current_scope)
             }
-            Expr::MemberAccess { target, member, .. } => {
-                if matches!(
-                    self.infer_expr_type(target, current_scope),
-                    ValueType::Vector
-                ) && matches!(member.as_str(), "x" | "y" | "z")
-                {
-                    ValueType::Float
-                } else {
-                    ValueType::Unknown
-                }
+            Expr::MemberAccess { target, .. } => {
+                let _ = self.infer_expr_type(target, current_scope);
+                ValueType::Unknown
             }
             Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => combine_numeric_types(
                 self.infer_expr_type(lhs, current_scope),
@@ -636,11 +668,12 @@ where
 
     fn infer_invoke_type(&self, invoke: &mel_ast::InvokeExpr, current_scope: ScopeId) -> ValueType {
         let name = match &invoke.surface {
-            mel_ast::InvokeSurface::Function { name, .. }
-            | mel_ast::InvokeSurface::ShellLike { head: name, .. } => name,
+            mel_ast::InvokeSurface::Function { head_range, .. }
+            | mel_ast::InvokeSurface::ShellLike { head_range, .. } => self.slice(*head_range),
         };
 
         let Some(symbol) = self.collected.find_resolved_proc_symbol(
+            self.source_text,
             name,
             current_scope,
             &self.visible_decl_orders,
@@ -653,6 +686,10 @@ where
             .as_ref()
             .map(value_type_from_proc_return_type)
             .unwrap_or(ValueType::Unknown)
+    }
+
+    fn slice(&self, range: TextRange) -> &str {
+        text_slice(self.source_text, range)
     }
 }
 

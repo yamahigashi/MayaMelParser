@@ -22,7 +22,7 @@ use flow::FlowLintAnalyzer;
 use resolve::Analyzer;
 use scope::ScopeCollector;
 
-use mel_ast::{CalleeResolution, SourceFile, Stmt};
+use mel_ast::{SourceFile, Stmt};
 use mel_syntax::TextRange;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +68,7 @@ pub struct VariableSymbolId(pub(crate) usize);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcSymbol {
     pub id: ProcSymbolId,
-    pub name: String,
+    pub name_range: TextRange,
     pub is_global: bool,
     pub return_type: Option<mel_ast::ProcReturnType>,
     pub owner_scope: ScopeId,
@@ -86,7 +86,7 @@ pub enum VariableKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariableSymbol {
     pub id: VariableSymbolId,
-    pub name: String,
+    pub name_range: TextRange,
     pub kind: VariableKind,
     pub ty: mel_ast::TypeName,
     pub is_array: bool,
@@ -99,7 +99,15 @@ pub struct VariableSymbol {
 pub struct InvokeResolution {
     pub range: TextRange,
     pub scope: ScopeId,
-    pub resolution: CalleeResolution,
+    pub resolution: ResolvedCallee,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedCallee {
+    Unresolved,
+    Proc(ProcSymbolId),
+    BuiltinCommand(String),
+    PluginCommand(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +120,7 @@ pub enum IdentTarget {
 pub struct IdentResolution {
     pub range: TextRange,
     pub scope: ScopeId,
-    pub name: String,
+    pub name_range: TextRange,
     pub resolution: IdentTarget,
 }
 
@@ -127,23 +135,23 @@ pub struct Analysis {
 }
 
 #[must_use]
-pub fn analyze(source: &SourceFile) -> Analysis {
-    analyze_with_registry(source, &EmptyCommandRegistry)
+pub fn analyze(source: &SourceFile, source_text: &str) -> Analysis {
+    analyze_with_registry(source, source_text, &EmptyCommandRegistry)
 }
 
 #[must_use]
-pub fn analyze_with_registry<R>(source: &SourceFile, registry: &R) -> Analysis
+pub fn analyze_with_registry<R>(source: &SourceFile, source_text: &str, registry: &R) -> Analysis
 where
     R: CommandRegistry + ?Sized,
 {
     let collected = ScopeCollector::collect(source);
-    let mut analyzer = Analyzer::new(&collected, registry);
+    let mut analyzer = Analyzer::new(&collected, source_text, registry);
 
     for item in &source.items {
         analyzer.walk_item(item, collected.root_scope);
     }
 
-    let mut flow_lint = FlowLintAnalyzer::new(&collected);
+    let mut flow_lint = FlowLintAnalyzer::new(&collected, source_text);
     flow_lint.walk_source(source);
 
     let mut diagnostics = analyzer.diagnostics;

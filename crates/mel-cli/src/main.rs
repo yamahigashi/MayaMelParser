@@ -343,7 +343,11 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
 }
 
 fn analyze_parse(parse: &Parse) -> mel_sema::Analysis {
-    analyze_with_registry(&parse.syntax, &MayaCommandRegistry::new())
+    analyze_with_registry(
+        &parse.syntax,
+        &parse.source_text,
+        &MayaCommandRegistry::new(),
+    )
 }
 
 fn report_kind(severity: DiagnosticSeverity) -> ReportKind<'static> {
