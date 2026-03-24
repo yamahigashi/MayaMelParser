@@ -1,7 +1,8 @@
 use super::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    DiagnosticSeverity, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, ResolvedCallee,
-    ReturnBehavior, ValueShape, VariableKind, analyze, analyze_with_registry,
+    DiagnosticSeverity, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, PositionalSchema,
+    PositionalSlotSchema, PositionalTailSchema, ResolvedCallee, ReturnBehavior, ValueShape,
+    VariableKind, analyze, analyze_with_registry,
 };
 use mel_ast::{
     AssignOp, BinaryOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam,
@@ -54,6 +55,7 @@ fn command_schema(name: &str, kind: CommandKind) -> CommandSchema {
         },
         return_behavior: ReturnBehavior::Unknown,
         flags: Vec::new(),
+        positionals: PositionalSchema::default(),
     }
 }
 
@@ -189,19 +191,16 @@ fn proc_body_traversal_respects_visible_local_proc() {
                     expr: Expr::Invoke(InvokeExpr {
                         surface: InvokeSurface::Function {
                             head_range: tr("helper"),
-                            args: vec![Expr::Int {
-                                value: 1,
-                                range: text_range(20, 21),
-                            }],
+                            args: Vec::new(),
                         },
-                        range: text_range(13, 22),
+                        range: text_range(13, 19),
                     }),
-                    range: text_range(13, 23),
+                    range: text_range(13, 20),
                 }],
-                range: text_range(12, 24),
+                range: text_range(12, 21),
             },
             is_global: false,
-            range: text_range(0, 24),
+            range: text_range(0, 21),
         }))],
     };
 
@@ -581,6 +580,127 @@ fn proc_resolution_takes_precedence_over_registry_command() {
 }
 
 #[test]
+fn function_style_proc_call_with_missing_argument_reports_diagnostic() {
+    let source = SourceFile {
+        items: vec![
+            Item::Proc(Box::new(ProcDef {
+                return_type: None,
+                name_range: tr("setNodeAttributes"),
+                params: vec![
+                    ProcParam {
+                        ty: TypeName::String,
+                        name_range: tr("$node"),
+                        is_array: false,
+                        range: text_range(32, 44),
+                    },
+                    ProcParam {
+                        ty: TypeName::String,
+                        name_range: tr("$attrs"),
+                        is_array: true,
+                        range: text_range(45, 59),
+                    },
+                ],
+                body: Stmt::Block {
+                    statements: Vec::new(),
+                    range: text_range(60, 62),
+                },
+                is_global: true,
+                range: text_range(0, 62),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::Function {
+                        head_range: tr("setNodeAttributes"),
+                        args: vec![Expr::String {
+                            text: text_range(81, 86),
+                            range: text_range(81, 86),
+                        }],
+                    },
+                    range: text_range(63, 87),
+                }),
+                range: text_range(63, 88),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(
+        analysis.diagnostics[0].message,
+        "proc \"setNodeAttributes\" expects 2 argument(s) but call provides 1"
+    );
+    assert_eq!(analysis.diagnostics[0].range, text_range(63, 87));
+    assert_eq!(analysis.diagnostics[0].labels.len(), 2);
+    assert_eq!(
+        analysis.diagnostics[0].labels[1].message,
+        "proc defined here"
+    );
+    assert!(matches!(
+        analysis.invoke_resolutions[0].resolution,
+        ResolvedCallee::Proc(_)
+    ));
+}
+
+#[test]
+fn shell_like_proc_call_with_matching_argument_count_has_no_diagnostic() {
+    let source = SourceFile {
+        items: vec![
+            Item::Proc(Box::new(ProcDef {
+                return_type: None,
+                name_range: tr("helper"),
+                params: vec![
+                    ProcParam {
+                        ty: TypeName::String,
+                        name_range: tr("$node"),
+                        is_array: false,
+                        range: text_range(7, 19),
+                    },
+                    ProcParam {
+                        ty: TypeName::String,
+                        name_range: tr("$attrs"),
+                        is_array: true,
+                        range: text_range(20, 34),
+                    },
+                ],
+                body: Stmt::Block {
+                    statements: Vec::new(),
+                    range: text_range(35, 37),
+                },
+                is_global: false,
+                range: text_range(0, 37),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Invoke(InvokeExpr {
+                    surface: InvokeSurface::ShellLike {
+                        head_range: tr("helper"),
+                        words: vec![
+                            ShellWord::QuotedString {
+                                text: text_range(45, 50),
+                                range: text_range(45, 50),
+                            },
+                            ShellWord::QuotedString {
+                                text: text_range(51, 58),
+                                range: text_range(51, 58),
+                            },
+                        ],
+                        captured: false,
+                    },
+                    range: text_range(38, 58),
+                }),
+                range: text_range(38, 59),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert!(analysis.diagnostics.is_empty());
+    assert!(matches!(
+        analysis.invoke_resolutions[0].resolution,
+        ResolvedCallee::Proc(_)
+    ));
+}
+
+#[test]
 fn analyze_without_registry_leaves_builtin_unresolved() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
@@ -599,6 +719,154 @@ fn analyze_without_registry_leaves_builtin_unresolved() {
     assert_eq!(
         analysis.invoke_resolutions[0].resolution,
         ResolvedCallee::Unresolved
+    );
+}
+
+#[test]
+fn shell_like_command_reports_unexpected_positional_arguments() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("date"),
+                    words: vec![ShellWord::QuotedString {
+                        text: text_range(5, 10),
+                        range: text_range(5, 10),
+                    }],
+                    captured: false,
+                },
+                range: text_range(0, 10),
+            }),
+            range: text_range(0, 11),
+        }))],
+    };
+
+    let mut command = command_schema("date", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    let diagnostic = analysis
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("does not accept positional arguments")
+        })
+        .expect("should report unexpected positional argument");
+    assert_eq!(
+        diagnostic.message,
+        "command \"date\" does not accept positional arguments"
+    );
+}
+
+#[test]
+fn shell_like_command_reports_missing_required_positional_argument() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("rename"),
+                    words: vec![ShellWord::QuotedString {
+                        text: text_range(7, 10),
+                        range: text_range(7, 10),
+                    }],
+                    captured: false,
+                },
+                range: text_range(0, 10),
+            }),
+            range: text_range(0, 11),
+        }))],
+    };
+
+    let mut command = command_schema("rename", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[
+            PositionalSlotSchema {
+                value_shapes: &[ValueShape::String],
+            },
+            PositionalSlotSchema {
+                value_shapes: &[ValueShape::String],
+            },
+        ],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    let diagnostic = analysis
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("expects 2 positional argument(s)")
+        })
+        .expect("should report missing positional argument");
+    assert_eq!(
+        diagnostic.message,
+        "command \"rename\" expects 2 positional argument(s) but call provides 1"
+    );
+}
+
+#[test]
+fn shell_like_command_reports_positional_shape_mismatch_for_known_literals() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("rename"),
+                    words: vec![
+                        ShellWord::NumericLiteral {
+                            text: text_range(7, 8),
+                            range: text_range(7, 8),
+                        },
+                        ShellWord::QuotedString {
+                            text: text_range(9, 12),
+                            range: text_range(9, 12),
+                        },
+                    ],
+                    captured: false,
+                },
+                range: text_range(0, 12),
+            }),
+            range: text_range(0, 13),
+        }))],
+    };
+
+    let mut command = command_schema("rename", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[
+            PositionalSlotSchema {
+                value_shapes: &[ValueShape::String],
+            },
+            PositionalSlotSchema {
+                value_shapes: &[ValueShape::String],
+            },
+        ],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    let diagnostic = analysis
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("expects string but got int"))
+        .expect("should report positional shape mismatch");
+    assert_eq!(
+        diagnostic.message,
+        "positional argument 1 for command \"rename\" expects string but got int"
     );
 }
 
@@ -2444,6 +2712,191 @@ fn comparison_initializer_reports_int_when_assigned_to_string() {
         "variable \"$value\" has declared type String but initializer is Int"
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(18, 36));
+}
+
+#[test]
+fn plain_assignment_type_mismatch_reports_diagnostic() {
+    let source = SourceFile {
+        items: vec![
+            Item::Stmt(Box::new(Stmt::VarDecl {
+                decl: VarDecl {
+                    is_global: false,
+                    ty: TypeName::Int,
+                    declarators: vec![Declarator {
+                        name_range: tr("$value"),
+                        array_size: None,
+                        initializer: None,
+                        range: text_range(8, 14),
+                    }],
+                    range: text_range(0, 15),
+                },
+                range: text_range(0, 15),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Assign {
+                    op: AssignOp::Assign,
+                    lhs: Box::new(Expr::Ident {
+                        name_range: tr("$value"),
+                        range: text_range(16, 22),
+                    }),
+                    rhs: Box::new(Expr::String {
+                        text: text_range(25, 30),
+                        range: text_range(25, 30),
+                    }),
+                    range: text_range(16, 30),
+                },
+                range: text_range(16, 31),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(
+        analysis.diagnostics[0].message,
+        "variable \"$value\" has declared type Int but assigned expression is String"
+    );
+    assert_eq!(analysis.diagnostics[0].range, text_range(25, 30));
+}
+
+#[test]
+fn plain_assignment_with_matching_type_is_allowed() {
+    let source = SourceFile {
+        items: vec![
+            Item::Stmt(Box::new(Stmt::VarDecl {
+                decl: VarDecl {
+                    is_global: false,
+                    ty: TypeName::Int,
+                    declarators: vec![Declarator {
+                        name_range: tr("$value"),
+                        array_size: None,
+                        initializer: None,
+                        range: text_range(8, 14),
+                    }],
+                    range: text_range(0, 15),
+                },
+                range: text_range(0, 15),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Assign {
+                    op: AssignOp::Assign,
+                    lhs: Box::new(Expr::Ident {
+                        name_range: tr("$value"),
+                        range: text_range(16, 22),
+                    }),
+                    rhs: Box::new(Expr::Int {
+                        value: 1,
+                        range: text_range(25, 26),
+                    }),
+                    range: text_range(16, 26),
+                },
+                range: text_range(16, 27),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn compound_assignment_type_mismatch_reports_diagnostic() {
+    let source = SourceFile {
+        items: vec![
+            Item::Stmt(Box::new(Stmt::VarDecl {
+                decl: VarDecl {
+                    is_global: false,
+                    ty: TypeName::Int,
+                    declarators: vec![Declarator {
+                        name_range: tr("$value"),
+                        array_size: None,
+                        initializer: Some(Expr::Int {
+                            value: 0,
+                            range: text_range(16, 17),
+                        }),
+                        range: text_range(8, 17),
+                    }],
+                    range: text_range(0, 18),
+                },
+                range: text_range(0, 18),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Assign {
+                    op: AssignOp::AddAssign,
+                    lhs: Box::new(Expr::Ident {
+                        name_range: tr("$value"),
+                        range: text_range(19, 25),
+                    }),
+                    rhs: Box::new(Expr::String {
+                        text: text_range(29, 34),
+                        range: text_range(29, 34),
+                    }),
+                    range: text_range(19, 34),
+                },
+                range: text_range(19, 35),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(
+        analysis.diagnostics[0].message,
+        "variable \"$value\" has declared type Int but assigned expression is String"
+    );
+    assert_eq!(analysis.diagnostics[0].range, text_range(29, 34));
+}
+
+#[test]
+fn indexed_assignment_type_mismatch_reports_diagnostic() {
+    let source = SourceFile {
+        items: vec![
+            Item::Stmt(Box::new(Stmt::VarDecl {
+                decl: VarDecl {
+                    is_global: false,
+                    ty: TypeName::Int,
+                    declarators: vec![Declarator {
+                        name_range: tr("$values"),
+                        array_size: Some(None),
+                        initializer: None,
+                        range: text_range(8, 15),
+                    }],
+                    range: text_range(0, 16),
+                },
+                range: text_range(0, 16),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Assign {
+                    op: AssignOp::Assign,
+                    lhs: Box::new(Expr::Index {
+                        target: Box::new(Expr::Ident {
+                            name_range: tr("$values"),
+                            range: text_range(17, 24),
+                        }),
+                        index: Box::new(Expr::Int {
+                            value: 0,
+                            range: text_range(25, 26),
+                        }),
+                        range: text_range(17, 27),
+                    }),
+                    rhs: Box::new(Expr::String {
+                        text: text_range(30, 35),
+                        range: text_range(30, 35),
+                    }),
+                    range: text_range(17, 35),
+                },
+                range: text_range(17, 36),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(
+        analysis.diagnostics[0].message,
+        "variable \"$values\" has declared type Int but assigned expression is String"
+    );
+    assert_eq!(analysis.diagnostics[0].range, text_range(30, 35));
 }
 
 #[test]

@@ -17,6 +17,7 @@ struct RawCommand {
     mode_mask: RawModeMask,
     return_behavior: RawReturnBehavior,
     flags: Vec<RawFlag>,
+    positionals: Option<RawPositionals>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +67,26 @@ struct RawValueShape {
     size: Option<u8>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawPositionals {
+    prefix: Vec<RawPositionalSlot>,
+    tail: RawPositionalTail,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPositionalSlot {
+    value_shapes: Vec<RawValueShape>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPositionalTail {
+    #[serde(rename = "type")]
+    kind: String,
+    min: Option<u8>,
+    max: Option<u8>,
+    value_shapes: Option<Vec<RawValueShape>>,
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let input_path = manifest_dir.join("../../commands/mel_command_schemas_2026.json");
@@ -78,7 +99,7 @@ fn main() {
 
     assert_eq!(
         root.schema_version,
-        3,
+        4,
         "unsupported command schema version in {}",
         input_path.display()
     );
@@ -119,6 +140,9 @@ fn main() {
         rendered.push_str("        },\n");
         rendered.push_str("        return_behavior: ");
         rendered.push_str(&render_return_behavior(&command.return_behavior));
+        rendered.push_str(",\n");
+        rendered.push_str("        positionals: ");
+        rendered.push_str(&render_positionals(command.positionals.as_ref()));
         rendered.push_str(",\n");
         rendered.push_str("        flags: &[\n");
         for flag in &command.flags {
@@ -175,6 +199,70 @@ fn main() {
         PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("embedded_command_schemas.rs");
     fs::write(&out_path, rendered)
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", out_path.display()));
+}
+
+fn render_positionals(value: Option<&RawPositionals>) -> String {
+    let Some(value) = value else {
+        return "PositionalSchema::unconstrained()".to_owned();
+    };
+
+    let mut rendered = String::from("PositionalSchema {\n");
+    rendered.push_str("            prefix: &[\n");
+    for slot in &value.prefix {
+        rendered.push_str("                PositionalSlotSchema { value_shapes: &[");
+        for (index, value_shape) in slot.value_shapes.iter().enumerate() {
+            if index > 0 {
+                rendered.push_str(", ");
+            }
+            rendered.push_str(&render_value_shape(value_shape));
+        }
+        rendered.push_str("] },\n");
+    }
+    rendered.push_str("            ],\n");
+    rendered.push_str("            tail: ");
+    rendered.push_str(&render_positional_tail(&value.tail));
+    rendered.push_str(",\n        }");
+    rendered
+}
+
+fn render_positional_tail(value: &RawPositionalTail) -> String {
+    match value.kind.as_str() {
+        "none" => "PositionalTailSchema::None".to_owned(),
+        "opaque" => format!(
+            "PositionalTailSchema::Opaque {{ min: {}, max: {} }}",
+            value.min.unwrap_or(0),
+            render_optional_u8(value.max)
+        ),
+        "shaped" => {
+            let mut rendered = format!(
+                "PositionalTailSchema::Shaped {{ min: {}, max: {}, value_shapes: &[",
+                value.min.unwrap_or(0),
+                render_optional_u8(value.max)
+            );
+            for (index, value_shape) in value
+                .value_shapes
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .enumerate()
+            {
+                if index > 0 {
+                    rendered.push_str(", ");
+                }
+                rendered.push_str(&render_value_shape(value_shape));
+            }
+            rendered.push_str("] }");
+            rendered
+        }
+        other => panic!("unsupported positional tail kind {other:?}"),
+    }
+}
+
+fn render_optional_u8(value: Option<u8>) -> String {
+    match value {
+        Some(value) => format!("Some({value})"),
+        None => "None".to_owned(),
+    }
 }
 
 fn render_string(value: &str) -> String {

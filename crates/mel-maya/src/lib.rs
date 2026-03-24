@@ -11,7 +11,8 @@ use mel_parser::{
 use mel_sema::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, NormalizedCommandItem,
-    NormalizedFlag, PositionalArg, ReturnBehavior, ValueShape,
+    NormalizedFlag, PositionalArg, PositionalSchema, PositionalSlotSchema, PositionalTailSchema,
+    ReturnBehavior, ValueShape,
 };
 use mel_syntax::{TextRange, range_end, range_start, text_range};
 
@@ -187,10 +188,18 @@ pub struct MayaPromotionDiagnostic {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MayaCommandValidationDiagnostic {
+    pub command_span: TextRange,
+    pub head: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MayaHybridTopLevelReport {
     pub facts: MayaTopLevelFacts,
     pub promotion_diagnostics: Vec<MayaPromotionDiagnostic>,
+    pub validation_diagnostics: Vec<MayaCommandValidationDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1007,6 +1016,7 @@ where
     let overlay = OverlayRegistry::new(registry);
     let mut items = Vec::new();
     let mut promotion_diagnostics = Vec::new();
+    let mut validation_diagnostics = Vec::new();
 
     for item in &parse.source.items {
         match item {
@@ -1028,6 +1038,7 @@ where
                     PromotionErrorMode::Report(&mut promotion_diagnostics),
                 )
                 .expect("report mode must synthesize on promotion error");
+                validation_diagnostics.extend(validate_maya_command(parse.source_view(), &command));
                 items.push(MayaTopLevelItem::Command(Box::new(command)));
             }
             LightItem::Other { span } => items.push(MayaTopLevelItem::Other { span: *span }),
@@ -1037,6 +1048,7 @@ where
     MayaHybridTopLevelReport {
         facts: MayaTopLevelFacts { items },
         promotion_diagnostics,
+        validation_diagnostics,
     }
 }
 
@@ -1465,6 +1477,50 @@ fn raw_item_from_shell_word_with_source(
         kind,
         span,
     }
+}
+
+fn validate_maya_command(
+    source: mel_syntax::SourceView<'_>,
+    command: &MayaTopLevelCommand,
+) -> Vec<MayaCommandValidationDiagnostic> {
+    match command.head.as_str() {
+        "setAttr" => validate_set_attr_command(source, command),
+        _ => Vec::new(),
+    }
+}
+
+fn validate_set_attr_command(
+    source: mel_syntax::SourceView<'_>,
+    command: &MayaTopLevelCommand,
+) -> Vec<MayaCommandValidationDiagnostic> {
+    let Some(normalized) = &command.normalized else {
+        return Vec::new();
+    };
+    let positionals = normalized_positionals(normalized);
+    if positionals.is_empty() {
+        return Vec::new();
+    }
+
+    let values = &positionals[1..];
+    if !values.is_empty() {
+        return Vec::new();
+    }
+
+    let has_type_flag = normalized_flags(normalized)
+        .iter()
+        .any(|flag| flag.canonical_name.as_deref() == Some("type"));
+    let message = if has_type_flag {
+        "setAttr requires at least one value after the attribute path when -type is present"
+            .to_owned()
+    } else {
+        "setAttr requires at least one value after the attribute path".to_owned()
+    };
+
+    vec![MayaCommandValidationDiagnostic {
+        command_span: command.span,
+        head: Some(source.slice(normalized.head_range).to_owned()),
+        message,
+    }]
 }
 
 fn stmt_range(stmt: &Stmt) -> TextRange {
@@ -2316,6 +2372,7 @@ struct EmbeddedCommandSchema {
     source_kind: CommandSourceKind,
     mode_mask: CommandModeMask,
     return_behavior: ReturnBehavior,
+    positionals: PositionalSchema,
     flags: &'static [EmbeddedFlagSchema],
 }
 
@@ -2327,6 +2384,7 @@ impl EmbeddedCommandSchema {
             source_kind: self.source_kind,
             mode_mask: self.mode_mask,
             return_behavior: self.return_behavior,
+            positionals: self.positionals,
             flags: self.build_effective_flags(),
         }
     }
@@ -2486,6 +2544,12 @@ mod tests {
                 query: true,
             },
             return_behavior: ReturnBehavior::Unknown,
+            positionals: PositionalSchema {
+                prefix: &[mel_sema::PositionalSlotSchema {
+                    value_shapes: &[ValueShape::String],
+                }],
+                tail: PositionalTailSchema::Opaque { min: 0, max: None },
+            },
             flags: vec![FlagSchema {
                 long_name: "type".to_owned(),
                 short_name: Some("typ".to_owned()),
@@ -2893,6 +2957,12 @@ mod tests {
                 query: true,
             },
             return_behavior: ReturnBehavior::Unknown,
+            positionals: PositionalSchema {
+                prefix: &[mel_sema::PositionalSlotSchema {
+                    value_shapes: &[ValueShape::String],
+                }],
+                tail: PositionalTailSchema::Opaque { min: 0, max: None },
+            },
             flags: vec![FlagSchema {
                 long_name: "type".to_owned(),
                 short_name: Some("typ".to_owned()),
@@ -2986,6 +3056,32 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.promotion_kind, MayaPromotionKind::LightSynthesized);
+    }
+
+    #[test]
+    fn hybrid_report_collects_set_attr_validation_diagnostic() {
+        let parse = parse_light_source("setAttr \".tx\" -type \"string\";\n");
+        let report =
+            collect_top_level_facts_hybrid_report(&parse, &MayaPromotionOptions::default());
+
+        assert_eq!(report.validation_diagnostics.len(), 1);
+        assert_eq!(
+            report.validation_diagnostics[0].head.as_deref(),
+            Some("setAttr")
+        );
+        assert_eq!(
+            report.validation_diagnostics[0].message,
+            "setAttr requires at least one value after the attribute path when -type is present"
+        );
+    }
+
+    #[test]
+    fn hybrid_report_leaves_validation_diagnostics_empty_for_valid_set_attr() {
+        let parse = parse_light_source("setAttr \".tx\" -type \"string\" \"value\";\n");
+        let report =
+            collect_top_level_facts_hybrid_report(&parse, &MayaPromotionOptions::default());
+
+        assert!(report.validation_diagnostics.is_empty());
     }
 
     #[test]

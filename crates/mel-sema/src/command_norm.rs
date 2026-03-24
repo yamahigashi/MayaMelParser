@@ -3,7 +3,7 @@ use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 
 use crate::{
     CommandModeMask, CommandSchema, Diagnostic, DiagnosticSeverity, FlagArity, FlagArityByMode,
-    ScopeId, command_schema::CommandKind,
+    PositionalSchema, PositionalTailSchema, ScopeId, ValueShape, command_schema::CommandKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,14 @@ pub(crate) fn normalize_shell_like_invoke(
                     command.name
                 ),
                 range,
+                labels: vec![crate::DiagnosticLabel {
+                    range,
+                    message: format!(
+                        "command \"{}\" cannot combine create/edit/query mode flags",
+                        command.name
+                    ),
+                    is_primary: true,
+                }],
             });
             CommandMode::Unknown
         }
@@ -95,6 +103,14 @@ pub(crate) fn normalize_shell_like_invoke(
                             command.name
                         ),
                         range: *flag_range,
+                        labels: vec![crate::DiagnosticLabel {
+                            range: *flag_range,
+                            message: format!(
+                                "unknown flag \"{flag_text}\" for command \"{}\"",
+                                command.name
+                            ),
+                            is_primary: true,
+                        }],
                     });
                     items.push(NormalizedCommandItem::Flag(NormalizedFlag {
                         source_range: *flag_range,
@@ -116,6 +132,14 @@ pub(crate) fn normalize_shell_like_invoke(
                             schema.long_name, command.name
                         ),
                         range: *flag_range,
+                        labels: vec![crate::DiagnosticLabel {
+                            range: *flag_range,
+                            message: format!(
+                                "flag \"-{0}\" cannot be repeated for command \"{1}\"",
+                                schema.long_name, command.name
+                            ),
+                            is_primary: true,
+                        }],
                     });
                 } else {
                     seen_flags.push(schema.long_name.clone());
@@ -154,6 +178,16 @@ pub(crate) fn normalize_shell_like_invoke(
                             command.name
                         ),
                         range: *flag_range,
+                        labels: vec![crate::DiagnosticLabel {
+                            range: *flag_range,
+                            message: format!(
+                                "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
+                                schema.long_name,
+                                format_arity(expected_arity),
+                                command.name
+                            ),
+                            is_primary: true,
+                        }],
                     });
                 }
 
@@ -191,6 +225,15 @@ pub(crate) fn normalize_shell_like_invoke(
                 mode_label(mode)
             ),
             range,
+            labels: vec![crate::DiagnosticLabel {
+                range,
+                message: format!(
+                    "command \"{}\" is not available in {} mode",
+                    command.name,
+                    mode_label(mode)
+                ),
+                is_primary: true,
+            }],
         });
     }
 
@@ -218,9 +261,35 @@ pub(crate) fn normalize_shell_like_invoke(
                     command.name
                 ),
                 range: flag.source_range,
+                labels: vec![crate::DiagnosticLabel {
+                    range: flag.source_range,
+                    message: format!(
+                        "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
+                        schema.long_name,
+                        mode_label(mode),
+                        command.name
+                    ),
+                    is_primary: true,
+                }],
             });
         }
     }
+
+    let positional_args = items
+        .iter()
+        .filter_map(|item| match item {
+            NormalizedCommandItem::Positional(arg) => Some(arg),
+            NormalizedCommandItem::Flag(_) => None,
+        })
+        .collect::<Vec<_>>();
+    validate_positionals(
+        command,
+        &command.positionals,
+        &positional_args,
+        range,
+        &mut diagnostics,
+        source,
+    );
 
     (
         NormalizedCommandInvoke {
@@ -344,6 +413,269 @@ fn format_arity(arity: FlagArity) -> String {
         FlagArity::Exact(value) => value.to_string(),
         FlagArity::Range { min, max } if min == max => min.to_string(),
         FlagArity::Range { min, max } => format!("{min} to {max}"),
+    }
+}
+
+fn validate_positionals(
+    command: &CommandSchema,
+    schema: &PositionalSchema,
+    positional_args: &[&PositionalArg],
+    command_range: TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+    source: SourceView<'_>,
+) {
+    let prefix_len = schema.prefix.len();
+    let positional_len = positional_args.len();
+
+    if prefix_len == 0 && matches!(schema.tail, PositionalTailSchema::None) && positional_len > 0 {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            message: format!(
+                "command \"{}\" does not accept positional arguments",
+                command.name
+            ),
+            range: command_range,
+            labels: vec![crate::DiagnosticLabel {
+                range: command_range,
+                message: format!(
+                    "command \"{}\" does not accept positional arguments",
+                    command.name
+                ),
+                is_primary: true,
+            }],
+        });
+        return;
+    }
+
+    if positional_len < prefix_len {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            message: format!(
+                "command \"{}\" expects {} positional argument(s) but call provides {}",
+                command.name, prefix_len, positional_len
+            ),
+            range: command_range,
+            labels: vec![crate::DiagnosticLabel {
+                range: command_range,
+                message: format!(
+                    "command \"{}\" expects {} positional argument(s) but call provides {}",
+                    command.name, prefix_len, positional_len
+                ),
+                is_primary: true,
+            }],
+        });
+        return;
+    }
+
+    for (index, slot) in schema.prefix.iter().enumerate() {
+        if let Some(actual_shape) = positional_args
+            .get(index)
+            .and_then(|arg| inferred_value_shape(&arg.word, source))
+        {
+            validate_positional_shape(
+                command,
+                index,
+                positional_args[index].range,
+                actual_shape,
+                slot.value_shapes,
+                diagnostics,
+            );
+        }
+    }
+
+    let tail_args = &positional_args[prefix_len.min(positional_len)..];
+    match schema.tail {
+        PositionalTailSchema::None => {
+            if !tail_args.is_empty() {
+                diagnostics.push(Diagnostic {
+                    severity: DiagnosticSeverity::Error,
+                    message: format!(
+                        "command \"{}\" expects {} positional argument(s) but call provides {}",
+                        command.name, prefix_len, positional_len
+                    ),
+                    range: command_range,
+                    labels: vec![crate::DiagnosticLabel {
+                        range: command_range,
+                        message: format!(
+                            "command \"{}\" expects {} positional argument(s) but call provides {}",
+                            command.name, prefix_len, positional_len
+                        ),
+                        is_primary: true,
+                    }],
+                });
+            }
+        }
+        PositionalTailSchema::Opaque { min, max } => {
+            validate_tail_arity(
+                command,
+                min,
+                max,
+                tail_args.len(),
+                prefix_len,
+                command_range,
+                diagnostics,
+            );
+        }
+        PositionalTailSchema::Shaped {
+            min,
+            max,
+            value_shapes,
+        } => {
+            validate_tail_arity(
+                command,
+                min,
+                max,
+                tail_args.len(),
+                prefix_len,
+                command_range,
+                diagnostics,
+            );
+            for (tail_index, arg) in tail_args.iter().enumerate() {
+                let Some(actual_shape) = inferred_value_shape(&arg.word, source) else {
+                    continue;
+                };
+                validate_positional_shape(
+                    command,
+                    prefix_len + tail_index,
+                    arg.range,
+                    actual_shape,
+                    value_shapes,
+                    diagnostics,
+                );
+            }
+        }
+    }
+}
+
+fn validate_tail_arity(
+    command: &CommandSchema,
+    min: u8,
+    max: Option<u8>,
+    actual_tail_len: usize,
+    prefix_len: usize,
+    command_range: TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let min = usize::from(min);
+    let max = max.map(usize::from);
+    let actual_total = prefix_len + actual_tail_len;
+    let min_total = prefix_len + min;
+    let max_total = max.map(|max| prefix_len + max);
+    let too_few = actual_tail_len < min;
+    let too_many = max.is_some_and(|max| actual_tail_len > max);
+    if !too_few && !too_many {
+        return;
+    }
+
+    let expected = match max_total {
+        Some(max_total) if min_total == max_total => min_total.to_string(),
+        Some(max_total) => format!("{min_total} to {max_total}"),
+        None => format!("{min_total}+"),
+    };
+    let message = format!(
+        "command \"{}\" expects {expected} positional argument(s) but call provides {actual_total}",
+        command.name
+    );
+    diagnostics.push(Diagnostic {
+        severity: DiagnosticSeverity::Error,
+        message: message.clone(),
+        range: command_range,
+        labels: vec![crate::DiagnosticLabel {
+            range: command_range,
+            message,
+            is_primary: true,
+        }],
+    });
+}
+
+fn validate_positional_shape(
+    command: &CommandSchema,
+    index: usize,
+    arg_range: TextRange,
+    actual_shape: ValueShape,
+    allowed_shapes: &[ValueShape],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if allowed_shapes.is_empty()
+        || allowed_shapes
+            .iter()
+            .any(|shape| value_shape_matches(*shape, actual_shape))
+    {
+        return;
+    }
+
+    let expected = format_value_shapes(allowed_shapes);
+    let actual = format_value_shape(actual_shape);
+    let message = format!(
+        "positional argument {} for command \"{}\" expects {} but got {}",
+        index + 1,
+        command.name,
+        expected,
+        actual
+    );
+    diagnostics.push(Diagnostic {
+        severity: DiagnosticSeverity::Error,
+        message: message.clone(),
+        range: arg_range,
+        labels: vec![crate::DiagnosticLabel {
+            range: arg_range,
+            message,
+            is_primary: true,
+        }],
+    });
+}
+
+fn inferred_value_shape(word: &ShellWord, source: SourceView<'_>) -> Option<ValueShape> {
+    match word {
+        ShellWord::NumericLiteral { text, .. } => {
+            let text = source.slice(*text);
+            if text.contains('.') || text.contains('e') || text.contains('E') {
+                Some(ValueShape::Float)
+            } else {
+                Some(ValueShape::Int)
+            }
+        }
+        ShellWord::QuotedString { .. } => Some(ValueShape::String),
+        ShellWord::BareWord { text, .. } => {
+            let text = source.slice(*text);
+            match text {
+                "true" | "false" | "on" | "off" | "yes" | "no" => Some(ValueShape::Bool),
+                _ => None,
+            }
+        }
+        ShellWord::VectorLiteral { .. } => Some(ValueShape::FloatTuple(3)),
+        ShellWord::Flag { .. }
+        | ShellWord::Variable { .. }
+        | ShellWord::GroupedExpr { .. }
+        | ShellWord::BraceList { .. }
+        | ShellWord::Capture { .. } => None,
+    }
+}
+
+fn value_shape_matches(expected: ValueShape, actual: ValueShape) -> bool {
+    matches!(expected, ValueShape::Unknown | ValueShape::Script) || expected == actual
+}
+
+fn format_value_shapes(shapes: &[ValueShape]) -> String {
+    shapes
+        .iter()
+        .map(|shape| format_value_shape(*shape))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+fn format_value_shape(shape: ValueShape) -> String {
+    match shape {
+        ValueShape::Bool => "bool".to_owned(),
+        ValueShape::Int => "int".to_owned(),
+        ValueShape::Float => "float".to_owned(),
+        ValueShape::String => "string".to_owned(),
+        ValueShape::Script => "script".to_owned(),
+        ValueShape::StringArray => "string[]".to_owned(),
+        ValueShape::FloatTuple(size) => format!("float[{size}]"),
+        ValueShape::IntTuple(size) => format!("int[{size}]"),
+        ValueShape::NodeName => "node name".to_owned(),
+        ValueShape::Unknown => "unknown".to_owned(),
     }
 }
 

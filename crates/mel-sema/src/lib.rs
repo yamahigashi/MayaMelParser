@@ -15,7 +15,8 @@ pub use command_norm::{
 };
 pub use command_schema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, ReturnBehavior, ValueShape,
+    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, PositionalSchema,
+    PositionalSlotSchema, PositionalTailSchema, ReturnBehavior, ValueShape,
 };
 
 use flow::FlowLintAnalyzer;
@@ -36,23 +37,52 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub message: String,
     pub range: TextRange,
+    pub labels: Vec<DiagnosticLabel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticLabel {
+    pub range: TextRange,
+    pub message: String,
+    pub is_primary: bool,
 }
 
 impl Diagnostic {
     fn error(message: impl Into<String>, range: TextRange) -> Self {
+        let message = message.into();
         Self {
             severity: DiagnosticSeverity::Error,
-            message: message.into(),
+            message: message.clone(),
             range,
+            labels: vec![DiagnosticLabel {
+                range,
+                message,
+                is_primary: true,
+            }],
         }
     }
 
     fn warning(message: impl Into<String>, range: TextRange) -> Self {
+        let message = message.into();
         Self {
             severity: DiagnosticSeverity::Warning,
-            message: message.into(),
+            message: message.clone(),
             range,
+            labels: vec![DiagnosticLabel {
+                range,
+                message,
+                is_primary: true,
+            }],
         }
+    }
+
+    fn with_secondary_label(mut self, message: impl Into<String>, range: TextRange) -> Self {
+        self.labels.push(DiagnosticLabel {
+            range,
+            message: message.into(),
+            is_primary: false,
+        });
+        self
     }
 }
 

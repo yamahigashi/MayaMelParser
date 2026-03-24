@@ -47,6 +47,47 @@ pub enum ValueShape {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionalTailSchema {
+    None,
+    Shaped {
+        min: u8,
+        max: Option<u8>,
+        value_shapes: &'static [ValueShape],
+    },
+    Opaque {
+        min: u8,
+        max: Option<u8>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionalSlotSchema {
+    pub value_shapes: &'static [ValueShape],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionalSchema {
+    pub prefix: &'static [PositionalSlotSchema],
+    pub tail: PositionalTailSchema,
+}
+
+impl PositionalSchema {
+    #[must_use]
+    pub const fn unconstrained() -> Self {
+        Self {
+            prefix: &[],
+            tail: PositionalTailSchema::Opaque { min: 0, max: None },
+        }
+    }
+}
+
+impl Default for PositionalSchema {
+    fn default() -> Self {
+        Self::unconstrained()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandModeMask {
     pub create: bool,
     pub edit: bool,
@@ -71,6 +112,7 @@ pub struct CommandSchema {
     pub mode_mask: CommandModeMask,
     pub return_behavior: ReturnBehavior,
     pub flags: Vec<FlagSchema>,
+    pub positionals: PositionalSchema,
 }
 
 pub trait CommandRegistry {
