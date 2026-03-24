@@ -1,0 +1,21 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"sema/proc/var-assign-type-mismatch.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/var-assign-type-mismatch.mel\"),)"
+---
+source: sema/proc/var-assign-type-mismatch.mel
+encoding: utf-8
+items: 1
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 1
+[31mError:[0m sema: variable "$value" has declared type Int but assigned expression is String
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/proc/var-assign-type-mismatch.mel:3:14 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m2 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m [0m[36m$[0m[36mv[0m[36ma[0m[36ml[0m[36mu[0m[36me[0m[38;5;249m;[0m
+ [38;5;240m  │[0m         [36m─[0m[36m─[0m[36m─[0m[36m┬[0m[36m─[0m[36m─[0m  
+ [38;5;240m  │[0m            [36m╰[0m[36m─[0m[36m─[0m[36m─[0m[36m─[0m "$value" declared here with type Int
+ [38;5;246m3 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m$[0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249mu[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[35m"[0m[35mf[0m[35mo[0m[35mo[0m[35m"[0m[38;5;249m;[0m
+ [38;5;240m  │[0m              [35m─[0m[35m─[0m[35m┬[0m[35m─[0m[35m─[0m  
+ [38;5;240m  │[0m                [35m╰[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m variable "$value" has declared type Int but assigned expression is String
+[38;5;246m───╯[0m

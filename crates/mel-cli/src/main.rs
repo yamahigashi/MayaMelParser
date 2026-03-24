@@ -17,8 +17,8 @@ use mel_parser::{
     parse_file_with_encoding, parse_light_file, parse_light_file_with_encoding,
     parse_source_with_options,
 };
-use mel_sema::{DiagnosticSeverity, analyze_with_registry};
-use mel_syntax::{SourceMap, TextRange, text_range};
+use mel_sema::{DiagnosticLabel, DiagnosticSeverity, analyze_with_registry};
+use mel_syntax::{SourceMap, TextRange, range_end, range_start, text_range};
 
 const TOP_RANK_LIMIT: usize = 10;
 const DIAGNOSTIC_TAB_WIDTH: usize = 1;
@@ -358,7 +358,14 @@ struct FileDiagnostic {
     stage: &'static str,
     severity: DiagnosticSeverity,
     message: String,
+    labels: Vec<FileDiagnosticLabel>,
+}
+
+#[derive(Clone, Debug)]
+struct FileDiagnosticLabel {
     range: TextRange,
+    message: String,
+    is_primary: bool,
 }
 
 fn render_diagnostics(label: &str, parse: &Parse) -> io::Result<String> {
@@ -402,25 +409,56 @@ fn render_file_diagnostics(
     let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
     let mut rendered = Vec::new();
     for diagnostic in diagnostics {
-        let source_span = source_map.display_range(diagnostic.range);
-        let span =
-            display_map.display_range(text_range(source_span.start as u32, source_span.end as u32));
-        let (isolated_text, isolated_span) =
-            isolate_diagnostic_source_lines(display_text.as_str(), span.clone());
-        Report::build(
-            report_kind(diagnostic.severity),
-            (label, isolated_span.clone()),
-        )
-        .with_config(Config::default().with_tab_width(DIAGNOSTIC_TAB_WIDTH))
-        .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message))
-        .with_label(
-            Label::new((label, isolated_span))
-                .with_message(diagnostic.message)
-                .with_color(stage_color(diagnostic.stage, diagnostic.severity)),
-        )
-        .finish()
-        .write((label, Source::from(isolated_text.as_str())), &mut rendered)
-        .map_err(io::Error::other)?;
+        let display_labels: Vec<FileDiagnosticLabel> = diagnostic
+            .labels
+            .iter()
+            .map(|label| {
+                let source_span = source_map.display_range(label.range);
+                let range = display_map
+                    .display_range(text_range(source_span.start as u32, source_span.end as u32));
+                FileDiagnosticLabel {
+                    range: text_range(range.start as u32, range.end as u32),
+                    message: label.message.clone(),
+                    is_primary: label.is_primary,
+                }
+            })
+            .collect();
+        let isolated_input: Vec<_> = display_labels
+            .iter()
+            .map(|label| {
+                (
+                    range_start(label.range) as usize..range_end(label.range) as usize,
+                    label.message.clone(),
+                    label.is_primary,
+                )
+            })
+            .collect();
+        let (isolated_text, isolated_labels) =
+            isolate_diagnostic_source_lines(display_text.as_str(), &isolated_input);
+        let primary_range = isolated_labels
+            .iter()
+            .find(|(_, _, is_primary)| *is_primary)
+            .map(|(range, _, _)| range.clone())
+            .unwrap_or_else(|| isolated_labels[0].0.clone());
+        let mut report = Report::build(report_kind(diagnostic.severity), (label, primary_range))
+            .with_config(Config::default().with_tab_width(DIAGNOSTIC_TAB_WIDTH))
+            .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message));
+        for (range, message, is_primary) in isolated_labels {
+            let color = if is_primary {
+                stage_color(diagnostic.stage, diagnostic.severity)
+            } else {
+                Color::Cyan
+            };
+            report = report.with_label(
+                Label::new((label, range))
+                    .with_message(message)
+                    .with_color(color),
+            );
+        }
+        report
+            .finish()
+            .write((label, Source::from(isolated_text.as_str())), &mut rendered)
+            .map_err(io::Error::other)?;
     }
 
     String::from_utf8(rendered).map_err(io::Error::other)
@@ -469,14 +507,26 @@ fn normalize_diagnostic_source_text(source_text: &str) -> (String, SourceMap) {
 
 fn isolate_diagnostic_source_lines(
     source_text: &str,
-    span: std::ops::Range<usize>,
-) -> (String, std::ops::Range<usize>) {
-    let line_start = source_text[..span.start]
-        .rfind('\n')
-        .map_or(0, |index| index + 1);
-    let line_end = source_text[span.end..]
-        .find('\n')
-        .map_or(source_text.len(), |index| span.end + index);
+    spans: &[(std::ops::Range<usize>, String, bool)],
+) -> (String, Vec<(std::ops::Range<usize>, String, bool)>) {
+    let line_start = spans
+        .iter()
+        .map(|(span, _, _)| {
+            source_text[..span.start]
+                .rfind('\n')
+                .map_or(0, |index| index + 1)
+        })
+        .min()
+        .unwrap_or(0);
+    let line_end = spans
+        .iter()
+        .map(|(span, _, _)| {
+            source_text[span.end..]
+                .find('\n')
+                .map_or(source_text.len(), |index| span.end + index)
+        })
+        .max()
+        .unwrap_or(source_text.len());
     let preceding_lines = source_text[..line_start]
         .bytes()
         .filter(|byte| *byte == b'\n')
@@ -484,10 +534,17 @@ fn isolate_diagnostic_source_lines(
     let mut isolated = "\n".repeat(preceding_lines);
     isolated.push_str(&source_text[line_start..line_end]);
     let prefix_len = preceding_lines;
-    (
-        isolated,
-        (prefix_len + span.start - line_start)..(prefix_len + span.end - line_start),
-    )
+    let isolated_spans = spans
+        .iter()
+        .map(|(span, message, is_primary)| {
+            (
+                (prefix_len + span.start - line_start)..(prefix_len + span.end - line_start),
+                message.clone(),
+                *is_primary,
+            )
+        })
+        .collect();
+    (isolated, isolated_spans)
 }
 
 fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
@@ -496,19 +553,31 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
         stage: "decode",
         severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
-        range: diagnostic.range,
+        labels: vec![FileDiagnosticLabel {
+            range: diagnostic.range,
+            message: diagnostic.message.clone(),
+            is_primary: true,
+        }],
     }));
     diagnostics.extend(parse.lex_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "lex",
         severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
-        range: diagnostic.range,
+        labels: vec![FileDiagnosticLabel {
+            range: diagnostic.range,
+            message: diagnostic.message.clone(),
+            is_primary: true,
+        }],
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "parse",
         severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
-        range: diagnostic.range,
+        labels: vec![FileDiagnosticLabel {
+            range: diagnostic.range,
+            message: diagnostic.message.clone(),
+            is_primary: true,
+        }],
     }));
     diagnostics.extend(
         analyze_parse(parse)
@@ -518,7 +587,11 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
                 stage: "sema",
                 severity: diagnostic.severity,
                 message: diagnostic.message,
-                range: diagnostic.range,
+                labels: diagnostic
+                    .labels
+                    .into_iter()
+                    .map(file_diagnostic_label)
+                    .collect(),
             }),
     );
     diagnostics
@@ -530,15 +603,31 @@ fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
         stage: "decode",
         severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
-        range: diagnostic.range,
+        labels: vec![FileDiagnosticLabel {
+            range: diagnostic.range,
+            message: diagnostic.message.clone(),
+            is_primary: true,
+        }],
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "light",
         severity: DiagnosticSeverity::Error,
         message: diagnostic.message.clone(),
-        range: diagnostic.range,
+        labels: vec![FileDiagnosticLabel {
+            range: diagnostic.range,
+            message: diagnostic.message.clone(),
+            is_primary: true,
+        }],
     }));
     diagnostics
+}
+
+fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel {
+    FileDiagnosticLabel {
+        range: label.range,
+        message: label.message,
+        is_primary: label.is_primary,
+    }
 }
 
 fn analyze_parse(parse: &Parse) -> mel_sema::Analysis {
@@ -1291,6 +1380,28 @@ mod tests {
                 include_str!(
                     "../../../tests/corpus/sema/proc/var-init-comparison-string-target.mel"
                 ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_var_assign_type_match_fixture() {
+        insta::assert_snapshot!(
+            "sema_var_assign_type_match",
+            render_snapshot(
+                "sema/proc/var-assign-type-match.mel",
+                include_str!("../../../tests/corpus/sema/proc/var-assign-type-match.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_var_assign_type_mismatch_fixture() {
+        insta::assert_snapshot!(
+            "sema_var_assign_type_mismatch",
+            render_snapshot(
+                "sema/proc/var-assign-type-mismatch.mel",
+                include_str!("../../../tests/corpus/sema/proc/var-assign-type-mismatch.mel"),
             )
         );
     }

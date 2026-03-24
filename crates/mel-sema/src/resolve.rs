@@ -16,6 +16,12 @@ enum ValueType {
     Unknown,
 }
 
+struct AssignmentTargetInfo {
+    name_range: TextRange,
+    declaration_range: TextRange,
+    value_type: ValueType,
+}
+
 pub(crate) struct Analyzer<'a, R: ?Sized> {
     collected: &'a CollectedScopes,
     source: SourceView<'a>,
@@ -44,6 +50,13 @@ enum ResolvedInvokeTarget {
 }
 
 impl ResolvedInvokeTarget {
+    fn proc_symbol(&self) -> Option<ProcSymbolId> {
+        match self {
+            Self::Proc(symbol_id) => Some(*symbol_id),
+            Self::Command(_) | Self::Unresolved => None,
+        }
+    }
+
     fn into_callee_resolution(self) -> ResolvedCallee {
         match self {
             Self::Proc(symbol_id) => ResolvedCallee::Proc(symbol_id),
@@ -240,6 +253,7 @@ where
             }
             Expr::Assign { op, lhs, rhs, .. } => {
                 self.walk_expr(rhs, current_scope);
+                self.validate_assignment_expr(op, lhs, rhs, current_scope);
                 self.walk_assign_target(
                     lhs,
                     current_scope,
@@ -334,7 +348,10 @@ where
                 for arg in args {
                     self.walk_expr(arg, current_scope);
                 }
-                self.resolve_invoke_range(*head_range, invoke.range, current_scope)
+                let resolved =
+                    self.resolve_named_target_range(*head_range, invoke.range, current_scope);
+                self.validate_proc_arity(resolved.proc_symbol(), args.len(), invoke.range);
+                resolved.into_callee_resolution()
             }
             mel_ast::InvokeSurface::ShellLike {
                 head_range, words, ..
@@ -367,6 +384,37 @@ where
         });
     }
 
+    fn validate_proc_arity(
+        &mut self,
+        proc_symbol: Option<ProcSymbolId>,
+        actual_args: usize,
+        call_range: TextRange,
+    ) {
+        let Some(proc_symbol) = proc_symbol else {
+            return;
+        };
+
+        let symbol = self.collected.symbol(proc_symbol);
+        let expected_args = self
+            .collected
+            .param_symbols_for_proc_range(symbol.range)
+            .len();
+        if actual_args == expected_args {
+            return;
+        }
+
+        let proc_name = self.collected.proc_name(self.source, proc_symbol);
+        self.diagnostics.push(
+            Diagnostic::error(
+                format!(
+                    "proc \"{proc_name}\" expects {expected_args} argument(s) but call provides {actual_args}"
+                ),
+                call_range,
+            )
+            .with_secondary_label("proc defined here", symbol.name_range),
+        );
+    }
+
     fn walk_shell_word(&mut self, word: &ShellWord, current_scope: ScopeId) {
         match word {
             ShellWord::Flag { .. }
@@ -379,18 +427,6 @@ where
             | ShellWord::VectorLiteral { expr, .. } => self.walk_expr(expr, current_scope),
             ShellWord::Capture { invoke, .. } => self.walk_invoke(invoke, current_scope),
         }
-    }
-
-    fn resolve_invoke_range(
-        &mut self,
-        name_range: TextRange,
-        range: TextRange,
-        current_scope: ScopeId,
-    ) -> ResolvedCallee {
-        let source = self.source;
-        let name = source.slice(name_range);
-        self.resolve_named_target(name, range, current_scope)
-            .into_callee_resolution()
     }
 
     fn resolve_named_target(
@@ -603,6 +639,60 @@ where
         }
     }
 
+    fn validate_assignment_expr(
+        &mut self,
+        op: &mel_ast::AssignOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        current_scope: ScopeId,
+    ) {
+        let Some(target_info) = self.infer_assignment_target_info(lhs, current_scope) else {
+            return;
+        };
+        let rhs_ty = self.infer_expr_type(rhs, current_scope);
+        if matches!(rhs_ty, ValueType::Unknown) {
+            return;
+        }
+
+        let actual = match op {
+            mel_ast::AssignOp::Assign => rhs_ty,
+            mel_ast::AssignOp::AddAssign
+            | mel_ast::AssignOp::SubAssign
+            | mel_ast::AssignOp::MulAssign
+            | mel_ast::AssignOp::DivAssign => {
+                let combined =
+                    combine_numeric_types(target_info.value_type.clone(), rhs_ty.clone());
+                if matches!(combined, ValueType::Unknown) {
+                    rhs_ty
+                } else {
+                    combined
+                }
+            }
+        };
+
+        if !is_assignable(&target_info.value_type, &actual) {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    format!(
+                        "variable \"{}\" has declared type {:?} but assigned expression is {:?}",
+                        self.slice(target_info.name_range),
+                        target_info.value_type,
+                        actual
+                    ),
+                    rhs.range(),
+                )
+                .with_secondary_label(
+                    format!(
+                        "\"{}\" declared here with type {:?}",
+                        self.slice(target_info.name_range),
+                        target_info.value_type
+                    ),
+                    target_info.declaration_range,
+                ),
+            );
+        }
+    }
+
     fn infer_expr_type(&self, expr: &Expr, current_scope: ScopeId) -> ValueType {
         match expr {
             Expr::Ident { name_range, .. } => {
@@ -653,6 +743,50 @@ where
                 _ => ValueType::Unknown,
             },
             Expr::Invoke(invoke) => self.infer_invoke_type(invoke, current_scope),
+        }
+    }
+
+    fn infer_assignment_target_info(
+        &self,
+        expr: &Expr,
+        current_scope: ScopeId,
+    ) -> Option<AssignmentTargetInfo> {
+        match expr {
+            Expr::Ident { name_range, .. } => {
+                let name = self.slice(*name_range);
+                match self.resolve_ident(name, current_scope) {
+                    IdentTarget::Variable(symbol_id) => {
+                        let symbol = self.collected.variable_symbol(symbol_id);
+                        let base = value_type_from_type_name(&symbol.ty);
+                        Some(AssignmentTargetInfo {
+                            name_range: symbol.name_range,
+                            declaration_range: symbol.name_range,
+                            value_type: if symbol.is_array {
+                                ValueType::Array(Box::new(base))
+                            } else {
+                                base
+                            },
+                        })
+                    }
+                    IdentTarget::Unresolved => None,
+                }
+            }
+            Expr::Index { target, .. } => {
+                match self.infer_assignment_target_info(target, current_scope) {
+                    Some(AssignmentTargetInfo {
+                        name_range,
+                        declaration_range,
+                        value_type: ValueType::Array(inner),
+                    }) => Some(AssignmentTargetInfo {
+                        name_range,
+                        declaration_range,
+                        value_type: *inner,
+                    }),
+                    _ => None,
+                }
+            }
+            Expr::MemberAccess { .. } | Expr::ComponentAccess { .. } => None,
+            _ => None,
         }
     }
 

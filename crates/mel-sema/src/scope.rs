@@ -455,8 +455,15 @@ impl CollectedScopes {
     }
 
     pub(crate) fn param_symbols_for_proc(&self, proc_def: &ProcDef) -> &[VariableSymbolId] {
+        self.param_symbols_for_proc_range(proc_def.range)
+    }
+
+    pub(crate) fn param_symbols_for_proc_range(
+        &self,
+        proc_range: TextRange,
+    ) -> &[VariableSymbolId] {
         self.param_symbols_by_proc_range
-            .get(&proc_def.range)
+            .get(&proc_range)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }

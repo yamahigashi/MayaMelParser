@@ -686,14 +686,14 @@ impl<'a> FlowLintAnalyzer<'a> {
                 self.source.slice(declarator.name_range),
                 current_scope,
             ) {
-                self.push_warning_once(
-                    declarator.range,
+                self.push_warning_once(Diagnostic::warning(
                     format!(
                         "local variable \"{}\" shadows visible {} variable",
                         self.source.slice(declarator.name_range),
                         shadowed_variable_kind(symbol)
                     ),
-                );
+                    declarator.range,
+                ));
             }
         }
     }
@@ -714,18 +714,21 @@ impl<'a> FlowLintAnalyzer<'a> {
         }
 
         self.push_warning_once(
-            range,
-            format!(
+            Diagnostic::warning(
+                format!(
                 "local variable \"{}\" is read before its first explicit write; MEL would use a default value here",
                 name
-            ),
+                ),
+                range,
+            )
+            .with_secondary_label(format!("\"{}\" declared here", name), symbol.name_range),
         );
     }
 
-    fn push_warning_once(&mut self, range: TextRange, message: String) {
-        let key = (range, message.clone());
+    fn push_warning_once(&mut self, diagnostic: Diagnostic) {
+        let key = (diagnostic.range, diagnostic.message.clone());
         if self.emitted_warnings.insert(key) {
-            self.diagnostics.push(Diagnostic::warning(message, range));
+            self.diagnostics.push(diagnostic);
         }
     }
 

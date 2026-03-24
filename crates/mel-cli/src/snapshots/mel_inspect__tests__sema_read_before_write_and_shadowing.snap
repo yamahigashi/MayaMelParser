@@ -1,6 +1,5 @@
 ---
 source: crates/mel-cli/src/main.rs
-assertion_line: 1232
 expression: "render_snapshot(\"sema/lint/read-before-write-and-shadowing.mel\",\ninclude_str!(\"../../../tests/corpus/sema/lint/read-before-write-and-shadowing.mel\"),)"
 ---
 source: sema/lint/read-before-write-and-shadowing.mel
@@ -27,6 +26,10 @@ semantic diagnostics: 4
 [33mWarning:[0m sema: local variable "$name" is read before its first explicit write; MEL would use a default value here
    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/lint/read-before-write-and-shadowing.mel:7:9 [38;5;246m][0m
    [38;5;246m│[0m
+ [38;5;246m4 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mg[0m[38;5;249m [0m[36m$[0m[36mn[0m[36ma[0m[36mm[0m[36me[0m[38;5;249m;[0m
+ [38;5;240m  │[0m            [36m─[0m[36m─[0m[36m┬[0m[36m─[0m[36m─[0m  
+ [38;5;240m  │[0m              [36m╰[0m[36m─[0m[36m─[0m[36m─[0m[36m─[0m "$name" declared here
+ [38;5;240m  │[0m 
  [38;5;246m7 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mf[0m[38;5;249m [0m[38;5;249m([0m[33m$[0m[33mn[0m[33ma[0m[33mm[0m[33me[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m=[0m[38;5;249m [0m[38;5;249m"[0m[38;5;249m"[0m[38;5;249m)[0m[38;5;249m [0m[38;5;249m{[0m
  [38;5;240m  │[0m         [33m─[0m[33m─[0m[33m┬[0m[33m─[0m[33m─[0m  
  [38;5;240m  │[0m           [33m╰[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m local variable "$name" is read before its first explicit write; MEL would use a default value here
@@ -34,6 +37,10 @@ semantic diagnostics: 4
 [33mWarning:[0m sema: local variable "$count" is read before its first explicit write; MEL would use a default value here
     [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/lint/read-before-write-and-shadowing.mel:10:11 [38;5;246m][0m
     [38;5;246m│[0m
+ [38;5;246m 6 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m [0m[36m$[0m[36mc[0m[36mo[0m[36mu[0m[36mn[0m[36mt[0m[38;5;249m;[0m
+ [38;5;240m   │[0m         [36m─[0m[36m─[0m[36m─[0m[36m┬[0m[36m─[0m[36m─[0m  
+ [38;5;240m   │[0m            [36m╰[0m[36m─[0m[36m─[0m[36m─[0m[36m─[0m "$count" declared here
+ [38;5;240m   │[0m 
  [38;5;246m10 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mp[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m([0m[33m$[0m[33mc[0m[33mo[0m[33mu[0m[33mn[0m[33mt[0m[38;5;249m)[0m[38;5;249m;[0m
  [38;5;240m   │[0m           [33m─[0m[33m─[0m[33m─[0m[33m┬[0m[33m─[0m[33m─[0m  
  [38;5;240m   │[0m              [33m╰[0m[33m─[0m[33m─[0m[33m─[0m[33m─[0m local variable "$count" is read before its first explicit write; MEL would use a default value here

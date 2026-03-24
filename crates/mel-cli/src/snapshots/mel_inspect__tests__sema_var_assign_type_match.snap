@@ -1,0 +1,11 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"sema/proc/var-assign-type-match.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/var-assign-type-match.mel\"),)"
+---
+source: sema/proc/var-assign-type-match.mel
+encoding: utf-8
+items: 1
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 0
