@@ -1,6 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
-assertion_line: 613
+assertion_line: 1109
 expression: "render_snapshot(\"parser/expressions/missing-ternary-colon.mel\",\ninclude_str!(\"../../../tests/corpus/parser/expressions/missing-ternary-colon.mel\"),)"
 ---
 source: parser/expressions/missing-ternary-colon.mel

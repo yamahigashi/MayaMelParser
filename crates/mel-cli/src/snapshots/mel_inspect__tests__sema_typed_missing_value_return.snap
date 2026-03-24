@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1164
 expression: "render_snapshot(\"sema/proc/typed-missing-value-return.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/typed-missing-value-return.mel\"),)"
 ---
 source: sema/proc/typed-missing-value-return.mel

@@ -1,3 +1,0 @@
-global proc comparisonSpanCase(string $node, string $acMasterNode) {
-    int $nodeIsNotMasterNode = ($node != $acMasterNode);
-}

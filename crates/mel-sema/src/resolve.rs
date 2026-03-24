@@ -616,8 +616,8 @@ where
             Expr::ArrayLiteral { elements, .. } => {
                 infer_array_literal_type(elements, self, current_scope)
             }
-            Expr::Unary { expr, .. }
-            | Expr::PrefixUpdate { expr, .. }
+            Expr::Unary { op, expr, .. } => self.infer_unary_type(op, expr, current_scope),
+            Expr::PrefixUpdate { expr, .. }
             | Expr::PostfixUpdate { expr, .. }
             | Expr::ComponentAccess { target: expr, .. } => {
                 self.infer_expr_type(expr, current_scope)
@@ -626,7 +626,10 @@ where
                 let _ = self.infer_expr_type(target, current_scope);
                 ValueType::Unknown
             }
-            Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => combine_numeric_types(
+            Expr::Binary { op, lhs, rhs, .. } => {
+                self.infer_binary_type(op, lhs, rhs, current_scope)
+            }
+            Expr::Assign { lhs, rhs, .. } => combine_numeric_types(
                 self.infer_expr_type(lhs, current_scope),
                 self.infer_expr_type(rhs, current_scope),
             ),
@@ -669,6 +672,49 @@ where
                     base
                 }
             }
+        }
+    }
+
+    fn infer_unary_type(
+        &self,
+        op: &mel_ast::UnaryOp,
+        expr: &Expr,
+        current_scope: ScopeId,
+    ) -> ValueType {
+        match op {
+            mel_ast::UnaryOp::Not => {
+                let _ = self.infer_expr_type(expr, current_scope);
+                ValueType::Int
+            }
+            mel_ast::UnaryOp::Negate => self.infer_expr_type(expr, current_scope),
+        }
+    }
+
+    fn infer_binary_type(
+        &self,
+        op: &mel_ast::BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        current_scope: ScopeId,
+    ) -> ValueType {
+        let lhs = self.infer_expr_type(lhs, current_scope);
+        let rhs = self.infer_expr_type(rhs, current_scope);
+
+        match op {
+            mel_ast::BinaryOp::Mul
+            | mel_ast::BinaryOp::Div
+            | mel_ast::BinaryOp::Rem
+            | mel_ast::BinaryOp::Caret
+            | mel_ast::BinaryOp::Add
+            | mel_ast::BinaryOp::Sub => combine_numeric_types(lhs, rhs),
+            mel_ast::BinaryOp::Lt
+            | mel_ast::BinaryOp::Le
+            | mel_ast::BinaryOp::Gt
+            | mel_ast::BinaryOp::Ge
+            | mel_ast::BinaryOp::EqEq
+            | mel_ast::BinaryOp::NotEq
+            | mel_ast::BinaryOp::AndAnd
+            | mel_ast::BinaryOp::OrOr => ValueType::Int,
         }
     }
 

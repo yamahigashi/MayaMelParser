@@ -1,6 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
-assertion_line: 581
+assertion_line: 1208
 expression: "render_snapshot(\"sema/proc/typed-return-type-mismatch-via-call.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/typed-return-type-mismatch-via-call.mel\"),)"
 ---
 source: sema/proc/typed-return-type-mismatch-via-call.mel

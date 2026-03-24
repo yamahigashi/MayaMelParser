@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1087
 expression: "render_snapshot(\"lexer/strings/unterminated-string.mel\",\ninclude_str!(\"../../../tests/corpus/lexer/strings/unterminated-string.mel\"),)"
 ---
 source: lexer/strings/unterminated-string.mel

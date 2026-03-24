@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1131
 expression: "render_snapshot(\"sema/proc/local-forward-reference.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/local-forward-reference.mel\"),)"
 ---
 source: sema/proc/local-forward-reference.mel

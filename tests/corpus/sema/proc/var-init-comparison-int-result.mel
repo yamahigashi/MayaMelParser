@@ -1,0 +1,3 @@
+global proc comparisonIntResultCase(string $node, string $acMasterNode) {
+    int $nodeIsNotMasterNode = ($node != $acMasterNode);
+}

@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1265
 expression: "render_snapshot(\"sema/proc/boolean-alias-return.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/boolean-alias-return.mel\"),)"
 ---
 source: sema/proc/boolean-alias-return.mel

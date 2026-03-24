@@ -852,41 +852,41 @@ mod tests {
 
     #[test]
     fn cli_accepts_positional_path() {
-        let args = parse_cli_args(["mel-cli", "tests/private-corpus"]).expect("path should parse");
-        assert_eq!(args.path, Some(PathBuf::from("tests/private-corpus")));
+        let args = parse_cli_args(["mel-inspect", "private-corpus"]).expect("path should parse");
+        assert_eq!(args.path, Some(PathBuf::from("private-corpus")));
     }
 
     #[test]
     fn cli_accepts_lightweight_flag() {
         let args =
-            parse_cli_args(["mel-cli", "--lightweight", "tests/private-corpus"]).expect("light");
+            parse_cli_args(["mel-inspect", "--lightweight", "private-corpus"]).expect("light");
         assert!(args.lightweight);
     }
 
     #[test]
     fn cli_accepts_inline_flag() {
-        let args = parse_cli_args(["mel-cli", "--inline", r#"print "hello""#])
+        let args = parse_cli_args(["mel-inspect", "--inline", r#"print "hello""#])
             .expect("inline should parse");
         assert_eq!(args.inline_input.as_deref(), Some(r#"print "hello""#));
     }
 
     #[test]
     fn cli_rejects_removed_file_flag() {
-        let error = parse_cli_args(["mel-cli", "--file", "a.mel"])
+        let error = parse_cli_args(["mel-inspect", "--file", "a.mel"])
             .expect_err("removed file flag should fail");
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn cli_rejects_removed_directory_flag() {
-        let error = parse_cli_args(["mel-cli", "--directory", "tests/private-corpus"])
+        let error = parse_cli_args(["mel-inspect", "--directory", "private-corpus"])
             .expect_err("removed directory flag should fail");
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn cli_rejects_removed_path_flag() {
-        let error = parse_cli_args(["mel-cli", "--path", "tests/private-corpus"])
+        let error = parse_cli_args(["mel-inspect", "--path", "private-corpus"])
             .expect_err("removed path flag should fail");
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
@@ -894,8 +894,8 @@ mod tests {
     #[test]
     fn cli_rejects_conflicting_input_modes() {
         let error = parse_cli_args([
-            "mel-cli",
-            "tests/private-corpus",
+            "mel-inspect",
+            "private-corpus",
             "--inline",
             r#"print "hello""#,
         ])
@@ -905,15 +905,21 @@ mod tests {
 
     #[test]
     fn cli_rejects_lightweight_with_inline() {
-        let error = parse_cli_args(["mel-cli", "--lightweight", "--inline", "print 1"])
+        let error = parse_cli_args(["mel-inspect", "--lightweight", "--inline", "print 1"])
             .expect_err("lightweight inline should fail");
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
     fn cli_rejects_invalid_encoding() {
-        let error = parse_cli_args(["mel-cli", "--encoding", "latin1", "--inline", "`ls -sl`;"])
-            .expect_err("invalid encoding should fail");
+        let error = parse_cli_args([
+            "mel-inspect",
+            "--encoding",
+            "latin1",
+            "--inline",
+            "`ls -sl`;",
+        ])
+        .expect_err("invalid encoding should fail");
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
@@ -1266,13 +1272,24 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_sema_var_init_comparison_type_mismatch_span_fixture() {
+    fn snapshot_sema_var_init_comparison_int_result_fixture() {
         insta::assert_snapshot!(
-            "sema_var_init_comparison_type_mismatch_span",
+            "sema_var_init_comparison_int_result",
             render_snapshot(
-                "sema/proc/var-init-comparison-type-mismatch-span.mel",
+                "sema/proc/var-init-comparison-int-result.mel",
+                include_str!("../../../tests/corpus/sema/proc/var-init-comparison-int-result.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_var_init_comparison_string_target_fixture() {
+        insta::assert_snapshot!(
+            "sema_var_init_comparison_string_target",
+            render_snapshot(
+                "sema/proc/var-init-comparison-string-target.mel",
                 include_str!(
-                    "../../../tests/corpus/sema/proc/var-init-comparison-type-mismatch-span.mel"
+                    "../../../tests/corpus/sema/proc/var-init-comparison-string-target.mel"
                 ),
             )
         );
@@ -1321,8 +1338,7 @@ mod tests {
     #[test]
     fn diagnostics_keep_correct_columns_on_triple_digit_line_numbers() {
         let mut source = String::new();
-        source.push_str("global string $gMainPane;\n");
-        for _ in 0..98 {
+        for _ in 0..99 {
             source.push('\n');
         }
         source.push_str(
@@ -1330,10 +1346,8 @@ mod tests {
         );
 
         let output = render_snapshot("inline-triple-digit-scripted-panel.mel", &source);
-        assert!(output.contains("inline-triple-digit-scripted-panel.mel:100:72"));
-        assert!(output.contains("inline-triple-digit-scripted-panel.mel:100:86"));
-        assert!(!output.contains("inline-triple-digit-scripted-panel.mel:100:80"));
-        assert!(!output.contains("inline-triple-digit-scripted-panel.mel:100:94"));
+        assert!(output.contains("inline-triple-digit-scripted-panel.mel:100:61"));
+        assert!(!output.contains("inline-triple-digit-scripted-panel.mel:100:69"));
     }
 
     fn unique_test_path(label: &str) -> PathBuf {

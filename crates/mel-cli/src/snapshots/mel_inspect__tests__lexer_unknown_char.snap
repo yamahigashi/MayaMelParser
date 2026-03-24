@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1098
 expression: "render_snapshot(\"lexer/symbols/unknown-char.mel\",\ninclude_str!(\"../../../tests/corpus/lexer/symbols/unknown-char.mel\"),)"
 ---
 source: lexer/symbols/unknown-char.mel

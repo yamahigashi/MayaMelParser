@@ -1,6 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
-assertion_line: 747
+assertion_line: 1243
 expression: "render_snapshot(\"sema/lint/unresolved-variable.mel\",\ninclude_str!(\"../../../tests/corpus/sema/lint/unresolved-variable.mel\"),)"
 ---
 source: sema/lint/unresolved-variable.mel

@@ -1,0 +1,18 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"sema/proc/var-init-comparison-string-target.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/var-init-comparison-string-target.mel\"),)"
+---
+source: sema/proc/var-init-comparison-string-target.mel
+encoding: utf-8
+items: 1
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 1
+[31mError:[0m sema: variable "$nodeIsNotMasterNode" has declared type String but initializer is Int
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m sema/proc/var-init-comparison-string-target.mel:2:36 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m2 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249mr[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mg[0m[38;5;249m [0m[38;5;249m$[0m[38;5;249mn[0m[38;5;249mo[0m[38;5;249md[0m[38;5;249me[0m[38;5;249mI[0m[38;5;249ms[0m[38;5;249mN[0m[38;5;249mo[0m[38;5;249mt[0m[38;5;249mM[0m[38;5;249ma[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249mr[0m[38;5;249mN[0m[38;5;249mo[0m[38;5;249md[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249m([0m[35m$[0m[35mn[0m[35mo[0m[35md[0m[35me[0m[35m [0m[35m![0m[35m=[0m[35m [0m[35m$[0m[35ma[0m[35mc[0m[35mM[0m[35ma[0m[35ms[0m[35mt[0m[35me[0m[35mr[0m[35mN[0m[35mo[0m[35md[0m[35me[0m[38;5;249m)[0m[38;5;249m;[0m
+ [38;5;240m  │[0m                                    [35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m┬[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m  
+ [38;5;240m  │[0m                                               [35m╰[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m variable "$nodeIsNotMasterNode" has declared type String but initializer is Int
+[38;5;246m───╯[0m

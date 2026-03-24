@@ -1,6 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
-assertion_line: 736
+assertion_line: 1232
 expression: "render_snapshot(\"sema/lint/read-before-write-and-shadowing.mel\",\ninclude_str!(\"../../../tests/corpus/sema/lint/read-before-write-and-shadowing.mel\"),)"
 ---
 source: sema/lint/read-before-write-and-shadowing.mel

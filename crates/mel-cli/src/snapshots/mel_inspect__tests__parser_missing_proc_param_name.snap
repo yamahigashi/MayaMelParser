@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1120
 expression: "render_snapshot(\"parser/proc/missing-proc-param-name.mel\",\ninclude_str!(\"../../../tests/corpus/parser/proc/missing-proc-param-name.mel\"),)"
 ---
 source: parser/proc/missing-proc-param-name.mel

@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1254
 expression: "render_snapshot(\"sema/lint/for-in-binding-implicit.mel\",\ninclude_str!(\"../../../tests/corpus/sema/lint/for-in-binding-implicit.mel\"),)"
 ---
 source: sema/lint/for-in-binding-implicit.mel

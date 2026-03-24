@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1221
 expression: "render_snapshot(\"sema/proc/var-init-type-mismatch-via-call.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/var-init-type-mismatch-via-call.mel\"),)"
 ---
 source: sema/proc/var-init-type-mismatch-via-call.mel

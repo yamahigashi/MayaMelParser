@@ -1,0 +1,21 @@
+---
+source: crates/mel-cli/src/main.rs
+assertion_line: 1313
+expression: "render_snapshot(\"inline-crlf-scripted-panel.mel\",\nconcat!(\"global string $gMainPane;\\r\\n\", \"proc string test() {\\r\\n\",\n\"\\t\\t\\t$panelName = `scriptedPanel -menuBarVisible true -parent $gMainPane -l \\\"anyLabel\\\" -tearOff -type \\\"acPanelType\\\"`;\\r\\n\",\n\"}\\r\\n\",),)"
+---
+source: inline-crlf-scripted-panel.mel
+encoding: utf-8
+items: 2
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 1
+[31mError:[0m sema: proc "test" declares a return type but never returns a value
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m inline-crlf-scripted-panel.mel:2:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m2 │[0m [35m╭[0m[35m─[0m[35m▶[0m[35m [0m[35mp[0m[35mr[0m[35mo[0m[35mc[0m[35m [0m[35ms[0m[35mt[0m[35mr[0m[35mi[0m[35mn[0m[35mg[0m[35m [0m[35mt[0m[35me[0m[35ms[0m[35mt[0m[35m([0m[35m)[0m[35m [0m[35m{[0m
+ [38;5;240m  ┆[0m [35m┆[0m   
+ [38;5;246m4 │[0m [35m├[0m[35m─[0m[35m▶[0m[35m [0m[35m}[0m
+ [38;5;240m  │[0m [35m│[0m      
+ [38;5;240m  │[0m [35m╰[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m[35m─[0m proc "test" declares a return type but never returns a value
+[38;5;246m───╯[0m

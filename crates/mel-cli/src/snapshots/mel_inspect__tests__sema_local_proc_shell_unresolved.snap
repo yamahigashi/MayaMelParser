@@ -1,5 +1,6 @@
 ---
 source: crates/mel-cli/src/main.rs
+assertion_line: 1142
 expression: "render_snapshot(\"sema/proc/local-shell-unresolved.mel\",\ninclude_str!(\"../../../tests/corpus/sema/proc/local-shell-unresolved.mel\"),)"
 ---
 source: sema/proc/local-shell-unresolved.mel

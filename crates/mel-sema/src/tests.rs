@@ -4,8 +4,8 @@ use super::{
     ReturnBehavior, ValueShape, VariableKind, analyze, analyze_with_registry,
 };
 use mel_ast::{
-    AssignOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam, ShellWord,
-    SourceFile, Stmt, TypeName, VarDecl,
+    AssignOp, BinaryOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam,
+    ShellWord, SourceFile, Stmt, TypeName, UnaryOp, VarDecl,
 };
 use mel_syntax::{SourceMap, SourceView, text_range};
 use std::{cell::RefCell, mem};
@@ -2307,6 +2307,143 @@ fn proc_invoke_return_type_flows_into_initializer_check() {
         "variable \"$value\" has declared type Int but initializer is String"
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(44, 52));
+}
+
+#[test]
+fn comparison_initializer_is_treated_as_int() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::VarDecl {
+            decl: VarDecl {
+                is_global: false,
+                ty: TypeName::Int,
+                declarators: vec![Declarator {
+                    name_range: tr("$value"),
+                    array_size: None,
+                    initializer: Some(Expr::Binary {
+                        op: BinaryOp::EqEq,
+                        lhs: Box::new(Expr::String {
+                            text: text_range(17, 23),
+                            range: text_range(17, 23),
+                        }),
+                        rhs: Box::new(Expr::String {
+                            text: text_range(27, 33),
+                            range: text_range(27, 33),
+                        }),
+                        range: text_range(16, 34),
+                    }),
+                    range: text_range(8, 34),
+                }],
+                range: text_range(0, 35),
+            },
+            range: text_range(0, 35),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn logical_binary_initializer_is_treated_as_int() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::VarDecl {
+            decl: VarDecl {
+                is_global: false,
+                ty: TypeName::Int,
+                declarators: vec![Declarator {
+                    name_range: tr("$value"),
+                    array_size: None,
+                    initializer: Some(Expr::Binary {
+                        op: BinaryOp::AndAnd,
+                        lhs: Box::new(Expr::Int {
+                            value: 1,
+                            range: text_range(16, 17),
+                        }),
+                        rhs: Box::new(Expr::Int {
+                            value: 0,
+                            range: text_range(21, 22),
+                        }),
+                        range: text_range(16, 22),
+                    }),
+                    range: text_range(8, 22),
+                }],
+                range: text_range(0, 23),
+            },
+            range: text_range(0, 23),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn logical_not_initializer_is_treated_as_int() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::VarDecl {
+            decl: VarDecl {
+                is_global: false,
+                ty: TypeName::Int,
+                declarators: vec![Declarator {
+                    name_range: tr("$value"),
+                    array_size: None,
+                    initializer: Some(Expr::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(Expr::Ident {
+                            name_range: tr("true"),
+                            range: text_range(17, 21),
+                        }),
+                        range: text_range(16, 21),
+                    }),
+                    range: text_range(8, 21),
+                }],
+                range: text_range(0, 22),
+            },
+            range: text_range(0, 22),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn comparison_initializer_reports_int_when_assigned_to_string() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::VarDecl {
+            decl: VarDecl {
+                is_global: false,
+                ty: TypeName::String,
+                declarators: vec![Declarator {
+                    name_range: tr("$value"),
+                    array_size: None,
+                    initializer: Some(Expr::Binary {
+                        op: BinaryOp::NotEq,
+                        lhs: Box::new(Expr::String {
+                            text: text_range(19, 25),
+                            range: text_range(19, 25),
+                        }),
+                        rhs: Box::new(Expr::String {
+                            text: text_range(29, 35),
+                            range: text_range(29, 35),
+                        }),
+                        range: text_range(18, 36),
+                    }),
+                    range: text_range(8, 36),
+                }],
+                range: text_range(0, 37),
+            },
+            range: text_range(0, 37),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(
+        analysis.diagnostics[0].message,
+        "variable \"$value\" has declared type String but initializer is Int"
+    );
+    assert_eq!(analysis.diagnostics[0].range, text_range(18, 36));
 }
 
 #[test]
