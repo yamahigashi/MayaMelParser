@@ -1,0 +1,4 @@
+global proc assignTypeMismatchCase() {
+    int $value;
+    $value = "foo";
+}

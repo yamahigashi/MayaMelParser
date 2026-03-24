@@ -1,0 +1,4 @@
+global proc assignTypeMatchCase() {
+    int $value;
+    $value = 1;
+}
