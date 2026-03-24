@@ -76,6 +76,7 @@ struct RawPositionals {
 #[derive(Debug, Deserialize)]
 struct RawPositionalSlot {
     value_shapes: Vec<RawValueShape>,
+    source_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,7 +217,15 @@ fn render_positionals(value: Option<&RawPositionals>) -> String {
             }
             rendered.push_str(&render_value_shape(value_shape));
         }
-        rendered.push_str("] },\n");
+        rendered.push_str("], source_policy: ");
+        rendered.push_str(match slot.source_policy.as_deref() {
+            None | Some("explicit_only") => "PositionalSourcePolicy::ExplicitOnly",
+            Some("explicit_or_current_selection") => {
+                "PositionalSourcePolicy::ExplicitOrCurrentSelection"
+            }
+            Some(other) => panic!("unsupported positional source policy {other:?}"),
+        });
+        rendered.push_str(" },\n");
     }
     rendered.push_str("            ],\n");
     rendered.push_str("            tail: ");

@@ -28,6 +28,8 @@ const DIAGNOSTIC_TAB_WIDTH: usize = 1;
 struct Args {
     #[arg(long, value_enum, default_value_t = CliEncoding::Auto)]
     encoding: CliEncoding,
+    #[arg(long, value_enum, default_value_t = CliDiagnosticLevel::All)]
+    diagnostic_level: CliDiagnosticLevel,
     #[arg(long, conflicts_with = "inline_input")]
     lightweight: bool,
     #[arg(value_name = "PATH", conflicts_with = "inline_input")]
@@ -66,6 +68,17 @@ impl CliEncoding {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum CliDiagnosticLevel {
+    #[default]
+    #[value(name = "all")]
+    All,
+    #[value(name = "error")]
+    Error,
+    #[value(name = "none")]
+    None,
+}
+
 fn main() {
     match run() {
         Ok(()) => {}
@@ -92,9 +105,10 @@ fn run() -> Result<(), RunError> {
     }
 
     let selected_encoding = args.encoding.into_source_encoding();
+    let diagnostic_level = args.diagnostic_level;
 
     if let Some(path) = args.path {
-        return print_path_output(&path, selected_encoding, args.lightweight)
+        return print_path_output(&path, selected_encoding, args.lightweight, diagnostic_level)
             .map_err(|error| RunError::Message(error.to_string()));
     }
 
@@ -116,13 +130,14 @@ fn print_path_output(
     path: &Path,
     encoding: Option<SourceEncoding>,
     lightweight: bool,
+    diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
 
     if metadata.is_dir() {
-        print_corpus_summary(path, encoding, lightweight)
+        print_corpus_summary(path, encoding, lightweight, diagnostic_level)
     } else if metadata.is_file() {
-        print_single_file(path, encoding, lightweight)
+        print_single_file(path, encoding, lightweight, diagnostic_level)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -153,6 +168,7 @@ fn print_single_file(
     path: &Path,
     encoding: Option<SourceEncoding>,
     lightweight: bool,
+    diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
     let label = path.display().to_string();
     if lightweight {
@@ -161,14 +177,20 @@ fn print_single_file(
         } else {
             parse_light_file(path)?
         };
-        print!("{}", format_light_single_file_output(&label, &parse)?);
+        print!(
+            "{}",
+            format_light_single_file_output(&label, &parse, diagnostic_level)?
+        );
     } else {
         let parse = if let Some(encoding) = encoding {
             parse_file_with_encoding(path, encoding)?
         } else {
             parse_file(path)?
         };
-        print!("{}", format_single_file_output(&label, &parse)?);
+        print!(
+            "{}",
+            format_single_file_output(&label, &parse, diagnostic_level)?
+        );
     }
     Ok(())
 }
@@ -177,6 +199,7 @@ fn print_corpus_summary(
     root: &Path,
     encoding: Option<SourceEncoding>,
     lightweight: bool,
+    diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
     let files = collect_source_files(root, lightweight)?;
     if lightweight {
@@ -189,7 +212,7 @@ fn print_corpus_summary(
                 .unwrap_or_else(|| parse_light_file(&path))
             {
                 Ok(parse) => {
-                    let file_summary = light_file_summary(&path, &parse);
+                    let file_summary = light_file_summary(&path, &parse, diagnostic_level);
                     summary.record(file_summary);
                 }
                 Err(error) => {
@@ -215,19 +238,7 @@ fn print_corpus_summary(
             .unwrap_or_else(|| parse_file(&path))
         {
             Ok(parse) => {
-                let analysis = analyze_parse(&parse);
-                let file_summary = FileSummary {
-                    path: path.display().to_string(),
-                    decode_errors: parse.decode_errors.len(),
-                    lex_errors: parse.lex_errors.len(),
-                    parse_errors: parse.errors.len(),
-                    parse_error_messages: parse
-                        .errors
-                        .iter()
-                        .map(|error| error.message.clone())
-                        .collect(),
-                    semantic_diagnostics: analysis.diagnostics.len(),
-                };
+                let file_summary = summarize_parse_file(&path, &parse, diagnostic_level);
                 summary.record(file_summary);
             }
             Err(error) => {
@@ -312,30 +323,53 @@ fn collect_source_files_recursive(
 }
 
 fn print_parse_summary(label: &str, parse: &Parse) {
-    print!("{}", format_parse_summary(label, parse));
+    print!(
+        "{}",
+        format_parse_summary(label, parse, CliDiagnosticLevel::All)
+    );
 }
 
-fn format_parse_summary(label: &str, parse: &Parse) -> String {
-    let analysis = analyze_parse(parse);
+fn format_parse_summary(
+    label: &str,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> String {
+    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
+    let counts = diagnostic_counts(&diagnostics);
     format!(
         "source: {label}\nencoding: {}\nitems: {}\ndecode diagnostics: {}\nlexical diagnostics: {}\nparse errors: {}\nsemantic diagnostics: {}\n",
         parse.source_encoding.label(),
         parse.syntax.items.len(),
-        parse.decode_errors.len(),
-        parse.lex_errors.len(),
-        parse.errors.len(),
-        analysis.diagnostics.len()
+        counts.decode,
+        counts.lex,
+        counts.parse,
+        counts.sema
     )
 }
 
-fn format_single_file_output(label: &str, parse: &Parse) -> io::Result<String> {
-    let mut output = format_parse_summary(label, parse);
-    output.push_str(&render_diagnostics(label, parse)?);
+fn format_single_file_output(
+    label: &str,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<String> {
+    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
+    let mut output = format_parse_summary(label, parse, diagnostic_level);
+    output.push_str(&render_file_diagnostics(
+        label,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        diagnostics,
+    )?);
     Ok(output)
 }
 
-fn format_light_single_file_output(label: &str, parse: &LightParse) -> io::Result<String> {
-    let summary = light_file_summary(Path::new(label), parse);
+fn format_light_single_file_output(
+    label: &str,
+    parse: &LightParse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<String> {
+    let summary = light_file_summary(Path::new(label), parse, diagnostic_level);
+    let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
     let mut output = format!(
         "source: {label}\nmode: lightweight\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
         parse.source_encoding.label(),
@@ -349,7 +383,12 @@ fn format_light_single_file_output(label: &str, parse: &LightParse) -> io::Resul
         summary.decode_errors,
         summary.light_parse_errors,
     );
-    output.push_str(&render_light_diagnostics(label, parse)?);
+    output.push_str(&render_file_diagnostics(
+        label,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        diagnostics,
+    )?);
     Ok(output)
 }
 
@@ -366,34 +405,6 @@ struct FileDiagnosticLabel {
     range: TextRange,
     message: String,
     is_primary: bool,
-}
-
-fn render_diagnostics(label: &str, parse: &Parse) -> io::Result<String> {
-    let diagnostics = collect_diagnostics(parse);
-    if diagnostics.is_empty() {
-        return Ok(String::new());
-    }
-
-    render_file_diagnostics(
-        label,
-        parse.source_text.as_str(),
-        &parse.source_map,
-        diagnostics,
-    )
-}
-
-fn render_light_diagnostics(label: &str, parse: &LightParse) -> io::Result<String> {
-    let diagnostics = collect_light_diagnostics(parse);
-    if diagnostics.is_empty() {
-        return Ok(String::new());
-    }
-
-    render_file_diagnostics(
-        label,
-        parse.source_text.as_str(),
-        &parse.source_map,
-        diagnostics,
-    )
 }
 
 fn render_file_diagnostics(
@@ -622,6 +633,58 @@ fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
     diagnostics
 }
 
+fn filtered_parse_diagnostics(
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> Vec<FileDiagnostic> {
+    filter_diagnostics(collect_diagnostics(parse), diagnostic_level)
+}
+
+fn filtered_light_diagnostics(
+    parse: &LightParse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> Vec<FileDiagnostic> {
+    filter_diagnostics(collect_light_diagnostics(parse), diagnostic_level)
+}
+
+fn filter_diagnostics(
+    diagnostics: Vec<FileDiagnostic>,
+    diagnostic_level: CliDiagnosticLevel,
+) -> Vec<FileDiagnostic> {
+    match diagnostic_level {
+        CliDiagnosticLevel::All => diagnostics,
+        CliDiagnosticLevel::Error => diagnostics
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+            .collect(),
+        CliDiagnosticLevel::None => Vec::new(),
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DiagnosticCounts {
+    decode: usize,
+    lex: usize,
+    parse: usize,
+    sema: usize,
+    light: usize,
+}
+
+fn diagnostic_counts(diagnostics: &[FileDiagnostic]) -> DiagnosticCounts {
+    let mut counts = DiagnosticCounts::default();
+    for diagnostic in diagnostics {
+        match diagnostic.stage {
+            "decode" => counts.decode += 1,
+            "lex" => counts.lex += 1,
+            "parse" => counts.parse += 1,
+            "sema" => counts.sema += 1,
+            "light" => counts.light += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
 fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel {
     FileDiagnosticLabel {
         range: label.range,
@@ -636,6 +699,27 @@ fn analyze_parse(parse: &Parse) -> mel_sema::Analysis {
         parse.source_view(),
         &MayaCommandRegistry::new(),
     )
+}
+
+fn summarize_parse_file(
+    path: &Path,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> FileSummary {
+    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
+    let counts = diagnostic_counts(&diagnostics);
+    FileSummary {
+        path: path.display().to_string(),
+        decode_errors: counts.decode,
+        lex_errors: counts.lex,
+        parse_errors: counts.parse,
+        parse_error_messages: diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.stage == "parse")
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect(),
+        semantic_diagnostics: counts.sema,
+    }
 }
 
 fn report_kind(severity: DiagnosticSeverity) -> ReportKind<'static> {
@@ -801,8 +885,13 @@ struct LightFileSummary {
     set_attr_with_opaque_tail: usize,
 }
 
-fn light_file_summary(path: &Path, parse: &LightParse) -> LightFileSummary {
+fn light_file_summary(
+    path: &Path,
+    parse: &LightParse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> LightFileSummary {
     let facts = collect_top_level_facts_light(parse);
+    let counts = diagnostic_counts(&filtered_light_diagnostics(parse, diagnostic_level));
     let mut command_items = 0;
     let mut proc_items = 0;
     let mut other_items = 0;
@@ -833,8 +922,8 @@ fn light_file_summary(path: &Path, parse: &LightParse) -> LightFileSummary {
 
     LightFileSummary {
         path: path.display().to_string(),
-        decode_errors: parse.decode_errors.len(),
-        light_parse_errors: parse.errors.len(),
+        decode_errors: counts.decode,
+        light_parse_errors: counts.light,
         items: facts.items.len(),
         command_items,
         proc_items,
@@ -875,7 +964,7 @@ fn format_light_corpus_summary(summary: &LightCorpusSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary,
+        Args, CliDiagnosticLevel, CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary,
         format_light_corpus_summary, format_light_single_file_output, format_single_file_output,
         parse_cli_args, print_path_output,
     };
@@ -891,7 +980,8 @@ mod tests {
     };
 
     fn render_snapshot(label: &str, source: &str) -> String {
-        format_single_file_output(label, &parse_source(source)).expect("snapshot should render")
+        format_single_file_output(label, &parse_source(source), CliDiagnosticLevel::All)
+            .expect("snapshot should render")
     }
 
     #[test]
@@ -911,8 +1001,8 @@ mod tests {
     #[test]
     fn format_single_file_output_handles_gbk_source_without_panicking() {
         let parse = parse_bytes_with_encoding(b"print \"\xB0\xB4\xC5\xA5\";", SourceEncoding::Gbk);
-        let output =
-            format_single_file_output("gbk-fixture", &parse).expect("gbk output should render");
+        let output = format_single_file_output("gbk-fixture", &parse, CliDiagnosticLevel::All)
+            .expect("gbk output should render");
         assert!(output.contains("encoding: gbk"));
     }
 
@@ -922,8 +1012,9 @@ mod tests {
             b"setAttr \".\xB0\xB4\" -type \"string\" \"\xC5\xA5\";",
             SourceEncoding::Gbk,
         );
-        let output = format_light_single_file_output("gbk-fixture", &parse)
-            .expect("light gbk output should render");
+        let output =
+            format_light_single_file_output("gbk-fixture", &parse, CliDiagnosticLevel::All)
+                .expect("light gbk output should render");
         assert!(output.contains("mode: lightweight"));
         assert!(output.contains("encoding: gbk"));
     }
@@ -957,6 +1048,13 @@ mod tests {
         let args = parse_cli_args(["mel-inspect", "--inline", r#"print "hello""#])
             .expect("inline should parse");
         assert_eq!(args.inline_input.as_deref(), Some(r#"print "hello""#));
+    }
+
+    #[test]
+    fn cli_accepts_diagnostic_level_flag() {
+        let args = parse_cli_args(["mel-inspect", "--diagnostic-level", "error", "fixture.mel"])
+            .expect("diagnostic level should parse");
+        assert_eq!(args.diagnostic_level, CliDiagnosticLevel::Error);
     }
 
     #[test]
@@ -1023,7 +1121,36 @@ mod tests {
         assert!(help.contains("[PATH]"));
         assert!(help.contains("--lightweight"));
         assert!(help.contains("--inline <SOURCE>"));
+        assert!(help.contains("--diagnostic-level <DIAGNOSTIC_LEVEL>"));
         assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
+    }
+
+    #[test]
+    fn error_diagnostic_level_hides_warnings_and_zeroes_summary_count() {
+        let output = format_single_file_output(
+            "warning-fixture",
+            &parse_source("global proc foo() { string $name; if ($name == \"\") { } }\nfoo();\n"),
+            CliDiagnosticLevel::Error,
+        )
+        .expect("filtered output");
+        assert!(output.contains("semantic diagnostics: 0"));
+        assert!(!output.contains("Warning:"));
+    }
+
+    #[test]
+    fn none_diagnostic_level_hides_all_diagnostic_output() {
+        let output = format_single_file_output(
+            "parse-fixture",
+            &parse_source("print(\n"),
+            CliDiagnosticLevel::None,
+        )
+        .expect("filtered output");
+        assert!(output.contains("decode diagnostics: 0"));
+        assert!(output.contains("lexical diagnostics: 0"));
+        assert!(output.contains("parse errors: 0"));
+        assert!(output.contains("semantic diagnostics: 0"));
+        assert!(!output.contains("Error:"));
+        assert!(!output.contains("Warning:"));
     }
 
     #[test]
@@ -1034,7 +1161,8 @@ mod tests {
             use std::os::unix::net::UnixListener;
 
             let _listener = UnixListener::bind(&path).expect("socket should bind");
-            let error = print_path_output(&path, None, false).expect_err("socket path should fail");
+            let error = print_path_output(&path, None, false, CliDiagnosticLevel::All)
+                .expect_err("socket path should fail");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
 
@@ -1129,9 +1257,24 @@ mod tests {
             },
         );
         let output =
-            format_light_single_file_output("light-fixture", &parse).expect("light output");
+            format_light_single_file_output("light-fixture", &parse, CliDiagnosticLevel::All)
+                .expect("light output");
         assert!(output.contains("opaque-tail commands: 1"));
         assert!(output.contains("setAttr with opaque tail: 1"));
+    }
+
+    #[test]
+    fn light_none_diagnostic_level_zeroes_rendered_counts() {
+        let parse = parse_light_source_with_options(
+            "setAttr \".tx\" -type;\n",
+            LightParseOptions::default(),
+        );
+        let output =
+            format_light_single_file_output("light-fixture", &parse, CliDiagnosticLevel::None)
+                .expect("light output");
+        assert!(output.contains("decode diagnostics: 0"));
+        assert!(output.contains("light parse errors: 0"));
+        assert!(!output.contains("Error:"));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use super::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     DiagnosticSeverity, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, PositionalSchema,
-    PositionalSlotSchema, PositionalTailSchema, ResolvedCallee, ReturnBehavior, ValueShape,
-    VariableKind, analyze, analyze_with_registry,
+    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ResolvedCallee,
+    ReturnBehavior, ValueShape, VariableKind, analyze, analyze_with_registry,
 };
 use mel_ast::{
     AssignOp, BinaryOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam,
@@ -82,6 +82,16 @@ fn flag_schema(long_name: &str, short_name: Option<&str>, arity: FlagArity) -> F
     }
 }
 
+const EXPLICIT_STRING_SLOT: PositionalSlotSchema = PositionalSlotSchema {
+    value_shapes: &[ValueShape::String],
+    source_policy: PositionalSourcePolicy::ExplicitOnly,
+};
+
+const SELECTION_STRING_SLOT: PositionalSlotSchema = PositionalSlotSchema {
+    value_shapes: &[ValueShape::String],
+    source_policy: PositionalSourcePolicy::ExplicitOrCurrentSelection,
+};
+
 fn analyze_source(source: &SourceFile) -> super::Analysis {
     let source_text = take_test_source();
     let source_map = SourceMap::identity(source_text.len());
@@ -111,6 +121,16 @@ fn warning_messages(analysis: &super::Analysis) -> Vec<&str> {
         .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
         .map(|diagnostic| diagnostic.message.as_str())
         .collect()
+}
+
+fn assert_single_diagnostic_severity(
+    analysis: &super::Analysis,
+    expected: DiagnosticSeverity,
+    expected_message: &str,
+) {
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(analysis.diagnostics[0].severity, expected);
+    assert_eq!(analysis.diagnostics[0].message, expected_message);
 }
 
 #[test]
@@ -787,14 +807,7 @@ fn shell_like_command_reports_missing_required_positional_argument() {
 
     let mut command = command_schema("rename", CommandKind::Builtin);
     command.positionals = PositionalSchema {
-        prefix: &[
-            PositionalSlotSchema {
-                value_shapes: &[ValueShape::String],
-            },
-            PositionalSlotSchema {
-                value_shapes: &[ValueShape::String],
-            },
-        ],
+        prefix: &[EXPLICIT_STRING_SLOT, EXPLICIT_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
     let registry = TestRegistry {
@@ -815,6 +828,102 @@ fn shell_like_command_reports_missing_required_positional_argument() {
         diagnostic.message,
         "command \"rename\" expects 2 positional argument(s) but call provides 1"
     );
+}
+
+#[test]
+fn shell_like_command_allows_selection_fallback_positional_omission() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("ikHandle"),
+                    words: Vec::new(),
+                    captured: false,
+                },
+                range: text_range(0, 8),
+            }),
+            range: text_range(0, 9),
+        }))],
+    };
+
+    let mut command = command_schema("ikHandle", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[SELECTION_STRING_SLOT],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn shell_like_command_allows_explicit_positional_for_selection_fallback_slot() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("ikHandle"),
+                    words: vec![ShellWord::QuotedString {
+                        text: text_range(9, 19),
+                        range: text_range(9, 19),
+                    }],
+                    captured: false,
+                },
+                range: text_range(0, 19),
+            }),
+            range: text_range(0, 20),
+        }))],
+    };
+
+    let mut command = command_schema("ikHandle", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[SELECTION_STRING_SLOT],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn shell_like_command_allows_selection_fallback_only_as_trailing_suffix() {
+    let mut command = command_schema("badSelectionShape", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[
+            EXPLICIT_STRING_SLOT,
+            SELECTION_STRING_SLOT,
+            EXPLICIT_STRING_SLOT,
+        ],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("badSelectionShape"),
+                    words: vec![ShellWord::QuotedString {
+                        text: text_range(18, 21),
+                        range: text_range(18, 21),
+                    }],
+                    captured: false,
+                },
+                range: text_range(0, 21),
+            }),
+            range: text_range(0, 22),
+        }))],
+    };
+
+    let panic = std::panic::catch_unwind(|| analyze_source_with_registry(&source, &registry));
+    assert!(panic.is_err());
 }
 
 #[test]
@@ -844,14 +953,7 @@ fn shell_like_command_reports_positional_shape_mismatch_for_known_literals() {
 
     let mut command = command_schema("rename", CommandKind::Builtin);
     command.positionals = PositionalSchema {
-        prefix: &[
-            PositionalSlotSchema {
-                value_shapes: &[ValueShape::String],
-            },
-            PositionalSlotSchema {
-                value_shapes: &[ValueShape::String],
-            },
-        ],
+        prefix: &[EXPLICIT_STRING_SLOT, EXPLICIT_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
     let registry = TestRegistry {
@@ -2513,10 +2615,10 @@ fn var_initializer_type_mismatch_reports_diagnostic() {
     };
 
     let analysis = analyze_source(&source);
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].message,
-        "variable \"$value\" has declared type String but initializer is Int"
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type String but initializer is Int",
     );
 }
 
@@ -2569,12 +2671,80 @@ fn proc_invoke_return_type_flows_into_initializer_check() {
     };
 
     let analysis = analyze_source(&source);
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].message,
-        "variable \"$value\" has declared type Int but initializer is String"
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type Int but initializer is String",
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(44, 52));
+}
+
+#[test]
+fn proc_return_type_mismatch_is_warning_for_scalar_coercion() {
+    let source = SourceFile {
+        items: vec![Item::Proc(Box::new(ProcDef {
+            return_type: Some(mel_ast::ProcReturnType {
+                ty: TypeName::Int,
+                is_array: false,
+                range: text_range(5, 8),
+            }),
+            name_range: tr("helper"),
+            params: Vec::new(),
+            body: Stmt::Block {
+                statements: vec![Stmt::Return {
+                    expr: Some(Expr::String {
+                        text: text_range(21, 26),
+                        range: text_range(21, 26),
+                    }),
+                    range: text_range(14, 27),
+                }],
+                range: text_range(13, 28),
+            },
+            is_global: false,
+            range: text_range(0, 28),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "proc \"helper\" returns String but declares Int",
+    );
+}
+
+#[test]
+fn proc_return_type_mismatch_remains_error_for_non_scalar_types() {
+    let source = SourceFile {
+        items: vec![Item::Proc(Box::new(ProcDef {
+            return_type: Some(mel_ast::ProcReturnType {
+                ty: TypeName::Vector,
+                is_array: false,
+                range: text_range(5, 11),
+            }),
+            name_range: tr("helper"),
+            params: Vec::new(),
+            body: Stmt::Block {
+                statements: vec![Stmt::Return {
+                    expr: Some(Expr::String {
+                        text: text_range(24, 29),
+                        range: text_range(24, 29),
+                    }),
+                    range: text_range(17, 30),
+                }],
+                range: text_range(16, 31),
+            },
+            is_global: false,
+            range: text_range(0, 31),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Error,
+        "proc \"helper\" returns String but declares Vector",
+    );
 }
 
 #[test]
@@ -2706,12 +2876,42 @@ fn comparison_initializer_reports_int_when_assigned_to_string() {
     };
 
     let analysis = analyze_source(&source);
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].message,
-        "variable \"$value\" has declared type String but initializer is Int"
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type String but initializer is Int",
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(18, 36));
+}
+
+#[test]
+fn boolean_alias_initializer_to_string_is_warning() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::VarDecl {
+            decl: VarDecl {
+                is_global: false,
+                ty: TypeName::String,
+                declarators: vec![Declarator {
+                    name_range: tr("$value"),
+                    array_size: None,
+                    initializer: Some(Expr::Ident {
+                        name_range: tr("true"),
+                        range: text_range(16, 20),
+                    }),
+                    range: text_range(8, 20),
+                }],
+                range: text_range(0, 21),
+            },
+            range: text_range(0, 21),
+        }))],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type String but initializer is Int",
+    );
 }
 
 #[test]
@@ -2751,12 +2951,57 @@ fn plain_assignment_type_mismatch_reports_diagnostic() {
     };
 
     let analysis = analyze_source(&source);
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].message,
-        "variable \"$value\" has declared type Int but assigned expression is String"
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type Int but assigned expression is String",
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(25, 30));
+}
+
+#[test]
+fn boolean_alias_assignment_to_string_is_warning() {
+    let source = SourceFile {
+        items: vec![
+            Item::Stmt(Box::new(Stmt::VarDecl {
+                decl: VarDecl {
+                    is_global: false,
+                    ty: TypeName::String,
+                    declarators: vec![Declarator {
+                        name_range: tr("$value"),
+                        array_size: None,
+                        initializer: None,
+                        range: text_range(11, 17),
+                    }],
+                    range: text_range(0, 18),
+                },
+                range: text_range(0, 18),
+            })),
+            Item::Stmt(Box::new(Stmt::Expr {
+                expr: Expr::Assign {
+                    op: AssignOp::Assign,
+                    lhs: Box::new(Expr::Ident {
+                        name_range: tr("$value"),
+                        range: text_range(19, 25),
+                    }),
+                    rhs: Box::new(Expr::Ident {
+                        name_range: tr("off"),
+                        range: text_range(28, 31),
+                    }),
+                    range: text_range(19, 31),
+                },
+                range: text_range(19, 32),
+            })),
+        ],
+    };
+
+    let analysis = analyze_source(&source);
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type String but assigned expression is Int",
+    );
+    assert_eq!(analysis.diagnostics[0].range, text_range(28, 31));
 }
 
 #[test]
@@ -2839,10 +3084,10 @@ fn compound_assignment_type_mismatch_reports_diagnostic() {
     };
 
     let analysis = analyze_source(&source);
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].message,
-        "variable \"$value\" has declared type Int but assigned expression is String"
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$value\" has declared type Int but assigned expression is String",
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(29, 34));
 }
@@ -2891,10 +3136,10 @@ fn indexed_assignment_type_mismatch_reports_diagnostic() {
     };
 
     let analysis = analyze_source(&source);
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].message,
-        "variable \"$values\" has declared type Int but assigned expression is String"
+    assert_single_diagnostic_severity(
+        &analysis,
+        DiagnosticSeverity::Warning,
+        "variable \"$values\" has declared type Int but assigned expression is String",
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(30, 35));
 }

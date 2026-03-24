@@ -588,13 +588,16 @@ where
             (Some(expected), Some(actual)) => {
                 context.saw_value_return = true;
                 if !is_assignable(expected, actual) {
-                    self.diagnostics.push(Diagnostic::error(
-                        format!(
-                            "proc \"{}\" returns {:?} but declares {:?}",
-                            context_name, actual, expected
-                        ),
-                        range,
-                    ));
+                    let message = format!(
+                        "proc \"{}\" returns {:?} but declares {:?}",
+                        context_name, actual, expected
+                    );
+                    let diagnostic = if is_scalar_coercion_warning(expected, actual) {
+                        Diagnostic::warning(message, range)
+                    } else {
+                        Diagnostic::error(message, range)
+                    };
+                    self.diagnostics.push(diagnostic);
                 }
             }
             (Some(_), None) | (None, None) => {}
@@ -627,15 +630,18 @@ where
         let expected = value_type_from_var_decl(decl, declarator);
         let actual = self.infer_expr_type(initializer, current_scope);
         if !is_assignable(&expected, &actual) {
-            self.diagnostics.push(Diagnostic::error(
-                format!(
-                    "variable \"{}\" has declared type {:?} but initializer is {:?}",
-                    self.slice(declarator.name_range),
-                    expected,
-                    actual
-                ),
-                initializer.range(),
-            ));
+            let message = format!(
+                "variable \"{}\" has declared type {:?} but initializer is {:?}",
+                self.slice(declarator.name_range),
+                expected,
+                actual
+            );
+            let diagnostic = if is_scalar_coercion_warning(&expected, &actual) {
+                Diagnostic::warning(message, initializer.range())
+            } else {
+                Diagnostic::error(message, initializer.range())
+            };
+            self.diagnostics.push(diagnostic);
         }
     }
 
@@ -671,25 +677,25 @@ where
         };
 
         if !is_assignable(&target_info.value_type, &actual) {
-            self.diagnostics.push(
-                Diagnostic::error(
-                    format!(
-                        "variable \"{}\" has declared type {:?} but assigned expression is {:?}",
-                        self.slice(target_info.name_range),
-                        target_info.value_type,
-                        actual
-                    ),
-                    rhs.range(),
-                )
-                .with_secondary_label(
-                    format!(
-                        "\"{}\" declared here with type {:?}",
-                        self.slice(target_info.name_range),
-                        target_info.value_type
-                    ),
-                    target_info.declaration_range,
-                ),
+            let message = format!(
+                "variable \"{}\" has declared type {:?} but assigned expression is {:?}",
+                self.slice(target_info.name_range),
+                target_info.value_type,
+                actual
             );
+            let diagnostic = if is_scalar_coercion_warning(&target_info.value_type, &actual) {
+                Diagnostic::warning(message, rhs.range())
+            } else {
+                Diagnostic::error(message, rhs.range())
+            };
+            self.diagnostics.push(diagnostic.with_secondary_label(
+                format!(
+                    "\"{}\" declared here with type {:?}",
+                    self.slice(target_info.name_range),
+                    target_info.value_type
+                ),
+                target_info.declaration_range,
+            ));
         }
     }
 
@@ -917,6 +923,15 @@ fn is_assignable(expected: &ValueType, actual: &ValueType) -> bool {
         (ValueType::Array(expected), ValueType::Array(actual)) => is_assignable(expected, actual),
         _ => expected == actual,
     }
+}
+
+fn is_scalar_coercion_warning(expected: &ValueType, actual: &ValueType) -> bool {
+    matches!(
+        (expected, actual),
+        (ValueType::Int, ValueType::Float | ValueType::String)
+            | (ValueType::Float, ValueType::Int | ValueType::String)
+            | (ValueType::String, ValueType::Int | ValueType::Float)
+    )
 }
 
 fn combine_numeric_types(lhs: ValueType, rhs: ValueType) -> ValueType {

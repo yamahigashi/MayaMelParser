@@ -3,7 +3,8 @@ use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 
 use crate::{
     CommandModeMask, CommandSchema, Diagnostic, DiagnosticSeverity, FlagArity, FlagArityByMode,
-    PositionalSchema, PositionalTailSchema, ScopeId, ValueShape, command_schema::CommandKind,
+    PositionalSchema, PositionalSourcePolicy, PositionalTailSchema, ScopeId, ValueShape,
+    command_schema::CommandKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +426,7 @@ fn validate_positionals(
     source: SourceView<'_>,
 ) {
     let prefix_len = schema.prefix.len();
+    let required_prefix_len = required_prefix_len(schema.prefix);
     let positional_len = positional_args.len();
 
     if prefix_len == 0 && matches!(schema.tail, PositionalTailSchema::None) && positional_len > 0 {
@@ -447,19 +449,19 @@ fn validate_positionals(
         return;
     }
 
-    if positional_len < prefix_len {
+    if positional_len < required_prefix_len {
         diagnostics.push(Diagnostic {
             severity: DiagnosticSeverity::Error,
             message: format!(
                 "command \"{}\" expects {} positional argument(s) but call provides {}",
-                command.name, prefix_len, positional_len
+                command.name, required_prefix_len, positional_len
             ),
             range: command_range,
             labels: vec![crate::DiagnosticLabel {
                 range: command_range,
                 message: format!(
                     "command \"{}\" expects {} positional argument(s) but call provides {}",
-                    command.name, prefix_len, positional_len
+                    command.name, required_prefix_len, positional_len
                 ),
                 is_primary: true,
             }],
@@ -545,6 +547,25 @@ fn validate_positionals(
             }
         }
     }
+}
+
+fn required_prefix_len(prefix: &[crate::PositionalSlotSchema]) -> usize {
+    let mut seen_optional = false;
+    let mut required = 0;
+    for slot in prefix {
+        let is_optional = matches!(
+            slot.source_policy,
+            PositionalSourcePolicy::ExplicitOrCurrentSelection
+        );
+        if is_optional {
+            seen_optional = true;
+        } else if !seen_optional {
+            required += 1;
+        } else {
+            panic!("selection-aware positional slots must form a trailing suffix");
+        }
+    }
+    required
 }
 
 fn validate_tail_arity(

@@ -11,8 +11,8 @@ use mel_parser::{
 use mel_sema::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, NormalizedCommandItem,
-    NormalizedFlag, PositionalArg, PositionalSchema, PositionalSlotSchema, PositionalTailSchema,
-    ReturnBehavior, ValueShape,
+    NormalizedFlag, PositionalArg, PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy,
+    PositionalTailSchema, ReturnBehavior, ValueShape,
 };
 use mel_syntax::{TextRange, range_end, range_start, text_range};
 
@@ -2507,6 +2507,17 @@ mod tests {
     }
 
     #[test]
+    fn embedded_registry_keeps_selection_aware_positional_policy() {
+        let schema = MayaCommandRegistry::new()
+            .lookup("ikHandle")
+            .expect("embedded schema for ikHandle");
+        assert_eq!(
+            schema.positionals.prefix[0].source_policy,
+            PositionalSourcePolicy::ExplicitOrCurrentSelection
+        );
+    }
+
+    #[test]
     fn collects_top_level_command_proc_and_other_items() {
         let parse = parse_source("global proc foo() { }\nsetAttr \".tx\" 1;\nint $x = 1;\n");
         assert!(parse.errors.is_empty());
@@ -2547,6 +2558,7 @@ mod tests {
             positionals: PositionalSchema {
                 prefix: &[mel_sema::PositionalSlotSchema {
                     value_shapes: &[ValueShape::String],
+                    source_policy: PositionalSourcePolicy::ExplicitOnly,
                 }],
                 tail: PositionalTailSchema::Opaque { min: 0, max: None },
             },
@@ -2960,6 +2972,7 @@ mod tests {
             positionals: PositionalSchema {
                 prefix: &[mel_sema::PositionalSlotSchema {
                     value_shapes: &[ValueShape::String],
+                    source_policy: PositionalSourcePolicy::ExplicitOnly,
                 }],
                 tail: PositionalTailSchema::Opaque { min: 0, max: None },
             },

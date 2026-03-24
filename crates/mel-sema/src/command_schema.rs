@@ -60,9 +60,17 @@ pub enum PositionalTailSchema {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PositionalSourcePolicy {
+    #[default]
+    ExplicitOnly,
+    ExplicitOrCurrentSelection,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PositionalSlotSchema {
     pub value_shapes: &'static [ValueShape],
+    pub source_policy: PositionalSourcePolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

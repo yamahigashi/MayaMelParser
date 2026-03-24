@@ -16,7 +16,7 @@ pub use command_norm::{
 pub use command_schema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, PositionalSchema,
-    PositionalSlotSchema, PositionalTailSchema, ReturnBehavior, ValueShape,
+    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ReturnBehavior, ValueShape,
 };
 
 use flow::FlowLintAnalyzer;
