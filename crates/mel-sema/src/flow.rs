@@ -49,7 +49,7 @@ pub(crate) struct FlowLintAnalyzer<'a> {
     source: SourceView<'a>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     visible_variable_decl_orders: HashMap<ScopeId, usize>,
-    emitted_warnings: HashSet<(TextRange, String)>,
+    emitted_warnings: HashSet<(TextRange, std::sync::Arc<str>)>,
 }
 
 impl<'a> FlowLintAnalyzer<'a> {

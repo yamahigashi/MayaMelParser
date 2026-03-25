@@ -130,12 +130,13 @@ pub fn parse_source(input: &str) -> Parse {
 
 #[must_use]
 pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
-    let mut parse = Parser::new(input, options).parse();
-    parse.source_text = input.to_owned();
-    parse.source_map = SourceMap::identity(input.len());
-    parse.source_encoding = SourceEncoding::Utf8;
-    parse.decode_errors = Vec::new();
-    parse
+    parse_owned_source(
+        input.to_owned(),
+        SourceMap::identity(input.len()),
+        SourceEncoding::Utf8,
+        Vec::new(),
+        options,
+    )
 }
 
 #[must_use]
@@ -175,28 +176,28 @@ pub fn parse_source_view_range_with_options(
 #[must_use]
 pub fn parse_bytes(input: &[u8]) -> Parse {
     let decoded = decode_source_auto(input);
-    let source_text = decoded.text.into_owned();
-    let mut parse = parse_source(&source_text);
-    parse.source_text = source_text;
-    parse.source_map =
-        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone());
-    parse.source_encoding = decoded.encoding;
+    let mut parse = parse_owned_source(
+        decoded.text.into_owned(),
+        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone()),
+        decoded.encoding,
+        decoded.diagnostics,
+        ParseOptions::default(),
+    );
     remap_parse_ranges(&mut parse, &decoded.offset_map);
-    parse.decode_errors = decoded.diagnostics;
     parse
 }
 
 #[must_use]
 pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Parse {
     let decoded = decode_source_with_encoding(input, encoding);
-    let source_text = decoded.text.into_owned();
-    let mut parse = parse_source(&source_text);
-    parse.source_text = source_text;
-    parse.source_map =
-        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone());
-    parse.source_encoding = decoded.encoding;
+    let mut parse = parse_owned_source(
+        decoded.text.into_owned(),
+        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone()),
+        decoded.encoding,
+        decoded.diagnostics,
+        ParseOptions::default(),
+    );
     remap_parse_ranges(&mut parse, &decoded.offset_map);
-    parse.decode_errors = decoded.diagnostics;
     parse
 }
 
@@ -224,4 +225,19 @@ impl RangeMapper for SourceViewRangeMapper<'_> {
         let end = self.display_start + usize::from(range.end());
         self.source.source_range_from_display_range(start..end)
     }
+}
+
+fn parse_owned_source(
+    source_text: String,
+    source_map: SourceMap,
+    source_encoding: SourceEncoding,
+    decode_errors: Vec<DecodeDiagnostic>,
+    options: ParseOptions,
+) -> Parse {
+    let mut parse = Parser::new(&source_text, options).parse();
+    parse.source_text = source_text;
+    parse.source_map = source_map;
+    parse.source_encoding = source_encoding;
+    parse.decode_errors = decode_errors;
+    parse
 }

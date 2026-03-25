@@ -237,6 +237,39 @@ fn parse_source_view_range_rebases_cp932_spans_to_original_bytes() {
 }
 
 #[test]
+fn parse_bytes_keeps_utf8_source_text_and_identity_source_map() {
+    let input = b"setAttr \".tx\" 1;\n";
+    let parse = parse_bytes(input);
+
+    assert!(parse.decode_errors.is_empty());
+    assert_eq!(parse.source_encoding, SourceEncoding::Utf8);
+    assert_eq!(parse.source_text, "setAttr \".tx\" 1;\n");
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike {
+        head_range, words, ..
+    } = &invoke.surface
+    else {
+        panic!("expected shell-like invoke");
+    };
+
+    assert_eq!(parse.source_slice(*head_range), "setAttr");
+    let ShellWord::QuotedString { text, .. } = &words[0] else {
+        panic!("expected quoted string");
+    };
+    assert_eq!(parse.source_slice(*text), "\".tx\"");
+}
+
+#[test]
 fn parses_nested_proc_definition_statement_fixture() {
     let parse = parse_source(include_str!(
         "../../../tests/corpus/parser/statements/nested-proc-definition.mel"

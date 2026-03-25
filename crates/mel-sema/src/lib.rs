@@ -22,6 +22,7 @@ pub use command_schema::{
 use flow::FlowLintAnalyzer;
 use resolve::Analyzer;
 use scope::ScopeCollector;
+use std::sync::Arc;
 
 use mel_ast::{SourceFile, Stmt};
 use mel_syntax::{SourceView, TextRange};
@@ -35,7 +36,7 @@ pub enum DiagnosticSeverity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
-    pub message: String,
+    pub message: Arc<str>,
     pub range: TextRange,
     pub labels: Vec<DiagnosticLabel>,
 }
@@ -43,12 +44,12 @@ pub struct Diagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticLabel {
     pub range: TextRange,
-    pub message: String,
+    pub message: Arc<str>,
     pub is_primary: bool,
 }
 
 impl Diagnostic {
-    fn error(message: impl Into<String>, range: TextRange) -> Self {
+    fn error(message: impl Into<Arc<str>>, range: TextRange) -> Self {
         let message = message.into();
         Self {
             severity: DiagnosticSeverity::Error,
@@ -62,7 +63,7 @@ impl Diagnostic {
         }
     }
 
-    fn warning(message: impl Into<String>, range: TextRange) -> Self {
+    fn warning(message: impl Into<Arc<str>>, range: TextRange) -> Self {
         let message = message.into();
         Self {
             severity: DiagnosticSeverity::Warning,
@@ -76,7 +77,7 @@ impl Diagnostic {
         }
     }
 
-    fn with_secondary_label(mut self, message: impl Into<String>, range: TextRange) -> Self {
+    fn with_secondary_label(mut self, message: impl Into<Arc<str>>, range: TextRange) -> Self {
         self.labels.push(DiagnosticLabel {
             range,
             message: message.into(),

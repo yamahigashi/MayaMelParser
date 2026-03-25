@@ -123,7 +123,7 @@ fn warning_messages(analysis: &super::Analysis) -> Vec<&str> {
         .diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
-        .map(|diagnostic| diagnostic.message.as_str())
+        .map(|diagnostic| diagnostic.message.as_ref())
         .collect()
 }
 
@@ -134,7 +134,7 @@ fn assert_single_diagnostic_severity(
 ) {
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(analysis.diagnostics[0].severity, expected);
-    assert_eq!(analysis.diagnostics[0].message, expected_message);
+    assert_eq!(analysis.diagnostics[0].message.as_ref(), expected_message);
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn function_local_proc_forward_reference_reports_diagnostic() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "local proc \"helper\" is called before its definition"
     );
     assert!(matches!(
@@ -458,7 +458,7 @@ fn shell_like_local_proc_forward_reference_reports_diagnostic() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "local proc \"helper\" is called before its definition"
     );
     assert!(matches!(
@@ -650,13 +650,13 @@ fn function_style_proc_call_with_missing_argument_reports_diagnostic() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "proc \"setNodeAttributes\" expects 2 argument(s) but call provides 1"
     );
     assert_eq!(analysis.diagnostics[0].range, text_range(63, 87));
     assert_eq!(analysis.diagnostics[0].labels.len(), 2);
     assert_eq!(
-        analysis.diagnostics[0].labels[1].message,
+        analysis.diagnostics[0].labels[1].message.as_ref(),
         "proc defined here"
     );
     assert!(matches!(
@@ -785,7 +785,7 @@ fn shell_like_command_reports_unexpected_positional_arguments() {
         })
         .expect("should report unexpected positional argument");
     assert_eq!(
-        diagnostic.message,
+        diagnostic.message.as_ref(),
         "command \"date\" does not accept positional arguments"
     );
 }
@@ -829,7 +829,7 @@ fn shell_like_command_reports_missing_required_positional_argument() {
         })
         .expect("should report missing positional argument");
     assert_eq!(
-        diagnostic.message,
+        diagnostic.message.as_ref(),
         "command \"rename\" expects 2 positional argument(s) but call provides 1"
     );
 }
@@ -1061,7 +1061,7 @@ fn shell_like_command_reports_positional_shape_mismatch_for_known_literals() {
         .find(|diagnostic| diagnostic.message.contains("expects string but got int"))
         .expect("should report positional shape mismatch");
     assert_eq!(
-        diagnostic.message,
+        diagnostic.message.as_ref(),
         "positional argument 1 for command \"rename\" expects string but got int"
     );
 }
@@ -2570,7 +2570,7 @@ fn void_proc_returning_value_reports_diagnostic() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "proc \"helper\" has no return type but returns a value"
     );
 }
@@ -2601,7 +2601,7 @@ fn typed_proc_without_value_return_reports_diagnostic() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "proc \"helper\" declares a return type but never returns a value"
     );
 }
@@ -2652,7 +2652,7 @@ fn typed_proc_value_return_in_nested_proc_does_not_satisfy_outer_proc() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "proc \"outer\" declares a return type but never returns a value"
     );
 }
@@ -2686,7 +2686,7 @@ fn typed_proc_return_type_mismatch_reports_diagnostic() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "proc \"helper\" returns String but declares Int"
     );
 }
@@ -3298,7 +3298,7 @@ fn proc_invoke_return_type_flows_into_return_check() {
     let analysis = analyze_source(&source);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].message,
+        analysis.diagnostics[0].message.as_ref(),
         "proc \"outer\" returns String but declares Int"
     );
 }

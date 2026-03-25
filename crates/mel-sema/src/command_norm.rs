@@ -124,14 +124,16 @@ pub(crate) fn normalize_shell_like_invoke(
                 message: format!(
                     "command \"{}\" cannot combine create/edit/query mode flags",
                     command.name
-                ),
+                )
+                .into(),
                 range,
                 labels: vec![crate::DiagnosticLabel {
                     range,
                     message: format!(
                         "command \"{}\" cannot combine create/edit/query mode flags",
                         command.name
-                    ),
+                    )
+                    .into(),
                     is_primary: true,
                 }],
             });
@@ -153,14 +155,16 @@ pub(crate) fn normalize_shell_like_invoke(
                         message: format!(
                             "unknown flag \"{flag_text}\" for command \"{}\"",
                             command.name
-                        ),
+                        )
+                        .into(),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
                             message: format!(
                                 "unknown flag \"{flag_text}\" for command \"{}\"",
                                 command.name
-                            ),
+                            )
+                            .into(),
                             is_primary: true,
                         }],
                     });
@@ -185,7 +189,8 @@ pub(crate) fn normalize_shell_like_invoke(
                             "flag \"-{0}\" cannot be repeated for command \"{1}\"",
                             schema.long_name(),
                             command.name
-                        ),
+                        )
+                        .into(),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
@@ -193,7 +198,8 @@ pub(crate) fn normalize_shell_like_invoke(
                                 "flag \"-{0}\" cannot be repeated for command \"{1}\"",
                                 schema.long_name(),
                                 command.name
-                            ),
+                            )
+                            .into(),
                             is_primary: true,
                         }],
                     });
@@ -240,7 +246,8 @@ pub(crate) fn normalize_shell_like_invoke(
                             schema.long_name(),
                             format_arity(expected_arity),
                             command.name
-                        ),
+                        )
+                        .into(),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
@@ -249,7 +256,8 @@ pub(crate) fn normalize_shell_like_invoke(
                                 schema.long_name(),
                                 format_arity(expected_arity),
                                 command.name
-                            ),
+                            )
+                            .into(),
                             is_primary: true,
                         }],
                     });
@@ -292,7 +300,8 @@ pub(crate) fn normalize_shell_like_invoke(
                 "command \"{}\" is not available in {} mode",
                 command.name,
                 mode_label(mode)
-            ),
+            )
+            .into(),
             range,
             labels: vec![crate::DiagnosticLabel {
                 range,
@@ -300,7 +309,8 @@ pub(crate) fn normalize_shell_like_invoke(
                     "command \"{}\" is not available in {} mode",
                     command.name,
                     mode_label(mode)
-                ),
+                )
+                .into(),
                 is_primary: true,
             }],
         });
@@ -328,7 +338,8 @@ pub(crate) fn normalize_shell_like_invoke(
                     schema.long_name(),
                     mode_label(mode),
                     command.name
-                ),
+                )
+                .into(),
                 range: flag.source_range,
                 labels: vec![crate::DiagnosticLabel {
                     range: flag.source_range,
@@ -337,7 +348,8 @@ pub(crate) fn normalize_shell_like_invoke(
                         schema.long_name(),
                         mode_label(mode),
                         command.name
-                    ),
+                    )
+                    .into(),
                     is_primary: true,
                 }],
             });
@@ -394,14 +406,16 @@ pub(crate) fn collect_command_diagnostics(
                 message: format!(
                     "command \"{}\" cannot combine create/edit/query mode flags",
                     command.name
-                ),
+                )
+                .into(),
                 range,
                 labels: vec![crate::DiagnosticLabel {
                     range,
                     message: format!(
                         "command \"{}\" cannot combine create/edit/query mode flags",
                         command.name
-                    ),
+                    )
+                    .into(),
                     is_primary: true,
                 }],
             });
@@ -423,14 +437,16 @@ pub(crate) fn collect_command_diagnostics(
                         message: format!(
                             "unknown flag \"{flag_text}\" for command \"{}\"",
                             command.name
-                        ),
+                        )
+                        .into(),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
                             message: format!(
                                 "unknown flag \"{flag_text}\" for command \"{}\"",
                                 command.name
-                            ),
+                            )
+                            .into(),
                             is_primary: true,
                         }],
                     });
@@ -450,7 +466,8 @@ pub(crate) fn collect_command_diagnostics(
                             "flag \"-{0}\" cannot be repeated for command \"{1}\"",
                             schema.long_name(),
                             command.name
-                        ),
+                        )
+                        .into(),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
@@ -458,7 +475,8 @@ pub(crate) fn collect_command_diagnostics(
                                 "flag \"-{0}\" cannot be repeated for command \"{1}\"",
                                 schema.long_name(),
                                 command.name
-                            ),
+                            )
+                            .into(),
                             is_primary: true,
                         }],
                     });
@@ -497,7 +515,8 @@ pub(crate) fn collect_command_diagnostics(
                             schema.long_name(),
                             format_arity(expected_arity),
                             command.name
-                        ),
+                        )
+                        .into(),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
@@ -506,7 +525,8 @@ pub(crate) fn collect_command_diagnostics(
                                 schema.long_name(),
                                 format_arity(expected_arity),
                                 command.name
-                            ),
+                            )
+                            .into(),
                             is_primary: true,
                         }],
                     });
@@ -535,7 +555,8 @@ pub(crate) fn collect_command_diagnostics(
                 "command \"{}\" is not available in {} mode",
                 command.name,
                 mode_label(mode)
-            ),
+            )
+            .into(),
             range,
             labels: vec![crate::DiagnosticLabel {
                 range,
@@ -543,7 +564,8 @@ pub(crate) fn collect_command_diagnostics(
                     "command \"{}\" is not available in {} mode",
                     command.name,
                     mode_label(mode)
-                ),
+                )
+                .into(),
                 is_primary: true,
             }],
         });
@@ -565,7 +587,8 @@ pub(crate) fn collect_command_diagnostics(
                     schema.long_name(),
                     mode_label(mode),
                     command.name
-                ),
+                )
+                .into(),
                 range: flag_range,
                 labels: vec![crate::DiagnosticLabel {
                     range: flag_range,
@@ -574,7 +597,8 @@ pub(crate) fn collect_command_diagnostics(
                         schema.long_name(),
                         mode_label(mode),
                         command.name
-                    ),
+                    )
+                    .into(),
                     is_primary: true,
                 }],
             });
@@ -731,14 +755,16 @@ fn validate_positionals(
             message: format!(
                 "command \"{}\" does not accept positional arguments",
                 command.name
-            ),
+            )
+            .into(),
             range: command_range,
             labels: vec![crate::DiagnosticLabel {
                 range: command_range,
                 message: format!(
                     "command \"{}\" does not accept positional arguments",
                     command.name
-                ),
+                )
+                .into(),
                 is_primary: true,
             }],
         });
@@ -751,14 +777,16 @@ fn validate_positionals(
             message: format!(
                 "command \"{}\" expects {} positional argument(s) but call provides {}",
                 command.name, required_prefix_len, positional_len
-            ),
+            )
+            .into(),
             range: command_range,
             labels: vec![crate::DiagnosticLabel {
                 range: command_range,
                 message: format!(
                     "command \"{}\" expects {} positional argument(s) but call provides {}",
                     command.name, required_prefix_len, positional_len
-                ),
+                )
+                .into(),
                 is_primary: true,
             }],
         });
@@ -790,14 +818,16 @@ fn validate_positionals(
                     message: format!(
                         "command \"{}\" expects {} positional argument(s) but call provides {}",
                         command.name, prefix_len, positional_len
-                    ),
+                    )
+                    .into(),
                     range: command_range,
                     labels: vec![crate::DiagnosticLabel {
                         range: command_range,
                         message: format!(
                             "command \"{}\" expects {} positional argument(s) but call provides {}",
                             command.name, prefix_len, positional_len
-                        ),
+                        )
+                        .into(),
                         is_primary: true,
                     }],
                 });
@@ -893,6 +923,7 @@ fn validate_tail_arity(
         "command \"{}\" expects {expected} positional argument(s) but call provides {actual_total}",
         command.name
     );
+    let message: std::sync::Arc<str> = message.into();
     diagnostics.push(Diagnostic {
         severity: DiagnosticSeverity::Error,
         message: message.clone(),
@@ -930,6 +961,7 @@ fn validate_positional_shape(
         expected,
         actual
     );
+    let message: std::sync::Arc<str> = message.into();
     diagnostics.push(Diagnostic {
         severity: DiagnosticSeverity::Error,
         message: message.clone(),
