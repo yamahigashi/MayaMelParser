@@ -104,22 +104,22 @@ pub struct CommandModeMask {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagSchema {
-    pub long_name: String,
-    pub short_name: Option<String>,
+    pub long_name: Arc<str>,
+    pub short_name: Option<Arc<str>>,
     pub mode_mask: CommandModeMask,
     pub arity_by_mode: FlagArityByMode,
-    pub value_shapes: Vec<ValueShape>,
+    pub value_shapes: Arc<[ValueShape]>,
     pub allows_multiple: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSchema {
-    pub name: String,
+    pub name: Arc<str>,
     pub kind: CommandKind,
     pub source_kind: CommandSourceKind,
     pub mode_mask: CommandModeMask,
     pub return_behavior: ReturnBehavior,
-    pub flags: Vec<FlagSchema>,
+    pub flags: Arc<[FlagSchema]>,
     pub positionals: PositionalSchema,
 }
 
@@ -135,3 +135,4 @@ impl CommandRegistry for EmptyCommandRegistry {
         None
     }
 }
+use std::sync::Arc;

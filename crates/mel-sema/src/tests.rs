@@ -40,13 +40,16 @@ struct TestRegistry {
 
 impl CommandRegistry for TestRegistry {
     fn lookup(&self, name: &str) -> Option<CommandSchema> {
-        self.commands.iter().find(|info| info.name == name).cloned()
+        self.commands
+            .iter()
+            .find(|info| info.name.as_ref() == name)
+            .cloned()
     }
 }
 
 fn command_schema(name: &str, kind: CommandKind) -> CommandSchema {
     CommandSchema {
-        name: name.to_owned(),
+        name: name.into(),
         kind,
         source_kind: CommandSourceKind::Command,
         mode_mask: CommandModeMask {
@@ -55,7 +58,7 @@ fn command_schema(name: &str, kind: CommandKind) -> CommandSchema {
             query: true,
         },
         return_behavior: ReturnBehavior::Unknown,
-        flags: Vec::new(),
+        flags: Vec::new().into(),
         positionals: PositionalSchema::default(),
     }
 }
@@ -70,15 +73,15 @@ fn uniform_arity(arity: FlagArity) -> FlagArityByMode {
 
 fn flag_schema(long_name: &str, short_name: Option<&str>, arity: FlagArity) -> FlagSchema {
     FlagSchema {
-        long_name: long_name.to_owned(),
-        short_name: short_name.map(str::to_owned),
+        long_name: long_name.into(),
+        short_name: short_name.map(Into::into),
         mode_mask: CommandModeMask {
             create: true,
             edit: true,
             query: true,
         },
         arity_by_mode: uniform_arity(arity),
-        value_shapes: vec![ValueShape::Unknown],
+        value_shapes: vec![ValueShape::Unknown].into(),
         allows_multiple: false,
     }
 }
@@ -1104,9 +1107,10 @@ fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
             edit: true,
             query: false,
         },
-        value_shapes: vec![ValueShape::String],
+        value_shapes: vec![ValueShape::String].into(),
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
-    }];
+    }]
+    .into();
     let registry = TestRegistry {
         commands: vec![command],
     };
@@ -1239,9 +1243,10 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
             edit: FlagArity::Exact(1),
             query: FlagArity::None,
         },
-        value_shapes: vec![ValueShape::String],
+        value_shapes: vec![ValueShape::String].into(),
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
-    }];
+    }]
+    .into();
     let registry = TestRegistry {
         commands: vec![command],
     };
@@ -1299,9 +1304,10 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
             edit: FlagArity::Range { min: 1, max: 2 },
             query: FlagArity::None,
         },
-        value_shapes: vec![ValueShape::String, ValueShape::String],
+        value_shapes: vec![ValueShape::String, ValueShape::String].into(),
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
-    }];
+    }]
+    .into();
     let registry = TestRegistry {
         commands: vec![command],
     };
@@ -1355,9 +1361,10 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
             edit: FlagArity::Range { min: 1, max: 2 },
             query: FlagArity::None,
         },
-        value_shapes: vec![ValueShape::String, ValueShape::String],
+        value_shapes: vec![ValueShape::String, ValueShape::String].into(),
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
-    }];
+    }]
+    .into();
     let registry = TestRegistry {
         commands: vec![command],
     };
@@ -1401,9 +1408,10 @@ fn shell_like_command_range_arity_reports_missing_required_argument() {
             edit: FlagArity::Range { min: 1, max: 2 },
             query: FlagArity::None,
         },
-        value_shapes: vec![ValueShape::String, ValueShape::String],
+        value_shapes: vec![ValueShape::String, ValueShape::String].into(),
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
-    }];
+    }]
+    .into();
     let registry = TestRegistry {
         commands: vec![command],
     };
@@ -3373,7 +3381,7 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
     };
     let registry = TestRegistry {
         commands: vec![CommandSchema {
-            name: "frameLayout".to_owned(),
+            name: "frameLayout".into(),
             kind: CommandKind::Builtin,
             source_kind: CommandSourceKind::Command,
             mode_mask: CommandModeMask {
@@ -3394,7 +3402,7 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
                         edit: FlagArity::None,
                         query: FlagArity::None,
                     },
-                    value_shapes: Vec::new(),
+                    value_shapes: Vec::new().into(),
                     ..flag_schema("query", Some("q"), FlagArity::None)
                 },
                 FlagSchema {
@@ -3408,10 +3416,11 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
                         edit: FlagArity::None,
                         query: FlagArity::None,
                     },
-                    value_shapes: vec![ValueShape::String],
+                    value_shapes: vec![ValueShape::String].into(),
                     ..flag_schema("label", Some("l"), FlagArity::Exact(1))
                 },
-            ],
+            ]
+            .into(),
             positionals: PositionalSchema {
                 prefix: &[EXPLICIT_STRING_SLOT],
                 tail: PositionalTailSchema::None,

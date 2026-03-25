@@ -3,6 +3,7 @@
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 use clap::{CommandFactory, Parser, ValueEnum};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs, io,
     io::IsTerminal,
@@ -377,7 +378,7 @@ fn format_single_file_output_with_style(
         label,
         parse.source_text.as_str(),
         &parse.source_map,
-        diagnostics,
+        &diagnostics,
         fancy_diagnostics,
     )?);
     Ok(output)
@@ -417,32 +418,34 @@ fn format_light_single_file_output_with_style(
         label,
         parse.source_text.as_str(),
         &parse.source_map,
-        diagnostics,
+        &diagnostics,
         fancy_diagnostics,
     )?);
     Ok(output)
 }
 
 #[derive(Debug, Clone)]
-struct FileDiagnostic {
+struct FileDiagnostic<'a> {
     stage: &'static str,
     severity: DiagnosticSeverity,
-    message: String,
-    labels: Vec<FileDiagnosticLabel>,
+    message: Cow<'a, str>,
+    labels: Vec<FileDiagnosticLabel<'a>>,
 }
 
 #[derive(Clone, Debug)]
-struct FileDiagnosticLabel {
+struct FileDiagnosticLabel<'a> {
     range: TextRange,
-    message: String,
+    message: Cow<'a, str>,
     is_primary: bool,
 }
+
+type IsolatedDiagnosticSpan<'a> = (std::ops::Range<usize>, &'a str, bool);
 
 fn render_file_diagnostics(
     label: &str,
     source_text: &str,
     source_map: &mel_syntax::SourceMap,
-    diagnostics: Vec<FileDiagnostic>,
+    diagnostics: &[FileDiagnostic<'_>],
     fancy_diagnostics: bool,
 ) -> io::Result<String> {
     if diagnostics.is_empty() {
@@ -460,7 +463,7 @@ fn render_file_diagnostics(
     let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
     let mut rendered = Vec::new();
     for diagnostic in diagnostics {
-        let display_labels: Vec<FileDiagnosticLabel> = diagnostic
+        let display_labels: Vec<FileDiagnosticLabel<'_>> = diagnostic
             .labels
             .iter()
             .map(|label| {
@@ -469,7 +472,7 @@ fn render_file_diagnostics(
                     .display_range(text_range(source_span.start as u32, source_span.end as u32));
                 FileDiagnosticLabel {
                     range: text_range(range.start as u32, range.end as u32),
-                    message: label.message.clone(),
+                    message: Cow::Borrowed(label.message.as_ref()),
                     is_primary: label.is_primary,
                 }
             })
@@ -479,7 +482,7 @@ fn render_file_diagnostics(
             .map(|label| {
                 (
                     range_start(label.range) as usize..range_end(label.range) as usize,
-                    label.message.clone(),
+                    label.message.as_ref(),
                     label.is_primary,
                 )
             })
@@ -493,7 +496,11 @@ fn render_file_diagnostics(
             .unwrap_or_else(|| isolated_labels[0].0.clone());
         let mut report = Report::build(report_kind(diagnostic.severity), (label, primary_range))
             .with_config(Config::default().with_tab_width(DIAGNOSTIC_TAB_WIDTH))
-            .with_message(format!("{}: {}", diagnostic.stage, diagnostic.message));
+            .with_message(format!(
+                "{}: {}",
+                diagnostic.stage,
+                diagnostic.message.as_ref()
+            ));
         for (range, message, is_primary) in isolated_labels {
             let color = if is_primary {
                 stage_color(diagnostic.stage, diagnostic.severity)
@@ -518,7 +525,7 @@ fn render_file_diagnostics(
 fn render_compact_file_diagnostics(
     source_text: &str,
     source_map: &SourceMap,
-    diagnostics: Vec<FileDiagnostic>,
+    diagnostics: &[FileDiagnostic<'_>],
 ) -> String {
     let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
     let line_starts = compute_line_starts(display_text.as_str());
@@ -543,7 +550,7 @@ fn render_compact_file_diagnostics(
         rendered.push_str(": ");
         rendered.push_str(diagnostic.stage);
         rendered.push_str(": ");
-        rendered.push_str(diagnostic.message.as_str());
+        rendered.push_str(diagnostic.message.as_ref());
         if let Some(range) = primary_range {
             let (line, column) = line_col_for_offset(&line_starts, range.start);
             rendered.push_str(" @ ");
@@ -618,10 +625,10 @@ fn normalize_diagnostic_source_text(source_text: &str) -> (String, SourceMap) {
     )
 }
 
-fn isolate_diagnostic_source_lines(
+fn isolate_diagnostic_source_lines<'a>(
     source_text: &str,
-    spans: &[(std::ops::Range<usize>, String, bool)],
-) -> (String, Vec<(std::ops::Range<usize>, String, bool)>) {
+    spans: &[IsolatedDiagnosticSpan<'a>],
+) -> (String, Vec<IsolatedDiagnosticSpan<'a>>) {
     let line_start = spans
         .iter()
         .map(|(span, _, _)| {
@@ -652,7 +659,7 @@ fn isolate_diagnostic_source_lines(
         .map(|(span, message, is_primary)| {
             (
                 (prefix_len + span.start - line_start)..(prefix_len + span.end - line_start),
-                message.clone(),
+                *message,
                 *is_primary,
             )
         })
@@ -660,35 +667,35 @@ fn isolate_diagnostic_source_lines(
     (isolated, isolated_spans)
 }
 
-fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
+fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic<'_>> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "decode",
         severity: DiagnosticSeverity::Error,
-        message: diagnostic.message.clone(),
+        message: Cow::Borrowed(diagnostic.message.as_str()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: diagnostic.message.clone(),
+            message: Cow::Borrowed(diagnostic.message.as_str()),
             is_primary: true,
         }],
     }));
     diagnostics.extend(parse.lex_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "lex",
         severity: DiagnosticSeverity::Error,
-        message: diagnostic.message.clone(),
+        message: Cow::Borrowed(diagnostic.message.as_str()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: diagnostic.message.clone(),
+            message: Cow::Borrowed(diagnostic.message.as_str()),
             is_primary: true,
         }],
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "parse",
         severity: DiagnosticSeverity::Error,
-        message: diagnostic.message.clone(),
+        message: Cow::Borrowed(diagnostic.message.as_str()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: diagnostic.message.clone(),
+            message: Cow::Borrowed(diagnostic.message.as_str()),
             is_primary: true,
         }],
     }));
@@ -698,7 +705,7 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
             .map(|diagnostic| FileDiagnostic {
                 stage: "sema",
                 severity: diagnostic.severity,
-                message: diagnostic.message,
+                message: Cow::Owned(diagnostic.message),
                 labels: diagnostic
                     .labels
                     .into_iter()
@@ -709,25 +716,25 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
     diagnostics
 }
 
-fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
+fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic<'_>> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "decode",
         severity: DiagnosticSeverity::Error,
-        message: diagnostic.message.clone(),
+        message: Cow::Borrowed(diagnostic.message.as_str()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: diagnostic.message.clone(),
+            message: Cow::Borrowed(diagnostic.message.as_str()),
             is_primary: true,
         }],
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "light",
         severity: DiagnosticSeverity::Error,
-        message: diagnostic.message.clone(),
+        message: Cow::Borrowed(diagnostic.message.as_str()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: diagnostic.message.clone(),
+            message: Cow::Borrowed(diagnostic.message.as_str()),
             is_primary: true,
         }],
     }));
@@ -737,21 +744,21 @@ fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
 fn filtered_parse_diagnostics(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<FileDiagnostic> {
+) -> Vec<FileDiagnostic<'_>> {
     filter_diagnostics(collect_diagnostics(parse), diagnostic_level)
 }
 
 fn filtered_light_diagnostics(
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<FileDiagnostic> {
+) -> Vec<FileDiagnostic<'_>> {
     filter_diagnostics(collect_light_diagnostics(parse), diagnostic_level)
 }
 
-fn filter_diagnostics(
-    diagnostics: Vec<FileDiagnostic>,
+fn filter_diagnostics<'a>(
+    diagnostics: Vec<FileDiagnostic<'a>>,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<FileDiagnostic> {
+) -> Vec<FileDiagnostic<'a>> {
     match diagnostic_level {
         CliDiagnosticLevel::All => diagnostics,
         CliDiagnosticLevel::Error => diagnostics
@@ -771,7 +778,7 @@ struct DiagnosticCounts {
     light: usize,
 }
 
-fn diagnostic_counts(diagnostics: &[FileDiagnostic]) -> DiagnosticCounts {
+fn diagnostic_counts(diagnostics: &[FileDiagnostic<'_>]) -> DiagnosticCounts {
     let mut counts = DiagnosticCounts::default();
     for diagnostic in diagnostics {
         match diagnostic.stage {
@@ -786,10 +793,10 @@ fn diagnostic_counts(diagnostics: &[FileDiagnostic]) -> DiagnosticCounts {
     counts
 }
 
-fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel {
+fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel<'static> {
     FileDiagnosticLabel {
         range: label.range,
-        message: label.message,
+        message: Cow::Owned(label.message),
         is_primary: label.is_primary,
     }
 }
@@ -817,7 +824,7 @@ fn summarize_parse_file(
         parse_error_messages: diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.stage == "parse")
-            .map(|diagnostic| diagnostic.message.clone())
+            .map(|diagnostic| diagnostic.message.clone().into_owned())
             .collect(),
         semantic_diagnostics: counts.sema,
     }

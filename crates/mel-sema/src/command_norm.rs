@@ -359,7 +359,7 @@ pub(crate) fn normalize_shell_like_invoke(
             range,
             scope,
             head_range,
-            schema_name: command.name.clone(),
+            schema_name: command.name.to_string(),
             kind: command.kind,
             mode,
             items,
@@ -600,7 +600,7 @@ fn find_flag_schema<'a>(command: &'a CommandSchema, text: &str) -> Option<Resolv
         .flags
         .iter()
         .find(|flag| {
-            normalized == flag.long_name
+            normalized == flag.long_name.as_ref()
                 || flag
                     .short_name
                     .as_deref()
@@ -617,7 +617,7 @@ fn find_flag_schema_by_canonical_name<'a>(
     command
         .flags
         .iter()
-        .find(|flag| flag.long_name == canonical_name)
+        .find(|flag| flag.long_name.as_ref() == canonical_name)
         .map(ResolvedFlagSchema::Borrowed)
         .or_else(|| synthetic_mode_flag_for_name(command, canonical_name))
 }

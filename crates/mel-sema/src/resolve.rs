@@ -62,8 +62,8 @@ impl ResolvedInvokeTarget {
         match self {
             Self::Proc(symbol_id) => ResolvedCallee::Proc(symbol_id),
             Self::Command(command) => match command.kind {
-                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.name.clone()),
-                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.name.clone()),
+                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.name.to_string()),
+                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.name.to_string()),
             },
             Self::Unresolved => ResolvedCallee::Unresolved,
         }

@@ -15,6 +15,7 @@ use mel_sema::{
     PositionalTailSchema, ReturnBehavior, ValueShape,
 };
 use mel_syntax::{TextRange, range_end, range_start, text_range};
+use std::sync::OnceLock;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MayaCommandRegistry;
@@ -28,10 +29,10 @@ impl MayaCommandRegistry {
 
 impl CommandRegistry for MayaCommandRegistry {
     fn lookup(&self, name: &str) -> Option<CommandSchema> {
-        EMBEDDED_COMMAND_SCHEMAS
-            .binary_search_by(|schema| schema.name.cmp(name))
+        shared_command_schemas()
+            .binary_search_by(|schema| schema.name.as_ref().cmp(name))
             .ok()
-            .map(|index| EMBEDDED_COMMAND_SCHEMAS[index].to_owned_schema())
+            .map(|index| shared_command_schemas()[index].clone())
     }
 }
 
@@ -1952,7 +1953,7 @@ fn normalize_light_command(
         });
         normalized_items.push(MayaNormalizedCommandItem::Flag(MayaNormalizedFlag {
             source_text: item.source_text.clone(),
-            canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.clone()),
+            canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.to_string()),
             args,
             span: item_span,
         }));
@@ -1970,7 +1971,7 @@ fn normalize_light_command(
     MayaNormalizedCommand {
         head: head.to_owned(),
         head_range,
-        schema_name: schema.name.clone(),
+        schema_name: schema.name.to_string(),
         kind: schema.kind,
         mode,
         items: normalized_items,
@@ -2058,7 +2059,7 @@ fn specialize_light_command(
     prefix_items: &[MayaRawShellItem],
 ) -> Option<MayaLightSpecializedCommand> {
     let (flags, positionals) = normalize_light_items(schema, prefix_items);
-    match schema.name.as_str() {
+    match schema.name.as_ref() {
         "requires" => Some(MayaLightSpecializedCommand::Requires(
             MayaLightRequiresCommand {
                 requirements: positionals,
@@ -2241,7 +2242,7 @@ fn normalize_light_items(
         });
         flags.push(MayaLightFlag {
             source_text: item.source_text.clone(),
-            canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.clone()),
+            canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.to_string()),
             args,
             span,
         });
@@ -2280,7 +2281,7 @@ fn find_flag_schema(command: &CommandSchema, text: &str) -> Option<FlagSchema> {
         .flags
         .iter()
         .find(|flag| {
-            normalized == flag.long_name
+            normalized == flag.long_name.as_ref()
                 || flag
                     .short_name
                     .as_deref()
@@ -2301,8 +2302,8 @@ fn synthetic_mode_flag_for_name(command: &CommandSchema, name: &str) -> Option<F
 
 fn synthetic_mode_flag(long_name: &str, short_name: &str) -> FlagSchema {
     FlagSchema {
-        long_name: long_name.to_owned(),
-        short_name: Some(short_name.to_owned()),
+        long_name: long_name.into(),
+        short_name: Some(short_name.into()),
         mode_mask: CommandModeMask {
             create: true,
             edit: true,
@@ -2313,7 +2314,7 @@ fn synthetic_mode_flag(long_name: &str, short_name: &str) -> FlagSchema {
             edit: FlagArity::None,
             query: FlagArity::None,
         },
-        value_shapes: Vec::new(),
+        value_shapes: Vec::new().into(),
         allows_multiple: false,
     }
 }
@@ -2353,13 +2354,13 @@ struct EmbeddedFlagSchema {
 }
 
 impl EmbeddedFlagSchema {
-    fn to_owned_schema(self) -> FlagSchema {
+    fn to_shared_schema(self) -> FlagSchema {
         FlagSchema {
-            long_name: self.long_name.to_owned(),
-            short_name: self.short_name.map(str::to_owned),
+            long_name: self.long_name.into(),
+            short_name: self.short_name.map(Into::into),
             mode_mask: self.mode_mask,
             arity_by_mode: self.arity_by_mode,
-            value_shapes: self.value_shapes.to_vec(),
+            value_shapes: self.value_shapes.into(),
             allows_multiple: self.allows_multiple,
         }
     }
@@ -2377,15 +2378,15 @@ struct EmbeddedCommandSchema {
 }
 
 impl EmbeddedCommandSchema {
-    fn to_owned_schema(self) -> CommandSchema {
+    fn to_shared_schema(self) -> CommandSchema {
         CommandSchema {
-            name: self.name.to_owned(),
+            name: self.name.into(),
             kind: self.kind,
             source_kind: self.source_kind,
             mode_mask: self.mode_mask,
             return_behavior: self.return_behavior,
             positionals: self.positionals,
-            flags: self.build_effective_flags(),
+            flags: self.build_effective_flags().into(),
         }
     }
 
@@ -2394,7 +2395,7 @@ impl EmbeddedCommandSchema {
             .flags
             .iter()
             .copied()
-            .map(EmbeddedFlagSchema::to_owned_schema)
+            .map(EmbeddedFlagSchema::to_shared_schema)
             .collect();
         push_synthetic_mode_flag(&mut flags, self.mode_mask.create, "create", "c");
         push_synthetic_mode_flag(&mut flags, self.mode_mask.edit, "edit", "e");
@@ -2406,6 +2407,17 @@ impl EmbeddedCommandSchema {
 static EMBEDDED_COMMAND_SCHEMAS: &[EmbeddedCommandSchema] =
     include!(concat!(env!("OUT_DIR"), "/embedded_command_schemas.rs"));
 
+fn shared_command_schemas() -> &'static [CommandSchema] {
+    static COMMAND_SCHEMAS: OnceLock<Vec<CommandSchema>> = OnceLock::new();
+    COMMAND_SCHEMAS.get_or_init(|| {
+        EMBEDDED_COMMAND_SCHEMAS
+            .iter()
+            .copied()
+            .map(EmbeddedCommandSchema::to_shared_schema)
+            .collect()
+    })
+}
+
 fn push_synthetic_mode_flag(
     flags: &mut Vec<FlagSchema>,
     enabled: bool,
@@ -2414,15 +2426,15 @@ fn push_synthetic_mode_flag(
 ) {
     if !enabled
         || flags.iter().any(|flag| {
-            flag.long_name == long_name || flag.short_name.as_deref() == Some(short_name)
+            flag.long_name.as_ref() == long_name || flag.short_name.as_deref() == Some(short_name)
         })
     {
         return;
     }
 
     flags.push(FlagSchema {
-        long_name: long_name.to_owned(),
-        short_name: Some(short_name.to_owned()),
+        long_name: long_name.into(),
+        short_name: Some(short_name.into()),
         mode_mask: CommandModeMask {
             create: true,
             edit: true,
@@ -2433,7 +2445,7 @@ fn push_synthetic_mode_flag(
             edit: FlagArity::None,
             query: FlagArity::None,
         },
-        value_shapes: Vec::new(),
+        value_shapes: Vec::new().into(),
         allows_multiple: false,
     });
 }
@@ -2483,7 +2495,10 @@ mod tests {
 
     impl CommandRegistry for TestRegistry {
         fn lookup(&self, name: &str) -> Option<CommandSchema> {
-            self.commands.iter().find(|info| info.name == name).cloned()
+            self.commands
+                .iter()
+                .find(|info| info.name.as_ref() == name)
+                .cloned()
         }
     }
 
@@ -2501,9 +2516,24 @@ mod tests {
         let schema = MayaCommandRegistry::new()
             .lookup("addAttr")
             .expect("embedded schema for addAttr");
-        assert!(schema.flags.iter().any(|flag| flag.long_name == "create"));
-        assert!(schema.flags.iter().any(|flag| flag.long_name == "edit"));
-        assert!(schema.flags.iter().any(|flag| flag.long_name == "query"));
+        assert!(
+            schema
+                .flags
+                .iter()
+                .any(|flag| flag.long_name.as_ref() == "create")
+        );
+        assert!(
+            schema
+                .flags
+                .iter()
+                .any(|flag| flag.long_name.as_ref() == "edit")
+        );
+        assert!(
+            schema
+                .flags
+                .iter()
+                .any(|flag| flag.long_name.as_ref() == "query")
+        );
     }
 
     #[test]
@@ -2599,8 +2629,27 @@ mod tests {
         let parse =
             parse_source("setAttr \".ed\" -type \"dataReferenceEdits\" \"rootRN\" \"\" 5;\n");
         assert!(parse.errors.is_empty());
-        let mut command = CommandSchema {
-            name: "setAttr".to_owned(),
+        let mut flags = vec![FlagSchema {
+            long_name: "type".into(),
+            short_name: Some("typ".into()),
+            mode_mask: CommandModeMask {
+                create: true,
+                edit: true,
+                query: true,
+            },
+            arity_by_mode: FlagArityByMode {
+                create: FlagArity::Exact(1),
+                edit: FlagArity::Exact(1),
+                query: FlagArity::Exact(1),
+            },
+            value_shapes: vec![ValueShape::String].into(),
+            allows_multiple: false,
+        }];
+        push_synthetic_mode_flag(&mut flags, true, "create", "c");
+        push_synthetic_mode_flag(&mut flags, true, "edit", "e");
+        push_synthetic_mode_flag(&mut flags, true, "query", "q");
+        let command = CommandSchema {
+            name: "setAttr".into(),
             kind: CommandKind::Builtin,
             source_kind: CommandSourceKind::Command,
             mode_mask: CommandModeMask {
@@ -2616,26 +2665,8 @@ mod tests {
                 }],
                 tail: PositionalTailSchema::Opaque { min: 0, max: None },
             },
-            flags: vec![FlagSchema {
-                long_name: "type".to_owned(),
-                short_name: Some("typ".to_owned()),
-                mode_mask: CommandModeMask {
-                    create: true,
-                    edit: true,
-                    query: true,
-                },
-                arity_by_mode: FlagArityByMode {
-                    create: FlagArity::Exact(1),
-                    edit: FlagArity::Exact(1),
-                    query: FlagArity::Exact(1),
-                },
-                value_shapes: vec![ValueShape::String],
-                allows_multiple: false,
-            }],
+            flags: flags.into(),
         };
-        push_synthetic_mode_flag(&mut command.flags, true, "create", "c");
-        push_synthetic_mode_flag(&mut command.flags, true, "edit", "e");
-        push_synthetic_mode_flag(&mut command.flags, true, "query", "q");
         let registry = TestRegistry {
             commands: vec![command],
         };
@@ -3013,8 +3044,27 @@ mod tests {
                 max_prefix_bytes: 24,
             },
         );
-        let mut command = CommandSchema {
-            name: "setAttr".to_owned(),
+        let mut flags = vec![FlagSchema {
+            long_name: "type".into(),
+            short_name: Some("typ".into()),
+            mode_mask: CommandModeMask {
+                create: true,
+                edit: true,
+                query: true,
+            },
+            arity_by_mode: FlagArityByMode {
+                create: FlagArity::Exact(1),
+                edit: FlagArity::Exact(1),
+                query: FlagArity::Exact(1),
+            },
+            value_shapes: vec![ValueShape::String].into(),
+            allows_multiple: false,
+        }];
+        push_synthetic_mode_flag(&mut flags, true, "create", "c");
+        push_synthetic_mode_flag(&mut flags, true, "edit", "e");
+        push_synthetic_mode_flag(&mut flags, true, "query", "q");
+        let command = CommandSchema {
+            name: "setAttr".into(),
             kind: CommandKind::Builtin,
             source_kind: CommandSourceKind::Command,
             mode_mask: CommandModeMask {
@@ -3030,26 +3080,8 @@ mod tests {
                 }],
                 tail: PositionalTailSchema::Opaque { min: 0, max: None },
             },
-            flags: vec![FlagSchema {
-                long_name: "type".to_owned(),
-                short_name: Some("typ".to_owned()),
-                mode_mask: CommandModeMask {
-                    create: true,
-                    edit: true,
-                    query: true,
-                },
-                arity_by_mode: FlagArityByMode {
-                    create: FlagArity::Exact(1),
-                    edit: FlagArity::Exact(1),
-                    query: FlagArity::Exact(1),
-                },
-                value_shapes: vec![ValueShape::String],
-                allows_multiple: false,
-            }],
+            flags: flags.into(),
         };
-        push_synthetic_mode_flag(&mut command.flags, true, "create", "c");
-        push_synthetic_mode_flag(&mut command.flags, true, "edit", "e");
-        push_synthetic_mode_flag(&mut command.flags, true, "query", "q");
         let registry = TestRegistry {
             commands: vec![command],
         };
