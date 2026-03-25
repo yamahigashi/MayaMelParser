@@ -1,7 +1,7 @@
 use super::{
     LightItem, LightParseOptions, LightWord, ParseMode, ParseOptions, SourceEncoding, parse_bytes,
-    parse_bytes_with_encoding, parse_light_bytes, parse_light_source,
-    parse_light_source_with_options, parse_source, parse_source_view_range,
+    parse_bytes_with_encoding, parse_file, parse_file_with_encoding, parse_light_bytes,
+    parse_light_source, parse_light_source_with_options, parse_source, parse_source_view_range,
     parse_source_with_options, scan_light_bytes_with_sink, scan_light_source_with_options_and_sink,
 };
 use encoding_rs::{GBK, SHIFT_JIS};
@@ -10,6 +10,10 @@ use mel_ast::{
     UpdateOp, VectorComponent,
 };
 use mel_syntax::text_range;
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[test]
 fn parses_proc_fixtures() {
@@ -77,6 +81,43 @@ fn parses_proc_fixtures() {
         }
         _ => panic!("expected proc item"),
     }
+}
+
+#[test]
+fn parse_file_reuses_owned_utf8_bytes_without_decode_diagnostics() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-utf8-{unique}.mel"));
+    fs::write(&path, "print \"hello\";\n").expect("temp fixture should be writable");
+
+    let parse = parse_file(&path).expect("utf8 temp fixture should parse");
+    let parse_utf8 =
+        parse_file_with_encoding(&path, SourceEncoding::Utf8).expect("utf8 parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert!(parse.decode_errors.is_empty());
+    assert!(parse_utf8.decode_errors.is_empty());
+    assert!(parse.errors.is_empty());
+    assert!(parse_utf8.errors.is_empty());
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected command statement");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke expression");
+    };
+    let InvokeSurface::ShellLike { head_range, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    assert_eq!(parse.source_slice(*head_range), "print");
+    assert_eq!(parse_utf8.source_slice(*head_range), "print");
 }
 
 #[test]

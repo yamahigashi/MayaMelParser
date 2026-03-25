@@ -46,34 +46,52 @@ struct ProcContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedCommand {
-    name: std::sync::Arc<str>,
-    kind: CommandKind,
+struct ResolvedCommand<'a> {
+    schema: &'a CommandSchema,
 }
 
-enum ResolvedInvokeTarget {
-    Proc(ProcSymbolId),
-    Command(ResolvedCommand),
+enum ResolvedInvokeTarget<'a> {
+    Proc {
+        symbol_id: ProcSymbolId,
+        forward_reference: bool,
+    },
+    Command(ResolvedCommand<'a>),
     Unresolved,
 }
 
-impl ResolvedInvokeTarget {
+impl ResolvedInvokeTarget<'_> {
     fn proc_symbol(&self) -> Option<ProcSymbolId> {
         match self {
-            Self::Proc(symbol_id) => Some(*symbol_id),
+            Self::Proc { symbol_id, .. } => Some(*symbol_id),
             Self::Command(_) | Self::Unresolved => None,
         }
     }
 
     fn into_callee_resolution(self) -> ResolvedCallee {
         match self {
-            Self::Proc(symbol_id) => ResolvedCallee::Proc(symbol_id),
-            Self::Command(command) => match command.kind {
-                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.name),
-                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.name),
+            Self::Proc { symbol_id, .. } => ResolvedCallee::Proc(symbol_id),
+            Self::Command(command) => match command.kind() {
+                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.schema.name.clone()),
+                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.schema.name.clone()),
             },
             Self::Unresolved => ResolvedCallee::Unresolved,
         }
+    }
+
+    fn is_forward_reference(&self) -> bool {
+        matches!(
+            self,
+            Self::Proc {
+                forward_reference: true,
+                ..
+            }
+        )
+    }
+}
+
+impl ResolvedCommand<'_> {
+    fn kind(&self) -> CommandKind {
+        self.schema.kind
     }
 }
 
@@ -371,8 +389,21 @@ where
                 for arg in args {
                     self.walk_expr(arg, current_scope);
                 }
-                let resolved =
-                    self.resolve_named_target_range(*head_range, invoke.range, current_scope);
+                let name = self.source.slice(*head_range);
+                let resolved = resolve_named_target(
+                    self.collected,
+                    self.source,
+                    self.registry,
+                    &self.visible_decl_orders,
+                    name,
+                    current_scope,
+                );
+                if resolved.is_forward_reference() {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("local proc \"{name}\" is called before its definition"),
+                        invoke.range,
+                    ));
+                }
                 self.validate_proc_arity(resolved.proc_symbol(), args.len(), invoke.range);
                 resolved.into_callee_resolution()
             }
@@ -382,11 +413,23 @@ where
                 for word in words {
                     self.walk_shell_word(word, current_scope);
                 }
-                let resolved =
-                    self.resolve_named_target_range(*head_range, invoke.range, current_scope);
-                if let ResolvedInvokeTarget::Command(ref command) = resolved
-                    && let Some(schema) = self.registry.lookup(command.name.as_ref())
-                {
+                let name = self.source.slice(*head_range);
+                let resolved = resolve_named_target(
+                    self.collected,
+                    self.source,
+                    self.registry,
+                    &self.visible_decl_orders,
+                    name,
+                    current_scope,
+                );
+                if resolved.is_forward_reference() {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("local proc \"{name}\" is called before its definition"),
+                        invoke.range,
+                    ));
+                }
+                if let ResolvedInvokeTarget::Command(ref command) = resolved {
+                    let schema = command.schema;
                     if self.collect_artifacts {
                         let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
                             schema,
@@ -408,7 +451,7 @@ where
                                 self.include_warnings,
                             ));
                     }
-                }
+                };
                 resolved.into_callee_resolution()
             }
         };
@@ -465,59 +508,6 @@ where
             | ShellWord::VectorLiteral { expr, .. } => self.walk_expr(expr, current_scope),
             ShellWord::Capture { invoke, .. } => self.walk_invoke(invoke, current_scope),
         }
-    }
-
-    fn resolve_named_target(
-        &mut self,
-        name: &str,
-        range: TextRange,
-        current_scope: ScopeId,
-    ) -> ResolvedInvokeTarget {
-        if let Some(symbol) = self.collected.find_visible_local_proc(
-            self.source,
-            name,
-            current_scope,
-            &self.visible_decl_orders,
-        ) {
-            return ResolvedInvokeTarget::Proc(symbol.id);
-        }
-
-        if let Some(symbol) = self.collected.find_forward_local_proc(
-            self.source,
-            name,
-            current_scope,
-            &self.visible_decl_orders,
-        ) {
-            self.diagnostics.push(Diagnostic::error(
-                format!("local proc \"{name}\" is called before its definition"),
-                range,
-            ));
-            return ResolvedInvokeTarget::Proc(symbol.id);
-        }
-
-        if let Some(symbol) = self.collected.find_global_proc(self.source, name) {
-            return ResolvedInvokeTarget::Proc(symbol.id);
-        }
-
-        if let Some(command) = self.registry.lookup(name) {
-            return ResolvedInvokeTarget::Command(ResolvedCommand {
-                name: command.name.clone(),
-                kind: command.kind,
-            });
-        }
-
-        ResolvedInvokeTarget::Unresolved
-    }
-
-    fn resolve_named_target_range(
-        &mut self,
-        name_range: TextRange,
-        range: TextRange,
-        current_scope: ScopeId,
-    ) -> ResolvedInvokeTarget {
-        let source = self.source;
-        let name = source.slice(name_range);
-        self.resolve_named_target(name, range, current_scope)
     }
 
     fn mark_proc_visible(&mut self, proc_def: &ProcDef) {
@@ -924,6 +914,49 @@ where
     fn slice(&self, range: TextRange) -> &str {
         self.source.slice(range)
     }
+}
+
+fn resolve_named_target<'a, R>(
+    collected: &'a CollectedScopes,
+    source: SourceView<'a>,
+    registry: &'a R,
+    visible_decl_orders: &HashMap<ScopeId, usize>,
+    name: &str,
+    current_scope: ScopeId,
+) -> ResolvedInvokeTarget<'a>
+where
+    R: CommandRegistry + ?Sized,
+{
+    if let Some(symbol) =
+        collected.find_visible_local_proc(source, name, current_scope, visible_decl_orders)
+    {
+        return ResolvedInvokeTarget::Proc {
+            symbol_id: symbol.id,
+            forward_reference: false,
+        };
+    }
+
+    if let Some(symbol) =
+        collected.find_forward_local_proc(source, name, current_scope, visible_decl_orders)
+    {
+        return ResolvedInvokeTarget::Proc {
+            symbol_id: symbol.id,
+            forward_reference: true,
+        };
+    }
+
+    if let Some(symbol) = collected.find_global_proc(source, name) {
+        return ResolvedInvokeTarget::Proc {
+            symbol_id: symbol.id,
+            forward_reference: false,
+        };
+    }
+
+    if let Some(command) = registry.lookup(name) {
+        return ResolvedInvokeTarget::Command(ResolvedCommand { schema: command });
+    }
+
+    ResolvedInvokeTarget::Unresolved
 }
 
 fn value_type_from_type_name(ty: &mel_ast::TypeName) -> ValueType {

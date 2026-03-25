@@ -3463,3 +3463,46 @@ fn diagnostics_error_filter_drops_warning_only_analysis() {
     assert_eq!(all[0].severity, DiagnosticSeverity::Warning);
     assert!(errors_only.is_empty());
 }
+
+#[test]
+fn diagnostics_error_filter_still_reports_command_schema_errors() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("addAttr"),
+                    words: Vec::new(),
+                    captured: false,
+                },
+                range: text_range(0, 7),
+            }),
+            range: text_range(0, 8),
+        }))],
+    };
+    let source_text = take_test_source();
+    let source_map = SourceMap::identity(source_text.len());
+    let source_view = SourceView::new(&source_text, &source_map);
+
+    let mut command = command_schema("addAttr", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[EXPLICIT_STRING_SLOT],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let diagnostics = analyze_diagnostics_with_registry_filtered(
+        &source,
+        source_view,
+        &registry,
+        DiagnosticFilter::ErrorsOnly,
+    );
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
+    assert_eq!(
+        diagnostics[0].message.as_ref(),
+        "command \"addAttr\" expects 1 positional argument(s) but call provides 0"
+    );
+}

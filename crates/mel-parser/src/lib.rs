@@ -175,35 +175,20 @@ pub fn parse_source_view_range_with_options(
 
 #[must_use]
 pub fn parse_bytes(input: &[u8]) -> Parse {
-    let decoded = decode_source_auto(input);
-    let mut parse = parse_owned_source(
-        decoded.text.into_owned(),
-        decoded.offset_map.source_map(),
-        decoded.encoding,
-        decoded.diagnostics,
-        ParseOptions::default(),
-    );
-    remap_parse_ranges(&mut parse, &decoded.offset_map);
-    parse
+    parse_decoded_source(decode_source_auto(input), ParseOptions::default())
 }
 
 #[must_use]
 pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Parse {
-    let decoded = decode_source_with_encoding(input, encoding);
-    let mut parse = parse_owned_source(
-        decoded.text.into_owned(),
-        decoded.offset_map.source_map(),
-        decoded.encoding,
-        decoded.diagnostics,
+    parse_decoded_source(
+        decode_source_with_encoding(input, encoding),
         ParseOptions::default(),
-    );
-    remap_parse_ranges(&mut parse, &decoded.offset_map);
-    parse
+    )
 }
 
 pub fn parse_file(path: impl AsRef<Path>) -> io::Result<Parse> {
     let bytes = fs::read(path)?;
-    Ok(parse_bytes(&bytes))
+    Ok(parse_owned_bytes(bytes, ParseOptions::default()))
 }
 
 pub fn parse_file_with_encoding(
@@ -211,7 +196,11 @@ pub fn parse_file_with_encoding(
     encoding: SourceEncoding,
 ) -> io::Result<Parse> {
     let bytes = fs::read(path)?;
-    Ok(parse_bytes_with_encoding(&bytes, encoding))
+    Ok(parse_owned_bytes_with_encoding(
+        bytes,
+        encoding,
+        ParseOptions::default(),
+    ))
 }
 
 struct SourceViewRangeMapper<'a> {
@@ -240,4 +229,44 @@ fn parse_owned_source(
     parse.source_encoding = source_encoding;
     parse.decode_errors = decode_errors;
     parse
+}
+
+fn parse_decoded_source(decoded: decode::DecodedSource<'_>, options: ParseOptions) -> Parse {
+    let mut parse = parse_owned_source(
+        decoded.text.into_owned(),
+        decoded.offset_map.source_map(),
+        decoded.encoding,
+        decoded.diagnostics,
+        options,
+    );
+    remap_parse_ranges(&mut parse, &decoded.offset_map);
+    parse
+}
+
+fn parse_owned_bytes(input: Vec<u8>, options: ParseOptions) -> Parse {
+    match String::from_utf8(input) {
+        Ok(source_text) => {
+            let source_len = source_text.len();
+            parse_owned_source(
+                source_text,
+                SourceMap::identity(source_len),
+                SourceEncoding::Utf8,
+                Vec::new(),
+                options,
+            )
+        }
+        Err(error) => parse_decoded_source(decode_source_auto(error.as_bytes()), options),
+    }
+}
+
+fn parse_owned_bytes_with_encoding(
+    input: Vec<u8>,
+    encoding: SourceEncoding,
+    options: ParseOptions,
+) -> Parse {
+    if matches!(encoding, SourceEncoding::Utf8) {
+        return parse_owned_bytes(input, options);
+    }
+
+    parse_decoded_source(decode_source_with_encoding(&input, encoding), options)
 }
