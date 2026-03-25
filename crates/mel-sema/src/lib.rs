@@ -164,6 +164,12 @@ pub struct Analysis {
     pub normalized_invokes: Vec<NormalizedCommandInvoke>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnalysisMode {
+    Full,
+    DiagnosticsOnly,
+}
+
 #[must_use]
 pub fn analyze(syntax: &SourceFile, source: SourceView<'_>) -> Analysis {
     analyze_with_registry(syntax, source, &EmptyCommandRegistry)
@@ -178,8 +184,37 @@ pub fn analyze_with_registry<R>(
 where
     R: CommandRegistry + ?Sized,
 {
+    analyze_with_registry_mode(syntax, source, registry, AnalysisMode::Full)
+}
+
+#[must_use]
+pub fn analyze_diagnostics_with_registry<R>(
+    syntax: &SourceFile,
+    source: SourceView<'_>,
+    registry: &R,
+) -> Vec<Diagnostic>
+where
+    R: CommandRegistry + ?Sized,
+{
+    analyze_with_registry_mode(syntax, source, registry, AnalysisMode::DiagnosticsOnly).diagnostics
+}
+
+fn analyze_with_registry_mode<R>(
+    syntax: &SourceFile,
+    source: SourceView<'_>,
+    registry: &R,
+    mode: AnalysisMode,
+) -> Analysis
+where
+    R: CommandRegistry + ?Sized,
+{
     let collected = ScopeCollector::collect(syntax);
-    let mut analyzer = Analyzer::new(&collected, source, registry);
+    let mut analyzer = Analyzer::new(
+        &collected,
+        source,
+        registry,
+        matches!(mode, AnalysisMode::Full),
+    );
 
     for item in &syntax.items {
         analyzer.walk_item(item, collected.root_scope);
@@ -193,11 +228,31 @@ where
 
     Analysis {
         diagnostics,
-        proc_symbols: collected.proc_symbols.clone(),
-        variable_symbols: collected.variable_symbols.clone(),
-        invoke_resolutions: analyzer.invoke_resolutions,
-        ident_resolutions: analyzer.ident_resolutions,
-        normalized_invokes: analyzer.normalized_invokes,
+        proc_symbols: if matches!(mode, AnalysisMode::Full) {
+            collected.proc_symbols.clone()
+        } else {
+            Vec::new()
+        },
+        variable_symbols: if matches!(mode, AnalysisMode::Full) {
+            collected.variable_symbols.clone()
+        } else {
+            Vec::new()
+        },
+        invoke_resolutions: if matches!(mode, AnalysisMode::Full) {
+            analyzer.invoke_resolutions
+        } else {
+            Vec::new()
+        },
+        ident_resolutions: if matches!(mode, AnalysisMode::Full) {
+            analyzer.ident_resolutions
+        } else {
+            Vec::new()
+        },
+        normalized_invokes: if matches!(mode, AnalysisMode::Full) {
+            analyzer.normalized_invokes
+        } else {
+            Vec::new()
+        },
     }
 }
 

@@ -2,7 +2,8 @@ use super::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     DiagnosticSeverity, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, PositionalSchema,
     PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ResolvedCallee,
-    ReturnBehavior, ValueShape, VariableKind, analyze, analyze_with_registry,
+    ReturnBehavior, ValueShape, VariableKind, analyze, analyze_diagnostics_with_registry,
+    analyze_with_registry,
 };
 use mel_ast::{
     AssignOp, BinaryOp, Declarator, Expr, InvokeExpr, InvokeSurface, Item, ProcDef, ProcParam,
@@ -3344,4 +3345,47 @@ fn proc_invoke_return_type_allows_matching_initializer() {
 
     let analysis = analyze_source(&source);
     assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn diagnostics_only_analysis_matches_full_diagnostics() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("addAttr"),
+                    words: Vec::new(),
+                    captured: false,
+                },
+                range: text_range(0, 7),
+            }),
+            range: text_range(0, 8),
+        }))],
+    };
+    let registry = TestRegistry {
+        commands: vec![CommandSchema {
+            name: "addAttr".to_owned(),
+            kind: CommandKind::Builtin,
+            source_kind: CommandSourceKind::Command,
+            mode_mask: CommandModeMask {
+                create: true,
+                edit: true,
+                query: true,
+            },
+            return_behavior: ReturnBehavior::Unknown,
+            flags: Vec::new(),
+            positionals: PositionalSchema {
+                prefix: &[EXPLICIT_STRING_SLOT],
+                tail: PositionalTailSchema::None,
+            },
+        }],
+    };
+    let source_text = take_test_source();
+    let source_map = SourceMap::identity(source_text.len());
+    let source_view = SourceView::new(&source_text, &source_map);
+
+    let full = analyze_with_registry(&source, source_view, &registry);
+    let diagnostics_only = analyze_diagnostics_with_registry(&source, source_view, &registry);
+
+    assert_eq!(diagnostics_only, full.diagnostics);
 }

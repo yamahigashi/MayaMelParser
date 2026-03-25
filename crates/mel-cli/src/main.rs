@@ -18,7 +18,7 @@ use mel_parser::{
     parse_file_with_encoding, parse_light_file, parse_light_file_with_encoding,
     parse_source_with_options,
 };
-use mel_sema::{DiagnosticLabel, DiagnosticSeverity, analyze_with_registry};
+use mel_sema::{DiagnosticLabel, DiagnosticSeverity, analyze_diagnostics_with_registry};
 use mel_syntax::{SourceMap, TextRange, range_end, range_start, text_range};
 
 const TOP_RANK_LIMIT: usize = 10;
@@ -693,8 +693,7 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
         }],
     }));
     diagnostics.extend(
-        analyze_parse(parse)
-            .diagnostics
+        analyze_parse_diagnostics(parse)
             .into_iter()
             .map(|diagnostic| FileDiagnostic {
                 stage: "sema",
@@ -795,8 +794,8 @@ fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel {
     }
 }
 
-fn analyze_parse(parse: &Parse) -> mel_sema::Analysis {
-    analyze_with_registry(
+fn analyze_parse_diagnostics(parse: &Parse) -> Vec<mel_sema::Diagnostic> {
+    analyze_diagnostics_with_registry(
         &parse.syntax,
         parse.source_view(),
         &MayaCommandRegistry::new(),

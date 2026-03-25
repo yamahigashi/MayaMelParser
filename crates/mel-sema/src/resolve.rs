@@ -26,6 +26,7 @@ pub(crate) struct Analyzer<'a, R: ?Sized> {
     collected: &'a CollectedScopes,
     source: SourceView<'a>,
     registry: &'a R,
+    collect_artifacts: bool,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) invoke_resolutions: Vec<InvokeResolution>,
     pub(crate) ident_resolutions: Vec<IdentResolution>,
@@ -77,11 +78,13 @@ where
         collected: &'a CollectedScopes,
         source: SourceView<'a>,
         registry: &'a R,
+        collect_artifacts: bool,
     ) -> Self {
         Self {
             collected,
             source,
             registry,
+            collect_artifacts,
             diagnostics: Vec::new(),
             invoke_resolutions: Vec::new(),
             ident_resolutions: Vec::new(),
@@ -295,12 +298,14 @@ where
                         *range,
                     ));
                 }
-                self.ident_resolutions.push(IdentResolution {
-                    range: *range,
-                    scope: current_scope,
-                    name_range: *name_range,
-                    resolution,
-                });
+                if self.collect_artifacts {
+                    self.ident_resolutions.push(IdentResolution {
+                        range: *range,
+                        scope: current_scope,
+                        name_range: *name_range,
+                        resolution,
+                    });
+                }
             }
             Expr::BareWord { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::String { .. } => {
             }
@@ -324,12 +329,14 @@ where
                 if !emit_unresolved && matches!(resolution, IdentTarget::Unresolved) {
                     self.mark_implicit_variable(*name_range, current_scope);
                 }
-                self.ident_resolutions.push(IdentResolution {
-                    range: *range,
-                    scope: current_scope,
-                    name_range: *name_range,
-                    resolution,
-                });
+                if self.collect_artifacts {
+                    self.ident_resolutions.push(IdentResolution {
+                        range: *range,
+                        scope: current_scope,
+                        name_range: *name_range,
+                        resolution,
+                    });
+                }
             }
             Expr::Index { target, index, .. } => {
                 self.walk_expr(target, current_scope);
@@ -371,17 +378,21 @@ where
                         self.source,
                     );
                     self.diagnostics.extend(diagnostics);
-                    self.normalized_invokes.push(normalized);
+                    if self.collect_artifacts {
+                        self.normalized_invokes.push(normalized);
+                    }
                 }
                 resolved.into_callee_resolution()
             }
         };
 
-        self.invoke_resolutions.push(InvokeResolution {
-            range: invoke.range,
-            scope: current_scope,
-            resolution,
-        });
+        if self.collect_artifacts {
+            self.invoke_resolutions.push(InvokeResolution {
+                range: invoke.range,
+                scope: current_scope,
+                resolution,
+            });
+        }
     }
 
     fn validate_proc_arity(
