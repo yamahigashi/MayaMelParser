@@ -392,16 +392,10 @@ fn write_single_file_output(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
-    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
-    writer.write_all(
-        format_parse_summary(label, parse, diagnostic_counts(&diagnostics)).as_bytes(),
-    )?;
-    write_compact_file_diagnostics(
-        &mut writer,
-        parse.source_text.as_str(),
-        &parse.source_map,
-        &diagnostics,
-    )
+    let sema_diagnostics = filtered_sema_diagnostics(parse, diagnostic_level);
+    let counts = parse_diagnostic_counts(parse, diagnostic_level, &sema_diagnostics);
+    writer.write_all(format_parse_summary(label, parse, counts).as_bytes())?;
+    write_compact_parse_diagnostics(&mut writer, parse, diagnostic_level, &sema_diagnostics)
 }
 
 #[cfg(test)]
@@ -490,6 +484,12 @@ struct FileDiagnosticLabel {
 }
 
 type IsolatedDiagnosticSpan<'a> = (std::ops::Range<usize>, &'a str, bool);
+
+struct CompactDiagnosticContext<'a> {
+    source_text: &'a str,
+    source_map: &'a SourceMap,
+    line_starts: &'a [usize],
+}
 
 fn render_file_diagnostics(
     label: &str,
@@ -619,6 +619,97 @@ fn write_compact_file_diagnostics(
     }
 
     Ok(())
+}
+
+fn write_compact_parse_diagnostics(
+    mut writer: impl Write,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+    sema_diagnostics: &[mel_sema::Diagnostic],
+) -> io::Result<()> {
+    if matches!(diagnostic_level, CliDiagnosticLevel::None) {
+        return Ok(());
+    }
+
+    let line_starts = compute_normalized_line_starts(parse.source_text.as_str());
+    let context = CompactDiagnosticContext {
+        source_text: parse.source_text.as_str(),
+        source_map: &parse.source_map,
+        line_starts: &line_starts,
+    };
+    for diagnostic in &parse.decode_errors {
+        write_compact_diagnostic_line(
+            &mut writer,
+            "decode",
+            DiagnosticSeverity::Error,
+            diagnostic.message.as_str(),
+            Some(diagnostic.range),
+            &context,
+        )?;
+    }
+    for diagnostic in &parse.lex_errors {
+        write_compact_diagnostic_line(
+            &mut writer,
+            "lex",
+            DiagnosticSeverity::Error,
+            diagnostic.message.as_str(),
+            Some(diagnostic.range),
+            &context,
+        )?;
+    }
+    for diagnostic in &parse.errors {
+        write_compact_diagnostic_line(
+            &mut writer,
+            "parse",
+            DiagnosticSeverity::Error,
+            diagnostic.message.as_str(),
+            Some(diagnostic.range),
+            &context,
+        )?;
+    }
+    for diagnostic in sema_diagnostics {
+        let primary_range = diagnostic
+            .labels
+            .iter()
+            .find(|label| label.is_primary)
+            .or_else(|| diagnostic.labels.first())
+            .map(|label| label.range);
+        write_compact_diagnostic_line(
+            &mut writer,
+            "sema",
+            diagnostic.severity,
+            diagnostic.message.as_ref(),
+            primary_range,
+            &context,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn write_compact_diagnostic_line(
+    mut writer: impl Write,
+    stage: &str,
+    severity: DiagnosticSeverity,
+    message: &str,
+    range: Option<TextRange>,
+    context: &CompactDiagnosticContext<'_>,
+) -> io::Result<()> {
+    let severity = match severity {
+        DiagnosticSeverity::Error => "Error",
+        DiagnosticSeverity::Warning => "Warning",
+    };
+    write!(writer, "{severity}: {stage}: {message}")?;
+    if let Some(range) = range {
+        let source_span = context.source_map.display_range(range);
+        let (line, column) = normalized_line_col_for_offset(
+            context.source_text,
+            context.line_starts,
+            source_span.start,
+        );
+        write!(writer, " @ {}:{}", line + 1, column + 1)?;
+    }
+    writer.write_all(b"\n")
 }
 
 fn compute_normalized_line_starts(source_text: &str) -> Vec<usize> {
@@ -810,6 +901,34 @@ fn collect_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<FileDiagn
             }),
     );
     diagnostics
+}
+
+fn filtered_sema_diagnostics(
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> Vec<mel_sema::Diagnostic> {
+    match diagnostic_level {
+        CliDiagnosticLevel::All => analyze_parse_diagnostics(parse, DiagnosticFilter::All),
+        CliDiagnosticLevel::Error => analyze_parse_diagnostics(parse, DiagnosticFilter::ErrorsOnly),
+        CliDiagnosticLevel::None => Vec::new(),
+    }
+}
+
+fn parse_diagnostic_counts(
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+    sema_diagnostics: &[mel_sema::Diagnostic],
+) -> DiagnosticCounts {
+    match diagnostic_level {
+        CliDiagnosticLevel::None => DiagnosticCounts::default(),
+        CliDiagnosticLevel::All | CliDiagnosticLevel::Error => DiagnosticCounts {
+            decode: parse.decode_errors.len(),
+            lex: parse.lex_errors.len(),
+            parse: parse.errors.len(),
+            sema: sema_diagnostics.len(),
+            light: 0,
+        },
+    }
 }
 
 fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
@@ -1439,6 +1558,20 @@ mod tests {
         assert!(output.contains("Error: sema: command \"addAttr\" expects"));
         assert!(output.contains("@ 1:1"));
         assert!(!output.contains("╭"));
+    }
+
+    #[test]
+    fn compact_output_keeps_parse_error_locations() {
+        let output = format_single_file_output_with_style(
+            "parse-fixture",
+            &parse_source("print(\n"),
+            CliDiagnosticLevel::Error,
+            false,
+        )
+        .expect("compact output");
+        assert!(output.contains("parse errors: 3"));
+        assert!(output.contains("Error: parse: expected expression as function argument"));
+        assert!(output.contains("@ 2:1"));
     }
 
     #[test]
