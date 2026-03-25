@@ -39,11 +39,8 @@ struct TestRegistry {
 }
 
 impl CommandRegistry for TestRegistry {
-    fn lookup(&self, name: &str) -> Option<CommandSchema> {
-        self.commands
-            .iter()
-            .find(|info| info.name.as_ref() == name)
-            .cloned()
+    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
+        self.commands.iter().find(|info| info.name.as_ref() == name)
     }
 }
 
@@ -530,7 +527,7 @@ fn builtin_command_resolves_with_registry() {
     assert!(analysis.diagnostics.is_empty());
     assert_eq!(
         analysis.invoke_resolutions[0].resolution,
-        ResolvedCallee::BuiltinCommand("sphere".to_owned())
+        ResolvedCallee::BuiltinCommand("sphere".into())
     );
 }
 
@@ -558,7 +555,7 @@ fn plugin_command_resolves_with_registry() {
     assert!(analysis.diagnostics.is_empty());
     assert_eq!(
         analysis.invoke_resolutions[0].resolution,
-        ResolvedCallee::PluginCommand("foo".to_owned())
+        ResolvedCallee::PluginCommand("foo".into())
     );
 }
 
@@ -1118,7 +1115,7 @@ fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
     let analysis = analyze_source_with_registry(&source, &registry);
     assert_eq!(
         analysis.invoke_resolutions[0].resolution,
-        ResolvedCallee::BuiltinCommand("frameLayout".to_owned())
+        ResolvedCallee::BuiltinCommand("frameLayout".into())
     );
     assert_eq!(analysis.normalized_invokes.len(), 1);
     assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Query);
@@ -1261,7 +1258,7 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
             canonical_name: Some(name),
             args,
             ..
-        }) if *source_range == text_range(19, 25) && name == "label" && args.is_empty()
+        }) if *source_range == text_range(19, 25) && name.as_ref() == "label" && args.is_empty()
     ));
     assert!(matches!(
         &items[2],
@@ -1321,7 +1318,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
             canonical_name: Some(name),
             args,
             ..
-        }) if name == "label" && args.len() == 1
+        }) if name.as_ref() == "label" && args.len() == 1
     ));
 }
 
@@ -1378,7 +1375,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
             canonical_name: Some(name),
             args,
             ..
-        }) if name == "label" && args.len() == 2
+        }) if name.as_ref() == "label" && args.len() == 2
     ));
 }
 

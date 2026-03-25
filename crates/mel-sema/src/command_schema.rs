@@ -124,14 +124,14 @@ pub struct CommandSchema {
 }
 
 pub trait CommandRegistry {
-    fn lookup(&self, name: &str) -> Option<CommandSchema>;
+    fn lookup(&self, name: &str) -> Option<&CommandSchema>;
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EmptyCommandRegistry;
 
 impl CommandRegistry for EmptyCommandRegistry {
-    fn lookup(&self, _name: &str) -> Option<CommandSchema> {
+    fn lookup(&self, _name: &str) -> Option<&CommandSchema> {
         None
     }
 }

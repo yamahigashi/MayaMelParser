@@ -28,11 +28,11 @@ impl MayaCommandRegistry {
 }
 
 impl CommandRegistry for MayaCommandRegistry {
-    fn lookup(&self, name: &str) -> Option<CommandSchema> {
+    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
         shared_command_schemas()
             .binary_search_by(|schema| schema.name.as_ref().cmp(name))
             .ok()
-            .map(|index| shared_command_schemas()[index].clone())
+            .map(|index| &shared_command_schemas()[index])
     }
 }
 
@@ -1100,7 +1100,7 @@ where
     D: MayaPromotionDecider + ?Sized,
 {
     let head = parse.source_slice(command.head_range).to_owned();
-    let canonical_name = registry.lookup(&head).map(|schema| schema.name);
+    let canonical_name = registry.lookup(&head).map(|schema| schema.name.clone());
     match promotion_attempt_kind(
         command,
         canonical_name.as_deref(),
@@ -1557,7 +1557,7 @@ fn maya_normalized_command_from_source(
     MayaNormalizedCommand {
         head: source.slice(value.head_range).to_owned(),
         head_range: value.head_range,
-        schema_name: value.schema_name,
+        schema_name: value.schema_name.to_string(),
         kind: value.kind,
         mode: value.mode,
         items: value
@@ -1589,7 +1589,7 @@ fn maya_normalized_flag_from_source(
 ) -> MayaNormalizedFlag {
     MayaNormalizedFlag {
         source_text: source.display_slice(value.source_range).to_owned(),
-        canonical_name: value.canonical_name,
+        canonical_name: value.canonical_name.map(|name| name.to_string()),
         args: value
             .args
             .into_iter()
@@ -1626,7 +1626,7 @@ where
     D: MayaPromotionDecider + ?Sized,
 {
     let head = parse.source_slice(command.head_range).to_owned();
-    let canonical_name = registry.lookup(&head).map(|schema| schema.name);
+    let canonical_name = registry.lookup(&head).map(|schema| schema.name.clone());
     let attempted_kind = promotion_attempt_kind(
         command,
         canonical_name.as_deref(),
@@ -1748,13 +1748,7 @@ where
         .collect::<Vec<_>>();
     let promoted_span = command_payload_span(command.head_range, &raw_items);
     let normalized = registry.lookup(&head).map(|schema| {
-        normalize_light_command(
-            &head,
-            command.head_range,
-            promoted_span,
-            &schema,
-            &raw_items,
-        )
+        normalize_light_command(&head, command.head_range, promoted_span, schema, &raw_items)
     });
     let specialized = specialize_command(&head, promoted_span, normalized.as_ref(), &raw_items);
 
@@ -2006,7 +2000,7 @@ where
             &head,
             command.span,
             command.opaque_tail,
-            &schema,
+            schema,
             &prefix_items,
         )
     });
@@ -2471,7 +2465,7 @@ impl<R> CommandRegistry for OverlayRegistry<'_, R>
 where
     R: CommandRegistry + ?Sized,
 {
-    fn lookup(&self, name: &str) -> Option<CommandSchema> {
+    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
         self.primary
             .lookup(name)
             .or_else(|| self.fallback.lookup(name))
@@ -2494,17 +2488,15 @@ mod tests {
     }
 
     impl CommandRegistry for TestRegistry {
-        fn lookup(&self, name: &str) -> Option<CommandSchema> {
-            self.commands
-                .iter()
-                .find(|info| info.name.as_ref() == name)
-                .cloned()
+        fn lookup(&self, name: &str) -> Option<&CommandSchema> {
+            self.commands.iter().find(|info| info.name.as_ref() == name)
         }
     }
 
     #[test]
     fn embedded_registry_keeps_script_source_kind() {
-        let schema = MayaCommandRegistry::new()
+        let registry = MayaCommandRegistry::new();
+        let schema = registry
             .lookup("addNewShelfTab")
             .expect("embedded schema for addNewShelfTab");
         assert_eq!(schema.kind, CommandKind::Builtin);
@@ -2513,7 +2505,8 @@ mod tests {
 
     #[test]
     fn embedded_registry_synthesizes_mode_flags() {
-        let schema = MayaCommandRegistry::new()
+        let registry = MayaCommandRegistry::new();
+        let schema = registry
             .lookup("addAttr")
             .expect("embedded schema for addAttr");
         assert!(
@@ -2538,8 +2531,9 @@ mod tests {
 
     #[test]
     fn embedded_registry_keeps_selection_aware_positional_policy() {
+        let registry = MayaCommandRegistry::new();
         for command_name in ["ikHandle", "delete", "sets", "polyListComponentConversion"] {
-            let schema = MayaCommandRegistry::new()
+            let schema = registry
                 .lookup(command_name)
                 .unwrap_or_else(|| panic!("embedded schema for {command_name}"));
             assert_eq!(

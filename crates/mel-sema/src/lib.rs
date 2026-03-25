@@ -137,8 +137,8 @@ pub struct InvokeResolution {
 pub enum ResolvedCallee {
     Unresolved,
     Proc(ProcSymbolId),
-    BuiltinCommand(String),
-    PluginCommand(String),
+    BuiltinCommand(Arc<str>),
+    PluginCommand(Arc<str>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

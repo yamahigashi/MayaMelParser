@@ -44,9 +44,15 @@ struct ProcContext {
     saw_value_return: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedCommand {
+    name: std::sync::Arc<str>,
+    kind: CommandKind,
+}
+
 enum ResolvedInvokeTarget {
     Proc(ProcSymbolId),
-    Command(CommandSchema),
+    Command(ResolvedCommand),
     Unresolved,
 }
 
@@ -62,8 +68,8 @@ impl ResolvedInvokeTarget {
         match self {
             Self::Proc(symbol_id) => ResolvedCallee::Proc(symbol_id),
             Self::Command(command) => match command.kind {
-                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.name.to_string()),
-                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.name.to_string()),
+                CommandKind::Builtin => ResolvedCallee::BuiltinCommand(command.name),
+                CommandKind::Plugin => ResolvedCallee::PluginCommand(command.name),
             },
             Self::Unresolved => ResolvedCallee::Unresolved,
         }
@@ -368,10 +374,12 @@ where
                 }
                 let resolved =
                     self.resolve_named_target_range(*head_range, invoke.range, current_scope);
-                if let ResolvedInvokeTarget::Command(ref command) = resolved {
+                if let ResolvedInvokeTarget::Command(ref command) = resolved
+                    && let Some(schema) = self.registry.lookup(command.name.as_ref())
+                {
                     if self.collect_artifacts {
                         let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
-                            command,
+                            schema,
                             current_scope,
                             *head_range,
                             words,
@@ -383,7 +391,7 @@ where
                     } else {
                         self.diagnostics
                             .extend(command_norm::collect_command_diagnostics(
-                                command,
+                                schema,
                                 words,
                                 invoke.range,
                                 self.source,
@@ -481,7 +489,10 @@ where
         }
 
         if let Some(command) = self.registry.lookup(name) {
-            return ResolvedInvokeTarget::Command(command);
+            return ResolvedInvokeTarget::Command(ResolvedCommand {
+                name: command.name.clone(),
+                kind: command.kind,
+            });
         }
 
         ResolvedInvokeTarget::Unresolved

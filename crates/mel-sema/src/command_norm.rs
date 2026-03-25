@@ -25,7 +25,7 @@ pub struct PositionalArg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedFlag {
     pub source_range: TextRange,
-    pub canonical_name: Option<String>,
+    pub canonical_name: Option<Arc<str>>,
     pub args: Vec<PositionalArg>,
     pub range: TextRange,
 }
@@ -41,7 +41,7 @@ pub struct NormalizedCommandInvoke {
     pub range: TextRange,
     pub scope: ScopeId,
     pub head_range: TextRange,
-    pub schema_name: String,
+    pub schema_name: Arc<str>,
     pub kind: CommandKind,
     pub mode: CommandMode,
     pub items: Vec<NormalizedCommandItem>,
@@ -72,6 +72,13 @@ impl ResolvedFlagSchema<'_> {
         match self {
             Self::Borrowed(schema) => &schema.long_name,
             Self::Synthetic(schema) => schema.long_name,
+        }
+    }
+
+    fn canonical_name(&self) -> Arc<str> {
+        match self {
+            Self::Borrowed(schema) => schema.long_name.clone(),
+            Self::Synthetic(schema) => Arc::from(schema.long_name),
         }
     }
 
@@ -288,7 +295,7 @@ pub(crate) fn normalize_shell_like_invoke(
                 });
                 items.push(NormalizedCommandItem::Flag(NormalizedFlag {
                     source_range: *flag_range,
-                    canonical_name: Some(schema.long_name().to_owned()),
+                    canonical_name: Some(schema.canonical_name()),
                     args: owned_args,
                     range: item_range,
                 }));
@@ -391,7 +398,7 @@ pub(crate) fn normalize_shell_like_invoke(
             range,
             scope,
             head_range,
-            schema_name: command.name.to_string(),
+            schema_name: command.name.clone(),
             kind: command.kind,
             mode,
             items,
