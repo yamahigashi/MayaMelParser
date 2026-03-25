@@ -36,31 +36,49 @@ pub fn text_slice(text: &str, range: TextRange) -> &str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceMapKind {
+    Identity { len: usize },
+    Indexed { source_to_display: Vec<u32> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceMap {
-    source_to_display: Vec<u32>,
+    kind: SourceMapKind,
 }
 
 impl SourceMap {
     #[must_use]
     pub fn identity(len: usize) -> Self {
-        let source_to_display = (0..=len)
-            .map(|offset| u32::try_from(offset).unwrap_or(u32::MAX))
-            .collect();
-        Self { source_to_display }
+        Self {
+            kind: SourceMapKind::Identity { len },
+        }
     }
 
     #[must_use]
     pub fn from_source_to_display(source_to_display: Vec<u32>) -> Self {
-        Self { source_to_display }
+        if source_to_display
+            .iter()
+            .enumerate()
+            .all(|(offset, mapped)| *mapped == u32::try_from(offset).unwrap_or(u32::MAX))
+        {
+            return Self::identity(source_to_display.len().saturating_sub(1));
+        }
+        Self {
+            kind: SourceMapKind::Indexed { source_to_display },
+        }
     }
 
     #[must_use]
     pub fn display_offset(&self, offset: u32) -> usize {
-        self.source_to_display
-            .get(offset as usize)
-            .copied()
-            .or_else(|| self.source_to_display.last().copied())
-            .unwrap_or(offset) as usize
+        match &self.kind {
+            SourceMapKind::Identity { len } => usize::try_from(offset).unwrap_or(*len).min(*len),
+            SourceMapKind::Indexed { source_to_display } => source_to_display
+                .get(offset as usize)
+                .copied()
+                .or_else(|| source_to_display.last().copied())
+                .unwrap_or(offset)
+                as usize,
+        }
     }
 
     #[must_use]
@@ -70,20 +88,26 @@ impl SourceMap {
 
     #[must_use]
     pub fn source_offset_for_display(&self, display_offset: usize) -> u32 {
-        match self
-            .source_to_display
-            .binary_search_by(|mapped| mapped.cmp(&(display_offset as u32)))
-        {
-            Ok(mut index) => {
-                while index + 1 < self.source_to_display.len()
-                    && self.source_to_display[index + 1] <= display_offset as u32
-                {
-                    index += 1;
-                }
-                u32::try_from(index).unwrap_or(u32::MAX)
+        match &self.kind {
+            SourceMapKind::Identity { len } => {
+                u32::try_from(display_offset.min(*len)).unwrap_or(u32::MAX)
             }
-            Err(0) => 0,
-            Err(index) => u32::try_from(index - 1).unwrap_or(u32::MAX),
+            SourceMapKind::Indexed { source_to_display } => {
+                match source_to_display
+                    .binary_search_by(|mapped| mapped.cmp(&(display_offset as u32)))
+                {
+                    Ok(mut index) => {
+                        while index + 1 < source_to_display.len()
+                            && source_to_display[index + 1] <= display_offset as u32
+                        {
+                            index += 1;
+                        }
+                        u32::try_from(index).unwrap_or(u32::MAX)
+                    }
+                    Err(0) => 0,
+                    Err(index) => u32::try_from(index - 1).unwrap_or(u32::MAX),
+                }
+            }
         }
     }
 
@@ -276,5 +300,15 @@ mod tests {
         assert_eq!(map.source_offset_for_display(3), 2);
         assert_eq!(map.source_offset_for_display(4), 3);
         assert_eq!(map.source_range_from_display_range(0..3), text_range(0, 2));
+    }
+
+    #[test]
+    fn identity_source_map_avoids_index_materialization() {
+        let map = SourceMap::identity(8);
+        assert_eq!(map.display_offset(3), 3);
+        assert_eq!(map.display_offset(99), 8);
+        assert_eq!(map.source_offset_for_display(5), 5);
+        assert_eq!(map.source_offset_for_display(99), 8);
+        assert_eq!(map.source_range_from_display_range(2..6), text_range(2, 6));
     }
 }

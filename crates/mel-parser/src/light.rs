@@ -332,8 +332,7 @@ fn build_light_scan(
     sink: &mut impl LightItemSink,
 ) -> LightScanReport {
     let source_text = decoded.text.into_owned();
-    let source_map =
-        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone());
+    let source_map = decoded.offset_map.source_map();
     let source_view = SourceView::new(&source_text, &source_map);
     let mut scanner = LightScanner::new(&source_text, options);
     scanner.scan_with_sink(source_view, sink, Some(&decoded.offset_map));

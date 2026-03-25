@@ -178,7 +178,7 @@ pub fn parse_bytes(input: &[u8]) -> Parse {
     let decoded = decode_source_auto(input);
     let mut parse = parse_owned_source(
         decoded.text.into_owned(),
-        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone()),
+        decoded.offset_map.source_map(),
         decoded.encoding,
         decoded.diagnostics,
         ParseOptions::default(),
@@ -192,7 +192,7 @@ pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Pars
     let decoded = decode_source_with_encoding(input, encoding);
     let mut parse = parse_owned_source(
         decoded.text.into_owned(),
-        SourceMap::from_source_to_display(decoded.offset_map.source_to_decoded.clone()),
+        decoded.offset_map.source_map(),
         decoded.encoding,
         decoded.diagnostics,
         ParseOptions::default(),

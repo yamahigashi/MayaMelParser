@@ -13,19 +13,25 @@ pub(crate) struct DecodedSource<'a> {
 }
 
 #[derive(Debug, Clone)]
+enum OffsetMapKind {
+    Identity {
+        len: usize,
+    },
+    Indexed {
+        decoded_to_source: Vec<u32>,
+        source_to_decoded: Vec<u32>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct OffsetMap {
-    decoded_to_source: Vec<u32>,
-    pub(crate) source_to_decoded: Vec<u32>,
+    kind: OffsetMapKind,
 }
 
 impl OffsetMap {
     fn identity(len: usize) -> Self {
-        let boundaries: Vec<u32> = (0..=len)
-            .map(|offset| u32::try_from(offset).unwrap_or(u32::MAX))
-            .collect();
         Self {
-            decoded_to_source: boundaries.clone(),
-            source_to_decoded: boundaries,
+            kind: OffsetMapKind::Identity { len },
         }
     }
 
@@ -59,17 +65,26 @@ impl OffsetMap {
         decoded_to_source[text.len()] = u32::try_from(source_len).unwrap_or(u32::MAX);
         source_to_decoded[source_len] = u32::try_from(text.len()).unwrap_or(u32::MAX);
         Some(Self {
-            decoded_to_source,
-            source_to_decoded,
+            kind: OffsetMapKind::Indexed {
+                decoded_to_source,
+                source_to_decoded,
+            },
         })
     }
 
     fn map_offset(&self, offset: u32) -> u32 {
-        self.decoded_to_source
-            .get(offset as usize)
-            .copied()
-            .or_else(|| self.decoded_to_source.last().copied())
-            .unwrap_or(offset)
+        match &self.kind {
+            OffsetMapKind::Identity { len } => {
+                u32::try_from(usize::try_from(offset).unwrap_or(*len).min(*len)).unwrap_or(u32::MAX)
+            }
+            OffsetMapKind::Indexed {
+                decoded_to_source, ..
+            } => decoded_to_source
+                .get(offset as usize)
+                .copied()
+                .or_else(|| decoded_to_source.last().copied())
+                .unwrap_or(offset),
+        }
     }
 
     pub(crate) fn map_range(&self, range: TextRange) -> TextRange {
@@ -77,6 +92,15 @@ impl OffsetMap {
             self.map_offset(range_start(range)),
             self.map_offset(range_end(range)),
         )
+    }
+
+    pub(crate) fn source_map(&self) -> mel_syntax::SourceMap {
+        match &self.kind {
+            OffsetMapKind::Identity { len } => mel_syntax::SourceMap::identity(*len),
+            OffsetMapKind::Indexed {
+                source_to_decoded, ..
+            } => mel_syntax::SourceMap::from_source_to_display(source_to_decoded.clone()),
+        }
     }
 }
 
@@ -268,8 +292,10 @@ fn decode_lossy_utf8_text_and_offset_map(input: &[u8]) -> (String, OffsetMap) {
     (
         text,
         OffsetMap {
-            decoded_to_source,
-            source_to_decoded,
+            kind: OffsetMapKind::Indexed {
+                decoded_to_source,
+                source_to_decoded,
+            },
         },
     )
 }
