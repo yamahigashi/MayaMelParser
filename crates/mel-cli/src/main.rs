@@ -527,8 +527,7 @@ fn render_compact_file_diagnostics(
     source_map: &SourceMap,
     diagnostics: &[FileDiagnostic<'_>],
 ) -> String {
-    let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
-    let line_starts = compute_line_starts(display_text.as_str());
+    let line_starts = compute_normalized_line_starts(source_text);
     let mut rendered = String::new();
 
     for diagnostic in diagnostics {
@@ -539,8 +538,7 @@ fn render_compact_file_diagnostics(
             .or_else(|| diagnostic.labels.first())
             .map(|label| {
                 let source_span = source_map.display_range(label.range);
-                display_map
-                    .display_range(text_range(source_span.start as u32, source_span.end as u32))
+                source_span.start
             });
         let severity = match diagnostic.severity {
             DiagnosticSeverity::Error => "Error",
@@ -551,8 +549,8 @@ fn render_compact_file_diagnostics(
         rendered.push_str(diagnostic.stage);
         rendered.push_str(": ");
         rendered.push_str(diagnostic.message.as_ref());
-        if let Some(range) = primary_range {
-            let (line, column) = line_col_for_offset(&line_starts, range.start);
+        if let Some(offset) = primary_range {
+            let (line, column) = normalized_line_col_for_offset(source_text, &line_starts, offset);
             rendered.push_str(" @ ");
             rendered.push_str(&(line + 1).to_string());
             rendered.push(':');
@@ -564,24 +562,63 @@ fn render_compact_file_diagnostics(
     rendered
 }
 
-fn compute_line_starts(source_text: &str) -> Vec<usize> {
+fn compute_normalized_line_starts(source_text: &str) -> Vec<usize> {
+    let bytes = source_text.as_bytes();
     let mut starts = vec![0];
-    for (idx, byte) in source_text.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(idx + 1);
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        match bytes[offset] {
+            b'\r' if bytes.get(offset + 1) == Some(&b'\n') => {
+                starts.push(offset + 2);
+                offset += 2;
+            }
+            b'\n' | b'\r' => {
+                starts.push(offset + 1);
+                offset += 1;
+            }
+            _ => offset += 1,
         }
     }
     starts
 }
 
-fn line_col_for_offset(line_starts: &[usize], offset: usize) -> (usize, usize) {
-    match line_starts.binary_search(&offset) {
-        Ok(index) => (index, 0),
-        Err(next_index) => {
-            let line_index = next_index.saturating_sub(1);
-            (line_index, offset.saturating_sub(line_starts[line_index]))
+fn normalized_line_col_for_offset(
+    source_text: &str,
+    line_starts: &[usize],
+    offset: usize,
+) -> (usize, usize) {
+    let line = match line_starts.binary_search(&offset) {
+        Ok(index) => index,
+        Err(next_index) => next_index.saturating_sub(1),
+    };
+    let line_start = line_starts[line];
+    let column = normalized_column_for_source_offset(source_text, line_start, offset);
+    (line, column)
+}
+
+fn normalized_column_for_source_offset(source_text: &str, start: usize, offset: usize) -> usize {
+    let bytes = source_text.as_bytes();
+    let mut source_offset = start.min(bytes.len());
+    let target = offset.min(bytes.len());
+    let mut display_offset = 0usize;
+
+    while source_offset < target {
+        match bytes[source_offset] {
+            b'\r' if bytes.get(source_offset + 1) == Some(&b'\n') => {
+                if source_offset + 1 >= target {
+                    break;
+                }
+                display_offset += 1;
+                source_offset += 2;
+            }
+            _ => {
+                display_offset += 1;
+                source_offset += 1;
+            }
         }
     }
+
+    display_offset
 }
 
 fn normalize_diagnostic_source_text(source_text: &str) -> (String, SourceMap) {
@@ -1103,6 +1140,45 @@ mod tests {
         assert_eq!(map.display_offset(5), 4);
         assert_eq!(map.display_offset(6), 4);
         assert_eq!(map.display_offset(7), 5);
+    }
+
+    #[test]
+    fn normalized_line_col_matches_compact_display_rules() {
+        let source = "a\t\r\nbc\r\ndef\n";
+        let starts = super::compute_normalized_line_starts(source);
+        assert_eq!(starts, vec![0, 4, 8, 12]);
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 0),
+            (0, 0)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 1),
+            (0, 1)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 2),
+            (0, 2)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 3),
+            (0, 2)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 4),
+            (1, 0)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 6),
+            (1, 2)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 7),
+            (1, 2)
+        );
+        assert_eq!(
+            super::normalized_line_col_for_offset(source, &starts, 8),
+            (2, 0)
+        );
     }
 
     #[test]
