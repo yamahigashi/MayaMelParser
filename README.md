@@ -1,11 +1,10 @@
 # MayaMelParser
 
 `MayaMelParser` is a Rust workspace for parsing and analyzing Autodesk Maya MEL.
-
-The project is aimed at building a solid foundation for MEL tooling rather than
-just accepting source text. The intended pipeline separates syntax handling from
-later semantic resolution so the workspace can support diagnostics, recovery,
-corpus-based regression testing, and future editor-facing tooling.
+It is being built as a foundation for MEL tooling rather than a one-off parser:
+syntax, diagnostics, semantic analysis, and Maya-specific command metadata are
+kept as separate layers so the workspace can support regression testing and
+future editor-facing tooling.
 
 ## Current Status
 
@@ -15,27 +14,48 @@ Today the workspace already includes:
 
 - shared syntax primitives and span types
 - a lexer with trivia retention and lexical diagnostics
-- a parser for core MEL statement and expression surfaces
+- a parser for core MEL statement and expression surfaces, including a lightweight scan path
 - typed AST structures
-- an initial scoped proc-symbol pass with function-style local proc visibility diagnostics
-- a small local CLI for inspecting parse and diagnostic output
+- generic semantic analysis for proc visibility, command normalization, and diagnostics
+- a Maya-specific metadata layer for builtin command registries and top-level command facts
+- a small local CLI for inspecting parse, diagnostics, and lightweight summaries
 
 The implementation is under active development, and crate boundaries are being
 treated as part of the long-term architecture.
 
-## CLI Usage
+## Getting Started
 
-`mel-cli` is a small inspection CLI for parser and sema output.
+`mel-inspect` is the local inspection CLI for parser and analysis output.
 
 ```bash
-cargo run -p mel-cli -- --file examples/hello.mel
-cargo run -p mel-cli -- --directory tests/private-corpus
-cargo run -p mel-cli -- '`ls -sl`;'
+mel-inspect examples/basic.mel
+mel-inspect --inline '`ls -sl`;'
+mel-inspect --lightweight my-corpus
+mel-inspect --encoding cp932 my-corpus
 ```
+
+Build from source:
+
+```bash
+cargo install --path crates/mel-cli
+```
+
+Current CLI surface:
+
+```text
+mel-inspect [OPTIONS] [PATH]
+  --inline <SOURCE>
+  --lightweight
+  --encoding <auto|utf8|cp932|gbk>
+```
+
+Example diagnostic output:
+
+![Example `mel-inspect` diagnostic output](docs/images/inspect_example.png)
 
 ## Architecture
 
-The workspace is organized around this pipeline:
+The workspace is organized around a generic MEL pipeline plus a Maya-specific layer:
 
 ```text
 source
@@ -45,6 +65,7 @@ source
   -> mel-ast
   -> mel-parser
   -> mel-sema
+  -> mel-maya
   -> mel-cli
 ```
 
@@ -53,6 +74,7 @@ not try to fully resolve meaning too early. In particular:
 
 - parser output keeps command-style and function-style invocation surfaces
 - command, proc, and plugin-command resolution belongs to semantic analysis
+- Maya builtin catalogs and command specialization belong to the Maya layer
 - spans are carried through syntax and diagnostics
 - error recovery is treated as a first-class parser concern
 
@@ -62,11 +84,11 @@ not try to fully resolve meaning too early. In particular:
 - `crates/mel-lexer`: tokenization and lexical diagnostics
 - `crates/mel-cst`: lossless concrete syntax layer scaffold
 - `crates/mel-ast`: typed AST shapes used by parser and sema
-- `crates/mel-parser`: parsing entry points, recovery, and source decoding
-- `crates/mel-sema`: early semantic analysis and diagnostics
-- `crates/mel-cli`: local inspection CLI for parser and sema output
-- `tests/corpus`: public MEL fixtures and future snapshot-oriented tests
-- `tests/private-corpus`: local-only regression inputs used during development
+- `crates/mel-parser`: parsing entry points, recovery, source decoding, and lightweight scanning
+- `crates/mel-sema`: generic semantic analysis, diagnostics, and registry-backed command normalization
+- `crates/mel-maya`: Maya builtin command metadata and top-level command collection helpers
+- `crates/mel-cli`: local inspection CLI for parser, sema, and lightweight output
+- `tests/corpus`: public MEL fixtures and snapshot-oriented tests
 - `examples`: small sample MEL sources
 
 ## MEL-Specific Design Principles
@@ -81,6 +103,13 @@ it awkward to model with a conventional parser-only design:
 
 Because of that, this project prefers surface-preserving parse output first and
 defers language-specific resolution to later passes.
+
+## Current Limitations
+
+- The workspace is still evolving and internal crate APIs may change.
+- Parser recovery, semantic coverage, and corpus automation are incomplete.
+- Maya-specific command specialization exists for selected workflows, not the full language surface.
+- This repository is not aiming to be a formatter, interpreter, or complete Maya runtime integration.
 
 ## Example MEL
 
