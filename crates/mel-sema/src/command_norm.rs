@@ -46,6 +46,56 @@ pub struct NormalizedCommandInvoke {
     pub items: Vec<NormalizedCommandItem>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BorrowedPositionalArg<'a> {
+    word: &'a ShellWord,
+    range: TextRange,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SyntheticFlagSchema {
+    long_name: &'static str,
+    mode_mask: CommandModeMask,
+    arity_by_mode: FlagArityByMode,
+    allows_multiple: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResolvedFlagSchema<'a> {
+    Borrowed(&'a crate::FlagSchema),
+    Synthetic(SyntheticFlagSchema),
+}
+
+impl ResolvedFlagSchema<'_> {
+    fn long_name(&self) -> &str {
+        match self {
+            Self::Borrowed(schema) => &schema.long_name,
+            Self::Synthetic(schema) => schema.long_name,
+        }
+    }
+
+    fn mode_mask(self) -> CommandModeMask {
+        match self {
+            Self::Borrowed(schema) => schema.mode_mask,
+            Self::Synthetic(schema) => schema.mode_mask,
+        }
+    }
+
+    fn arity_by_mode(self) -> FlagArityByMode {
+        match self {
+            Self::Borrowed(schema) => schema.arity_by_mode,
+            Self::Synthetic(schema) => schema.arity_by_mode,
+        }
+    }
+
+    fn allows_multiple(self) -> bool {
+        match self {
+            Self::Borrowed(schema) => schema.allows_multiple,
+            Self::Synthetic(schema) => schema.allows_multiple,
+        }
+    }
+}
+
 pub(crate) fn normalize_shell_like_invoke(
     command: &CommandSchema,
     scope: ScopeId,
@@ -56,7 +106,8 @@ pub(crate) fn normalize_shell_like_invoke(
 ) -> (NormalizedCommandInvoke, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut items = Vec::new();
-    let mut seen_flags = Vec::<String>::new();
+    let mut seen_flags = Vec::<ResolvedFlagSchema<'_>>::new();
+    let mut positional_args = Vec::<BorrowedPositionalArg<'_>>::new();
     let (create_ranges, edit_ranges, query_ranges) =
         collect_mode_flag_ranges(command, words, source);
     let active_mode_count = usize::from(!create_ranges.is_empty())
@@ -123,30 +174,34 @@ pub(crate) fn normalize_shell_like_invoke(
                     continue;
                 };
 
-                if !schema.allows_multiple
-                    && seen_flags.iter().any(|name| name == &schema.long_name)
+                if !schema.allows_multiple()
+                    && seen_flags
+                        .iter()
+                        .any(|seen_schema| seen_schema.long_name() == schema.long_name())
                 {
                     diagnostics.push(Diagnostic {
                         severity: DiagnosticSeverity::Error,
                         message: format!(
                             "flag \"-{0}\" cannot be repeated for command \"{1}\"",
-                            schema.long_name, command.name
+                            schema.long_name(),
+                            command.name
                         ),
                         range: *flag_range,
                         labels: vec![crate::DiagnosticLabel {
                             range: *flag_range,
                             message: format!(
                                 "flag \"-{0}\" cannot be repeated for command \"{1}\"",
-                                schema.long_name, command.name
+                                schema.long_name(),
+                                command.name
                             ),
                             is_primary: true,
                         }],
                     });
                 } else {
-                    seen_flags.push(schema.long_name.clone());
+                    seen_flags.push(schema);
                 }
 
-                let expected_arity = arity_for_mode(schema.arity_by_mode, mode);
+                let expected_arity = arity_for_mode(schema.arity_by_mode(), mode);
                 let (min_arity, max_arity) = arity_bounds(expected_arity);
                 let mut args = Vec::new();
                 let mut consumed = 0;
@@ -158,12 +213,20 @@ pub(crate) fn normalize_shell_like_invoke(
                     if matches!(next_word, ShellWord::Flag { .. }) {
                         break;
                     }
-                    args.push(PositionalArg {
-                        word: next_word.clone(),
+                    args.push(BorrowedPositionalArg {
+                        word: next_word,
                         range: shell_word_range(next_word),
                     });
                     consumed += 1;
                 }
+
+                let owned_args = args
+                    .iter()
+                    .map(|arg| PositionalArg {
+                        word: arg.word.clone(),
+                        range: arg.range,
+                    })
+                    .collect::<Vec<_>>();
 
                 if args.len() < min_arity {
                     diagnostics.push(Diagnostic {
@@ -174,7 +237,7 @@ pub(crate) fn normalize_shell_like_invoke(
                         },
                         message: format!(
                             "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
-                            schema.long_name,
+                            schema.long_name(),
                             format_arity(expected_arity),
                             command.name
                         ),
@@ -183,7 +246,7 @@ pub(crate) fn normalize_shell_like_invoke(
                             range: *flag_range,
                             message: format!(
                                 "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
-                                schema.long_name,
+                                schema.long_name(),
                                 format_arity(expected_arity),
                                 command.name
                             ),
@@ -197,16 +260,21 @@ pub(crate) fn normalize_shell_like_invoke(
                 });
                 items.push(NormalizedCommandItem::Flag(NormalizedFlag {
                     source_range: *flag_range,
-                    canonical_name: Some(schema.long_name.clone()),
-                    args,
+                    canonical_name: Some(schema.long_name().to_owned()),
+                    args: owned_args,
                     range: item_range,
                 }));
                 index += 1 + consumed;
             }
             word => {
+                let positional_arg = BorrowedPositionalArg {
+                    word,
+                    range: shell_word_range(word),
+                };
+                positional_args.push(positional_arg);
                 items.push(NormalizedCommandItem::Positional(PositionalArg {
                     word: word.clone(),
-                    range: shell_word_range(word),
+                    range: positional_arg.range,
                 }));
                 index += 1;
             }
@@ -248,7 +316,7 @@ pub(crate) fn normalize_shell_like_invoke(
         let Some(schema) = find_flag_schema_by_canonical_name(command, canonical_name) else {
             continue;
         };
-        if !mode_allows(schema.mode_mask, mode) {
+        if !mode_allows(schema.mode_mask(), mode) {
             diagnostics.push(Diagnostic {
                 severity: if matches!(mode, CommandMode::Query) {
                     DiagnosticSeverity::Warning
@@ -257,7 +325,7 @@ pub(crate) fn normalize_shell_like_invoke(
                 },
                 message: format!(
                     "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
-                    schema.long_name,
+                    schema.long_name(),
                     mode_label(mode),
                     command.name
                 ),
@@ -266,7 +334,7 @@ pub(crate) fn normalize_shell_like_invoke(
                     range: flag.source_range,
                     message: format!(
                         "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
-                        schema.long_name,
+                        schema.long_name(),
                         mode_label(mode),
                         command.name
                     ),
@@ -276,13 +344,7 @@ pub(crate) fn normalize_shell_like_invoke(
         }
     }
 
-    let positional_args = items
-        .iter()
-        .filter_map(|item| match item {
-            NormalizedCommandItem::Positional(arg) => Some(arg),
-            NormalizedCommandItem::Flag(_) => None,
-        })
-        .collect::<Vec<_>>();
+    let positional_args = positional_args.iter().collect::<Vec<_>>();
     validate_positionals(
         command,
         &command.positionals,
@@ -306,7 +368,233 @@ pub(crate) fn normalize_shell_like_invoke(
     )
 }
 
-fn find_flag_schema(command: &CommandSchema, text: &str) -> Option<crate::FlagSchema> {
+pub(crate) fn collect_command_diagnostics(
+    command: &CommandSchema,
+    words: &[ShellWord],
+    range: TextRange,
+    source: SourceView<'_>,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut seen_flags = Vec::<ResolvedFlagSchema<'_>>::new();
+    let mut positional_args = Vec::<BorrowedPositionalArg<'_>>::new();
+    let mut seen_flag_instances = Vec::<(TextRange, Option<ResolvedFlagSchema<'_>>)>::new();
+    let (create_ranges, edit_ranges, query_ranges) =
+        collect_mode_flag_ranges(command, words, source);
+    let active_mode_count = usize::from(!create_ranges.is_empty())
+        + usize::from(!edit_ranges.is_empty())
+        + usize::from(!query_ranges.is_empty());
+    let mode = match active_mode_count {
+        0 => CommandMode::Create,
+        1 if !create_ranges.is_empty() => CommandMode::Create,
+        1 if !edit_ranges.is_empty() => CommandMode::Edit,
+        1 if !query_ranges.is_empty() => CommandMode::Query,
+        _ => {
+            diagnostics.push(Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                message: format!(
+                    "command \"{}\" cannot combine create/edit/query mode flags",
+                    command.name
+                ),
+                range,
+                labels: vec![crate::DiagnosticLabel {
+                    range,
+                    message: format!(
+                        "command \"{}\" cannot combine create/edit/query mode flags",
+                        command.name
+                    ),
+                    is_primary: true,
+                }],
+            });
+            CommandMode::Unknown
+        }
+    };
+    let mut index = 0;
+
+    while index < words.len() {
+        match &words[index] {
+            ShellWord::Flag {
+                text,
+                range: flag_range,
+            } => {
+                let flag_text = source.slice(*text);
+                let Some(schema) = find_flag_schema(command, flag_text) else {
+                    diagnostics.push(Diagnostic {
+                        severity: DiagnosticSeverity::Warning,
+                        message: format!(
+                            "unknown flag \"{flag_text}\" for command \"{}\"",
+                            command.name
+                        ),
+                        range: *flag_range,
+                        labels: vec![crate::DiagnosticLabel {
+                            range: *flag_range,
+                            message: format!(
+                                "unknown flag \"{flag_text}\" for command \"{}\"",
+                                command.name
+                            ),
+                            is_primary: true,
+                        }],
+                    });
+                    seen_flag_instances.push((*flag_range, None));
+                    index += 1;
+                    continue;
+                };
+
+                if !schema.allows_multiple()
+                    && seen_flags
+                        .iter()
+                        .any(|seen_schema| seen_schema.long_name() == schema.long_name())
+                {
+                    diagnostics.push(Diagnostic {
+                        severity: DiagnosticSeverity::Error,
+                        message: format!(
+                            "flag \"-{0}\" cannot be repeated for command \"{1}\"",
+                            schema.long_name(),
+                            command.name
+                        ),
+                        range: *flag_range,
+                        labels: vec![crate::DiagnosticLabel {
+                            range: *flag_range,
+                            message: format!(
+                                "flag \"-{0}\" cannot be repeated for command \"{1}\"",
+                                schema.long_name(),
+                                command.name
+                            ),
+                            is_primary: true,
+                        }],
+                    });
+                } else {
+                    seen_flags.push(schema);
+                }
+
+                let expected_arity = arity_for_mode(schema.arity_by_mode(), mode);
+                let (min_arity, max_arity) = arity_bounds(expected_arity);
+                let mut args = Vec::new();
+                let mut consumed = 0;
+                while consumed < max_arity {
+                    let next_index = index + 1 + consumed;
+                    let Some(next_word) = words.get(next_index) else {
+                        break;
+                    };
+                    if matches!(next_word, ShellWord::Flag { .. }) {
+                        break;
+                    }
+                    args.push(BorrowedPositionalArg {
+                        word: next_word,
+                        range: shell_word_range(next_word),
+                    });
+                    consumed += 1;
+                }
+
+                if args.len() < min_arity {
+                    diagnostics.push(Diagnostic {
+                        severity: if matches!(mode, CommandMode::Query) {
+                            DiagnosticSeverity::Warning
+                        } else {
+                            DiagnosticSeverity::Error
+                        },
+                        message: format!(
+                            "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
+                            schema.long_name(),
+                            format_arity(expected_arity),
+                            command.name
+                        ),
+                        range: *flag_range,
+                        labels: vec![crate::DiagnosticLabel {
+                            range: *flag_range,
+                            message: format!(
+                                "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
+                                schema.long_name(),
+                                format_arity(expected_arity),
+                                command.name
+                            ),
+                            is_primary: true,
+                        }],
+                    });
+                }
+                seen_flag_instances.push((*flag_range, Some(schema)));
+                index += 1 + consumed;
+            }
+            word => {
+                positional_args.push(BorrowedPositionalArg {
+                    word,
+                    range: shell_word_range(word),
+                });
+                index += 1;
+            }
+        }
+    }
+
+    if !mode_allows(command.mode_mask, mode) {
+        diagnostics.push(Diagnostic {
+            severity: if matches!(mode, CommandMode::Query) {
+                DiagnosticSeverity::Warning
+            } else {
+                DiagnosticSeverity::Error
+            },
+            message: format!(
+                "command \"{}\" is not available in {} mode",
+                command.name,
+                mode_label(mode)
+            ),
+            range,
+            labels: vec![crate::DiagnosticLabel {
+                range,
+                message: format!(
+                    "command \"{}\" is not available in {} mode",
+                    command.name,
+                    mode_label(mode)
+                ),
+                is_primary: true,
+            }],
+        });
+    }
+
+    for (flag_range, schema) in seen_flag_instances {
+        let Some(schema) = schema else {
+            continue;
+        };
+        if !mode_allows(schema.mode_mask(), mode) {
+            diagnostics.push(Diagnostic {
+                severity: if matches!(mode, CommandMode::Query) {
+                    DiagnosticSeverity::Warning
+                } else {
+                    DiagnosticSeverity::Error
+                },
+                message: format!(
+                    "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
+                    schema.long_name(),
+                    mode_label(mode),
+                    command.name
+                ),
+                range: flag_range,
+                labels: vec![crate::DiagnosticLabel {
+                    range: flag_range,
+                    message: format!(
+                        "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
+                        schema.long_name(),
+                        mode_label(mode),
+                        command.name
+                    ),
+                    is_primary: true,
+                }],
+            });
+        }
+    }
+
+    let positional_args = positional_args.iter().collect::<Vec<_>>();
+    validate_positionals(
+        command,
+        &command.positionals,
+        &positional_args,
+        range,
+        &mut diagnostics,
+        source,
+    );
+
+    diagnostics
+}
+
+fn find_flag_schema<'a>(command: &'a CommandSchema, text: &str) -> Option<ResolvedFlagSchema<'a>> {
     let normalized = text.strip_prefix('-').unwrap_or(text);
     command
         .flags
@@ -318,35 +606,44 @@ fn find_flag_schema(command: &CommandSchema, text: &str) -> Option<crate::FlagSc
                     .as_deref()
                     .is_some_and(|short| short == normalized)
         })
-        .cloned()
+        .map(ResolvedFlagSchema::Borrowed)
         .or_else(|| synthetic_mode_flag_for_name(command, normalized))
 }
 
-fn find_flag_schema_by_canonical_name(
-    command: &CommandSchema,
+fn find_flag_schema_by_canonical_name<'a>(
+    command: &'a CommandSchema,
     canonical_name: &str,
-) -> Option<crate::FlagSchema> {
+) -> Option<ResolvedFlagSchema<'a>> {
     command
         .flags
         .iter()
         .find(|flag| flag.long_name == canonical_name)
-        .cloned()
+        .map(ResolvedFlagSchema::Borrowed)
         .or_else(|| synthetic_mode_flag_for_name(command, canonical_name))
 }
 
-fn synthetic_mode_flag_for_name(command: &CommandSchema, name: &str) -> Option<crate::FlagSchema> {
+fn synthetic_mode_flag_for_name(
+    command: &CommandSchema,
+    name: &str,
+) -> Option<ResolvedFlagSchema<'static>> {
     match name {
-        "create" | "c" if command.mode_mask.create => Some(synthetic_mode_flag("create", "c")),
-        "edit" | "e" if command.mode_mask.edit => Some(synthetic_mode_flag("edit", "e")),
-        "query" | "q" if command.mode_mask.query => Some(synthetic_mode_flag("query", "q")),
+        "create" | "c" if command.mode_mask.create => Some(ResolvedFlagSchema::Synthetic(
+            synthetic_mode_flag("create", "c"),
+        )),
+        "edit" | "e" if command.mode_mask.edit => Some(ResolvedFlagSchema::Synthetic(
+            synthetic_mode_flag("edit", "e"),
+        )),
+        "query" | "q" if command.mode_mask.query => Some(ResolvedFlagSchema::Synthetic(
+            synthetic_mode_flag("query", "q"),
+        )),
         _ => None,
     }
 }
 
-fn synthetic_mode_flag(long_name: &str, short_name: &str) -> crate::FlagSchema {
-    crate::FlagSchema {
-        long_name: long_name.to_owned(),
-        short_name: Some(short_name.to_owned()),
+fn synthetic_mode_flag(long_name: &'static str, short_name: &'static str) -> SyntheticFlagSchema {
+    let _ = short_name;
+    SyntheticFlagSchema {
+        long_name,
         mode_mask: CommandModeMask {
             create: true,
             edit: true,
@@ -357,7 +654,6 @@ fn synthetic_mode_flag(long_name: &str, short_name: &str) -> crate::FlagSchema {
             edit: FlagArity::None,
             query: FlagArity::None,
         },
-        value_shapes: Vec::new(),
         allows_multiple: false,
     }
 }
@@ -378,7 +674,7 @@ fn collect_mode_flag_ranges(
         let Some(schema) = find_flag_schema(command, source.slice(*text)) else {
             continue;
         };
-        match schema.long_name.as_str() {
+        match schema.long_name() {
             "create" => create_ranges.push(*range),
             "edit" => edit_ranges.push(*range),
             "query" => query_ranges.push(*range),
@@ -420,7 +716,7 @@ fn format_arity(arity: FlagArity) -> String {
 fn validate_positionals(
     command: &CommandSchema,
     schema: &PositionalSchema,
-    positional_args: &[&PositionalArg],
+    positional_args: &[&BorrowedPositionalArg<'_>],
     command_range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
     source: SourceView<'_>,
@@ -472,7 +768,7 @@ fn validate_positionals(
     for (index, slot) in schema.prefix.iter().enumerate() {
         if let Some(actual_shape) = positional_args
             .get(index)
-            .and_then(|arg| inferred_value_shape(&arg.word, source))
+            .and_then(|arg| inferred_value_shape(arg.word, source))
         {
             validate_positional_shape(
                 command,
@@ -533,7 +829,7 @@ fn validate_positionals(
                 diagnostics,
             );
             for (tail_index, arg) in tail_args.iter().enumerate() {
-                let Some(actual_shape) = inferred_value_shape(&arg.word, source) else {
+                let Some(actual_shape) = inferred_value_shape(arg.word, source) else {
                     continue;
                 };
                 validate_positional_shape(

@@ -369,17 +369,25 @@ where
                 let resolved =
                     self.resolve_named_target_range(*head_range, invoke.range, current_scope);
                 if let ResolvedInvokeTarget::Command(ref command) = resolved {
-                    let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
-                        command,
-                        current_scope,
-                        *head_range,
-                        words,
-                        invoke.range,
-                        self.source,
-                    );
-                    self.diagnostics.extend(diagnostics);
                     if self.collect_artifacts {
+                        let (normalized, diagnostics) = command_norm::normalize_shell_like_invoke(
+                            command,
+                            current_scope,
+                            *head_range,
+                            words,
+                            invoke.range,
+                            self.source,
+                        );
+                        self.diagnostics.extend(diagnostics);
                         self.normalized_invokes.push(normalized);
+                    } else {
+                        self.diagnostics
+                            .extend(command_norm::collect_command_diagnostics(
+                                command,
+                                words,
+                                invoke.range,
+                                self.source,
+                            ));
                     }
                 }
                 resolved.into_callee_resolution()

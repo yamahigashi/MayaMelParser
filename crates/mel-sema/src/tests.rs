@@ -3353,27 +3353,65 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
             expr: Expr::Invoke(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
-                    head_range: tr("addAttr"),
-                    words: Vec::new(),
+                    head_range: tr("frameLayout"),
+                    words: vec![
+                        ShellWord::Flag {
+                            text: tr("-query"),
+                            range: text_range(12, 18),
+                        },
+                        ShellWord::Flag {
+                            text: tr("-label"),
+                            range: text_range(19, 25),
+                        },
+                    ],
                     captured: false,
                 },
-                range: text_range(0, 7),
+                range: text_range(0, 25),
             }),
-            range: text_range(0, 8),
+            range: text_range(0, 26),
         }))],
     };
     let registry = TestRegistry {
         commands: vec![CommandSchema {
-            name: "addAttr".to_owned(),
+            name: "frameLayout".to_owned(),
             kind: CommandKind::Builtin,
             source_kind: CommandSourceKind::Command,
             mode_mask: CommandModeMask {
                 create: true,
-                edit: true,
+                edit: false,
                 query: true,
             },
             return_behavior: ReturnBehavior::Unknown,
-            flags: Vec::new(),
+            flags: vec![
+                FlagSchema {
+                    mode_mask: CommandModeMask {
+                        create: true,
+                        edit: false,
+                        query: true,
+                    },
+                    arity_by_mode: FlagArityByMode {
+                        create: FlagArity::None,
+                        edit: FlagArity::None,
+                        query: FlagArity::None,
+                    },
+                    value_shapes: Vec::new(),
+                    ..flag_schema("query", Some("q"), FlagArity::None)
+                },
+                FlagSchema {
+                    mode_mask: CommandModeMask {
+                        create: true,
+                        edit: false,
+                        query: false,
+                    },
+                    arity_by_mode: FlagArityByMode {
+                        create: FlagArity::Exact(1),
+                        edit: FlagArity::None,
+                        query: FlagArity::None,
+                    },
+                    value_shapes: vec![ValueShape::String],
+                    ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+                },
+            ],
             positionals: PositionalSchema {
                 prefix: &[EXPLICIT_STRING_SLOT],
                 tail: PositionalTailSchema::None,
@@ -3387,5 +3425,6 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
     let full = analyze_with_registry(&source, source_view, &registry);
     let diagnostics_only = analyze_diagnostics_with_registry(&source, source_view, &registry);
 
+    assert_eq!(full.normalized_invokes.len(), 1);
     assert_eq!(diagnostics_only, full.diagnostics);
 }
