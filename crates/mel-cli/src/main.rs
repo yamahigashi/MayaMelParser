@@ -4,6 +4,7 @@ use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 use clap::{CommandFactory, Parser, ValueEnum};
 use std::{
     collections::HashMap,
+    fmt::Write as FmtWrite,
     fs, io,
     io::IsTerminal,
     io::Write,
@@ -348,7 +349,20 @@ fn print_parse_summary(label: &str, parse: &Parse) {
 }
 
 fn format_parse_summary(label: &str, parse: &Parse, counts: DiagnosticCounts) -> String {
-    format!(
+    let mut output = String::new();
+    append_parse_summary(&mut output, label, parse, counts)
+        .expect("formatting parse summary should not fail");
+    output
+}
+
+fn append_parse_summary(
+    output: &mut String,
+    label: &str,
+    parse: &Parse,
+    counts: DiagnosticCounts,
+) -> std::fmt::Result {
+    write!(
+        output,
         "source: {label}\nencoding: {}\nitems: {}\ndecode diagnostics: {}\nlexical diagnostics: {}\nparse errors: {}\nsemantic diagnostics: {}\n",
         parse.source_encoding.label(),
         parse.syntax.items.len(),
@@ -394,8 +408,10 @@ fn write_single_file_output(
 ) -> io::Result<()> {
     let sema_diagnostics = filtered_sema_diagnostics(parse, diagnostic_level);
     let counts = parse_diagnostic_counts(parse, diagnostic_level, &sema_diagnostics);
-    writer.write_all(format_parse_summary(label, parse, counts).as_bytes())?;
-    write_compact_parse_diagnostics(&mut writer, parse, diagnostic_level, &sema_diagnostics)
+    let mut output = String::new();
+    append_parse_summary(&mut output, label, parse, counts).expect("summary append");
+    append_compact_parse_diagnostics(&mut output, parse, diagnostic_level, &sema_diagnostics);
+    writer.write_all(output.as_bytes())
 }
 
 #[cfg(test)]
@@ -415,19 +431,8 @@ fn format_light_single_file_output_with_style(
 ) -> io::Result<String> {
     let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
     let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
-    let mut output = format!(
-        "source: {label}\nmode: lightweight\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
-        parse.source_encoding.label(),
-        summary.items,
-        summary.command_items,
-        summary.proc_items,
-        summary.other_items,
-        summary.opaque_tail_commands,
-        summary.specialized_set_attr,
-        summary.set_attr_with_opaque_tail,
-        summary.decode_errors,
-        summary.light_parse_errors,
-    );
+    let mut output = String::new();
+    append_light_summary(&mut output, label, parse, &summary).expect("light summary append");
     output.push_str(&render_file_diagnostics(
         label,
         parse.source_text.as_str(),
@@ -446,8 +451,25 @@ fn write_light_single_file_output(
 ) -> io::Result<()> {
     let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
     let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
+    let mut output = String::new();
+    append_light_summary(&mut output, label, parse, &summary).expect("light summary append");
+    append_compact_file_diagnostics(
+        &mut output,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        &diagnostics,
+    );
+    writer.write_all(output.as_bytes())
+}
+
+fn append_light_summary(
+    output: &mut String,
+    label: &str,
+    parse: &LightParse,
+    summary: &LightFileSummary,
+) -> std::fmt::Result {
     write!(
-        writer,
+        output,
         "source: {label}\nmode: lightweight\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
         parse.source_encoding.label(),
         summary.items,
@@ -459,12 +481,6 @@ fn write_light_single_file_output(
         summary.set_attr_with_opaque_tail,
         summary.decode_errors,
         summary.light_parse_errors,
-    )?;
-    write_compact_file_diagnostics(
-        &mut writer,
-        parse.source_text.as_str(),
-        &parse.source_map,
-        &diagnostics,
     )
 }
 
@@ -484,6 +500,13 @@ struct FileDiagnosticLabel {
 }
 
 type IsolatedDiagnosticSpan<'a> = (std::ops::Range<usize>, &'a str, bool);
+
+#[derive(Clone, Copy)]
+struct BorrowedDiagnosticLabel<'a> {
+    range: TextRange,
+    message: &'a str,
+    is_primary: bool,
+}
 
 struct CompactDiagnosticContext<'a> {
     source_text: &'a str,
@@ -511,55 +534,68 @@ fn render_file_diagnostics(
     }
 
     let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
+    let display_line_starts = compute_display_line_starts(display_text.as_str());
     let mut rendered = Vec::new();
+    let mut display_labels = Vec::new();
+    let mut isolated_input = Vec::new();
+    let mut isolated_labels = Vec::new();
+    let mut isolated_text = String::new();
+    let mut report_message = String::new();
     for diagnostic in diagnostics {
-        let display_labels: Vec<FileDiagnosticLabel> = diagnostic
-            .labels
-            .iter()
-            .map(|label| {
-                let source_span = source_map.display_range(label.range);
-                let range = display_map
-                    .display_range(text_range(source_span.start as u32, source_span.end as u32));
-                FileDiagnosticLabel {
-                    range: text_range(range.start as u32, range.end as u32),
-                    message: label.message.clone(),
-                    is_primary: label.is_primary,
-                }
-            })
-            .collect();
-        let isolated_input: Vec<_> = display_labels
-            .iter()
-            .map(|label| {
-                (
-                    range_start(label.range) as usize..range_end(label.range) as usize,
-                    label.message.as_ref(),
-                    label.is_primary,
-                )
-            })
-            .collect();
-        let (isolated_text, isolated_labels) =
-            isolate_diagnostic_source_lines(display_text.as_str(), &isolated_input);
+        display_labels.clear();
+        isolated_input.clear();
+        isolated_labels.clear();
+        isolated_text.clear();
+
+        for label in &diagnostic.labels {
+            let source_span = source_map.display_range(label.range);
+            let range = display_map
+                .display_range(text_range(source_span.start as u32, source_span.end as u32));
+            let mapped = BorrowedDiagnosticLabel {
+                range: text_range(range.start as u32, range.end as u32),
+                message: label.message.as_ref(),
+                is_primary: label.is_primary,
+            };
+            display_labels.push(mapped);
+            isolated_input.push((
+                range_start(mapped.range) as usize..range_end(mapped.range) as usize,
+                mapped.message,
+                mapped.is_primary,
+            ));
+        }
+
+        isolate_diagnostic_source_lines_into(
+            display_text.as_str(),
+            &display_line_starts,
+            &isolated_input,
+            &mut isolated_text,
+            &mut isolated_labels,
+        );
         let primary_range = isolated_labels
             .iter()
             .find(|(_, _, is_primary)| *is_primary)
             .map(|(range, _, _)| range.clone())
             .unwrap_or_else(|| isolated_labels[0].0.clone());
+        report_message.clear();
+        write!(
+            &mut report_message,
+            "{}: {}",
+            diagnostic.stage,
+            diagnostic.message.as_ref()
+        )
+        .expect("diagnostic message append");
         let mut report = Report::build(report_kind(diagnostic.severity), (label, primary_range))
             .with_config(Config::default().with_tab_width(DIAGNOSTIC_TAB_WIDTH))
-            .with_message(format!(
-                "{}: {}",
-                diagnostic.stage,
-                diagnostic.message.as_ref()
-            ));
-        for (range, message, is_primary) in isolated_labels {
-            let color = if is_primary {
+            .with_message(std::mem::take(&mut report_message));
+        for (range, message, is_primary) in &isolated_labels {
+            let color = if *is_primary {
                 stage_color(diagnostic.stage, diagnostic.severity)
             } else {
                 Color::Cyan
             };
             report = report.with_label(
-                Label::new((label, range))
-                    .with_message(message)
+                Label::new((label, range.clone()))
+                    .with_message(*message)
                     .with_color(color),
             );
         }
@@ -577,18 +613,21 @@ fn render_compact_file_diagnostics(
     source_map: &SourceMap,
     diagnostics: &[FileDiagnostic],
 ) -> String {
-    let mut rendered = Vec::new();
-    write_compact_file_diagnostics(&mut rendered, source_text, source_map, diagnostics)
-        .expect("in-memory rendering should not fail");
-    String::from_utf8(rendered).expect("compact diagnostics should remain utf-8")
+    let mut rendered = String::new();
+    append_compact_file_diagnostics(&mut rendered, source_text, source_map, diagnostics);
+    rendered
 }
 
-fn write_compact_file_diagnostics(
-    mut writer: impl Write,
+fn append_compact_file_diagnostics(
+    output: &mut String,
     source_text: &str,
     source_map: &SourceMap,
     diagnostics: &[FileDiagnostic],
-) -> io::Result<()> {
+) {
+    if diagnostics.is_empty() {
+        return;
+    }
+
     let line_starts = compute_normalized_line_starts(source_text);
 
     for diagnostic in diagnostics {
@@ -606,29 +645,29 @@ fn write_compact_file_diagnostics(
             DiagnosticSeverity::Warning => "Warning",
         };
         write!(
-            writer,
+            output,
             "{severity}: {}: {}",
             diagnostic.stage,
             diagnostic.message.as_ref()
-        )?;
+        )
+        .expect("compact diagnostic append");
         if let Some(offset) = primary_range {
             let (line, column) = normalized_line_col_for_offset(source_text, &line_starts, offset);
-            write!(writer, " @ {}:{}", line + 1, column + 1)?;
+            write!(output, " @ {}:{}", line + 1, column + 1)
+                .expect("compact diagnostic location append");
         }
-        writer.write_all(b"\n")?;
+        output.push('\n');
     }
-
-    Ok(())
 }
 
-fn write_compact_parse_diagnostics(
-    mut writer: impl Write,
+fn append_compact_parse_diagnostics(
+    output: &mut String,
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
     sema_diagnostics: &[mel_sema::Diagnostic],
-) -> io::Result<()> {
+) {
     if matches!(diagnostic_level, CliDiagnosticLevel::None) {
-        return Ok(());
+        return;
     }
 
     let line_starts = compute_normalized_line_starts(parse.source_text.as_str());
@@ -639,33 +678,33 @@ fn write_compact_parse_diagnostics(
     };
     for diagnostic in &parse.decode_errors {
         write_compact_diagnostic_line(
-            &mut writer,
+            output,
             "decode",
             DiagnosticSeverity::Error,
             diagnostic.message.as_str(),
             Some(diagnostic.range),
             &context,
-        )?;
+        );
     }
     for diagnostic in &parse.lex_errors {
         write_compact_diagnostic_line(
-            &mut writer,
+            output,
             "lex",
             DiagnosticSeverity::Error,
             diagnostic.message.as_str(),
             Some(diagnostic.range),
             &context,
-        )?;
+        );
     }
     for diagnostic in &parse.errors {
         write_compact_diagnostic_line(
-            &mut writer,
+            output,
             "parse",
             DiagnosticSeverity::Error,
             diagnostic.message.as_str(),
             Some(diagnostic.range),
             &context,
-        )?;
+        );
     }
     for diagnostic in sema_diagnostics {
         let primary_range = diagnostic
@@ -675,31 +714,29 @@ fn write_compact_parse_diagnostics(
             .or_else(|| diagnostic.labels.first())
             .map(|label| label.range);
         write_compact_diagnostic_line(
-            &mut writer,
+            output,
             "sema",
             diagnostic.severity,
             diagnostic.message.as_ref(),
             primary_range,
             &context,
-        )?;
+        );
     }
-
-    Ok(())
 }
 
 fn write_compact_diagnostic_line(
-    mut writer: impl Write,
+    output: &mut String,
     stage: &str,
     severity: DiagnosticSeverity,
     message: &str,
     range: Option<TextRange>,
     context: &CompactDiagnosticContext<'_>,
-) -> io::Result<()> {
+) {
     let severity = match severity {
         DiagnosticSeverity::Error => "Error",
         DiagnosticSeverity::Warning => "Warning",
     };
-    write!(writer, "{severity}: {stage}: {message}")?;
+    write!(output, "{severity}: {stage}: {message}").expect("compact diagnostic append");
     if let Some(range) = range {
         let source_span = context.source_map.display_range(range);
         let (line, column) = normalized_line_col_for_offset(
@@ -707,9 +744,10 @@ fn write_compact_diagnostic_line(
             context.line_starts,
             source_span.start,
         );
-        write!(writer, " @ {}:{}", line + 1, column + 1)?;
+        write!(output, " @ {}:{}", line + 1, column + 1)
+            .expect("compact diagnostic location append");
     }
-    writer.write_all(b"\n")
+    output.push('\n');
 }
 
 fn compute_normalized_line_starts(source_text: &str) -> Vec<usize> {
@@ -812,10 +850,24 @@ fn normalize_diagnostic_source_text(source_text: &str) -> (String, SourceMap) {
     )
 }
 
-fn isolate_diagnostic_source_lines<'a>(
+fn compute_display_line_starts(source_text: &str) -> Vec<usize> {
+    let bytes = source_text.as_bytes();
+    let mut starts = vec![0];
+    for (offset, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            starts.push(offset + 1);
+        }
+    }
+    starts
+}
+
+fn isolate_diagnostic_source_lines_into<'a>(
     source_text: &str,
+    line_starts: &[usize],
     spans: &[IsolatedDiagnosticSpan<'a>],
-) -> (String, Vec<IsolatedDiagnosticSpan<'a>>) {
+    isolated: &mut String,
+    isolated_spans: &mut Vec<IsolatedDiagnosticSpan<'a>>,
+) {
     let line_start = spans
         .iter()
         .map(|(span, _, _)| {
@@ -834,24 +886,25 @@ fn isolate_diagnostic_source_lines<'a>(
         })
         .max()
         .unwrap_or(source_text.len());
-    let preceding_lines = source_text[..line_start]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count();
-    let mut isolated = "\n".repeat(preceding_lines);
+    let preceding_lines = match line_starts.binary_search(&line_start) {
+        Ok(index) => index,
+        Err(next_index) => next_index.saturating_sub(1),
+    };
+    isolated.clear();
+    isolated.reserve(preceding_lines + (line_end - line_start));
+    for _ in 0..preceding_lines {
+        isolated.push('\n');
+    }
     isolated.push_str(&source_text[line_start..line_end]);
     let prefix_len = preceding_lines;
-    let isolated_spans = spans
-        .iter()
-        .map(|(span, message, is_primary)| {
-            (
-                (prefix_len + span.start - line_start)..(prefix_len + span.end - line_start),
-                *message,
-                *is_primary,
-            )
-        })
-        .collect();
-    (isolated, isolated_spans)
+    isolated_spans.clear();
+    isolated_spans.extend(spans.iter().map(|(span, message, is_primary)| {
+        (
+            (prefix_len + span.start - line_start)..(prefix_len + span.end - line_start),
+            *message,
+            *is_primary,
+        )
+    }));
 }
 
 fn collect_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<FileDiagnostic> {
@@ -1339,6 +1392,12 @@ mod tests {
     }
 
     #[test]
+    fn compute_display_line_starts_tracks_normalized_lines() {
+        let starts = super::compute_display_line_starts("first\nsecond\nthird");
+        assert_eq!(starts, vec![0, 6, 13]);
+    }
+
+    #[test]
     fn normalized_line_col_matches_compact_display_rules() {
         let source = "a\t\r\nbc\r\ndef\n";
         let starts = super::compute_normalized_line_starts(source);
@@ -1572,6 +1631,28 @@ mod tests {
         assert!(output.contains("parse errors: 3"));
         assert!(output.contains("Error: parse: expected expression as function argument"));
         assert!(output.contains("@ 2:1"));
+    }
+
+    #[test]
+    fn write_single_file_output_matches_compact_formatter() {
+        let parse = parse_source("addAttr;\n");
+        let expected = format_single_file_output_with_style(
+            "sema-fixture",
+            &parse,
+            CliDiagnosticLevel::Error,
+            false,
+        )
+        .expect("compact output");
+        let mut actual = Vec::new();
+        super::write_single_file_output(
+            &mut actual,
+            "sema-fixture",
+            &parse,
+            CliDiagnosticLevel::Error,
+        )
+        .expect("write output");
+        let actual = String::from_utf8(actual).expect("writer output should stay utf8");
+        assert_eq!(actual, expected);
     }
 
     #[test]
