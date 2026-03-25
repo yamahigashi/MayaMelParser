@@ -20,7 +20,10 @@ use mel_parser::{
     parse_file_with_encoding, parse_light_file, parse_light_file_with_encoding,
     parse_source_with_options,
 };
-use mel_sema::{DiagnosticLabel, DiagnosticSeverity, analyze_diagnostics_with_registry};
+use mel_sema::{
+    DiagnosticFilter, DiagnosticLabel, DiagnosticSeverity, analyze_diagnostics_with_registry,
+    analyze_diagnostics_with_registry_filtered,
+};
 use mel_syntax::{SourceMap, TextRange, range_end, range_start, text_range};
 
 const TOP_RANK_LIMIT: usize = 10;
@@ -760,7 +763,7 @@ fn isolate_diagnostic_source_lines<'a>(
     (isolated, isolated_spans)
 }
 
-fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
+fn collect_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<FileDiagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "decode",
@@ -793,7 +796,7 @@ fn collect_diagnostics(parse: &Parse) -> Vec<FileDiagnostic> {
         }],
     }));
     diagnostics.extend(
-        analyze_parse_diagnostics(parse)
+        analyze_parse_diagnostics(parse, filter)
             .into_iter()
             .map(|diagnostic| FileDiagnostic {
                 stage: "sema",
@@ -838,14 +841,24 @@ fn filtered_parse_diagnostics(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
 ) -> Vec<FileDiagnostic> {
-    filter_diagnostics(collect_diagnostics(parse), diagnostic_level)
+    match diagnostic_level {
+        CliDiagnosticLevel::All => collect_diagnostics(parse, DiagnosticFilter::All),
+        CliDiagnosticLevel::Error => filter_diagnostics(
+            collect_diagnostics(parse, DiagnosticFilter::ErrorsOnly),
+            diagnostic_level,
+        ),
+        CliDiagnosticLevel::None => Vec::new(),
+    }
 }
 
 fn filtered_light_diagnostics(
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
 ) -> Vec<FileDiagnostic> {
-    filter_diagnostics(collect_light_diagnostics(parse), diagnostic_level)
+    match diagnostic_level {
+        CliDiagnosticLevel::None => Vec::new(),
+        _ => filter_diagnostics(collect_light_diagnostics(parse), diagnostic_level),
+    }
 }
 
 fn filter_diagnostics(
@@ -894,12 +907,20 @@ fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel {
     }
 }
 
-fn analyze_parse_diagnostics(parse: &Parse) -> Vec<mel_sema::Diagnostic> {
-    analyze_diagnostics_with_registry(
-        &parse.syntax,
-        parse.source_view(),
-        &MayaCommandRegistry::new(),
-    )
+fn analyze_parse_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<mel_sema::Diagnostic> {
+    match filter {
+        DiagnosticFilter::All => analyze_diagnostics_with_registry(
+            &parse.syntax,
+            parse.source_view(),
+            &MayaCommandRegistry::new(),
+        ),
+        DiagnosticFilter::ErrorsOnly => analyze_diagnostics_with_registry_filtered(
+            &parse.syntax,
+            parse.source_view(),
+            &MayaCommandRegistry::new(),
+            DiagnosticFilter::ErrorsOnly,
+        ),
+    }
 }
 
 fn summarize_parse_file(

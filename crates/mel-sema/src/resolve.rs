@@ -27,6 +27,7 @@ pub(crate) struct Analyzer<'a, R: ?Sized> {
     source: SourceView<'a>,
     registry: &'a R,
     collect_artifacts: bool,
+    include_warnings: bool,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) invoke_resolutions: Vec<InvokeResolution>,
     pub(crate) ident_resolutions: Vec<IdentResolution>,
@@ -85,12 +86,14 @@ where
         source: SourceView<'a>,
         registry: &'a R,
         collect_artifacts: bool,
+        filter: DiagnosticFilter,
     ) -> Self {
         Self {
             collected,
             source,
             registry,
             collect_artifacts,
+            include_warnings: matches!(filter, DiagnosticFilter::All),
             diagnostics: Vec::new(),
             invoke_resolutions: Vec::new(),
             ident_resolutions: Vec::new(),
@@ -100,6 +103,13 @@ where
             implicit_variables_by_scope: HashMap::new(),
             proc_contexts: Vec::new(),
         }
+    }
+
+    fn push_diagnostic(&mut self, diagnostic: Diagnostic) {
+        if diagnostic.severity == DiagnosticSeverity::Warning && !self.include_warnings {
+            return;
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     pub(crate) fn walk_item(&mut self, item: &Item, current_scope: ScopeId) {
@@ -299,7 +309,7 @@ where
                     && !is_boolean_alias(name)
                     && !self.is_visible_implicit_variable(name, current_scope)
                 {
-                    self.diagnostics.push(Diagnostic::warning(
+                    self.push_diagnostic(Diagnostic::warning(
                         format!("unresolved variable \"{name}\""),
                         *range,
                     ));
@@ -327,7 +337,7 @@ where
                     && matches!(resolution, IdentTarget::Unresolved)
                     && !self.is_visible_implicit_variable(name, current_scope)
                 {
-                    self.diagnostics.push(Diagnostic::warning(
+                    self.push_diagnostic(Diagnostic::warning(
                         format!("unresolved variable \"{name}\""),
                         *range,
                     ));
@@ -395,6 +405,7 @@ where
                                 words,
                                 invoke.range,
                                 self.source,
+                                self.include_warnings,
                             ));
                     }
                 }
@@ -627,7 +638,7 @@ where
                     } else {
                         Diagnostic::error(message, range)
                     };
-                    self.diagnostics.push(diagnostic);
+                    self.push_diagnostic(diagnostic);
                 }
             }
             (Some(_), None) | (None, None) => {}
@@ -671,7 +682,7 @@ where
             } else {
                 Diagnostic::error(message, initializer.range())
             };
-            self.diagnostics.push(diagnostic);
+            self.push_diagnostic(diagnostic);
         }
     }
 

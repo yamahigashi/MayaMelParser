@@ -110,6 +110,19 @@ fn push_primary_diagnostic(
     range: TextRange,
     message: impl Into<Arc<str>>,
 ) {
+    push_primary_diagnostic_filtered(diagnostics, severity, range, message, true);
+}
+
+fn push_primary_diagnostic_filtered(
+    diagnostics: &mut Vec<Diagnostic>,
+    severity: DiagnosticSeverity,
+    range: TextRange,
+    message: impl Into<Arc<str>>,
+    include_warnings: bool,
+) {
+    if severity == DiagnosticSeverity::Warning && !include_warnings {
+        return;
+    }
     let message = message.into();
     diagnostics.push(Diagnostic {
         severity,
@@ -412,6 +425,7 @@ pub(crate) fn collect_command_diagnostics(
     words: &[ShellWord],
     range: TextRange,
     source: SourceView<'_>,
+    include_warnings: bool,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut seen_flags = Vec::<ResolvedFlagSchema<'_>>::new();
@@ -428,24 +442,15 @@ pub(crate) fn collect_command_diagnostics(
         1 if !edit_ranges.is_empty() => CommandMode::Edit,
         1 if !query_ranges.is_empty() => CommandMode::Query,
         _ => {
-            diagnostics.push(Diagnostic {
-                severity: DiagnosticSeverity::Error,
-                message: format!(
+            push_primary_diagnostic(
+                &mut diagnostics,
+                DiagnosticSeverity::Error,
+                range,
+                format!(
                     "command \"{}\" cannot combine create/edit/query mode flags",
                     command.name
-                )
-                .into(),
-                range,
-                labels: vec![crate::DiagnosticLabel {
-                    range,
-                    message: format!(
-                        "command \"{}\" cannot combine create/edit/query mode flags",
-                        command.name
-                    )
-                    .into(),
-                    is_primary: true,
-                }],
-            });
+                ),
+            );
             CommandMode::Unknown
         }
     };
@@ -459,24 +464,16 @@ pub(crate) fn collect_command_diagnostics(
             } => {
                 let flag_text = source.slice(*text);
                 let Some(schema) = find_flag_schema(command, flag_text) else {
-                    diagnostics.push(Diagnostic {
-                        severity: DiagnosticSeverity::Warning,
-                        message: format!(
+                    push_primary_diagnostic_filtered(
+                        &mut diagnostics,
+                        DiagnosticSeverity::Warning,
+                        *flag_range,
+                        format!(
                             "unknown flag \"{flag_text}\" for command \"{}\"",
                             command.name
-                        )
-                        .into(),
-                        range: *flag_range,
-                        labels: vec![crate::DiagnosticLabel {
-                            range: *flag_range,
-                            message: format!(
-                                "unknown flag \"{flag_text}\" for command \"{}\"",
-                                command.name
-                            )
-                            .into(),
-                            is_primary: true,
-                        }],
-                    });
+                        ),
+                        include_warnings,
+                    );
                     seen_flag_instances.push((*flag_range, None));
                     index += 1;
                     continue;
@@ -487,26 +484,16 @@ pub(crate) fn collect_command_diagnostics(
                         .iter()
                         .any(|seen_schema| seen_schema.long_name() == schema.long_name())
                 {
-                    diagnostics.push(Diagnostic {
-                        severity: DiagnosticSeverity::Error,
-                        message: format!(
+                    push_primary_diagnostic(
+                        &mut diagnostics,
+                        DiagnosticSeverity::Error,
+                        *flag_range,
+                        format!(
                             "flag \"-{0}\" cannot be repeated for command \"{1}\"",
                             schema.long_name(),
                             command.name
-                        )
-                        .into(),
-                        range: *flag_range,
-                        labels: vec![crate::DiagnosticLabel {
-                            range: *flag_range,
-                            message: format!(
-                                "flag \"-{0}\" cannot be repeated for command \"{1}\"",
-                                schema.long_name(),
-                                command.name
-                            )
-                            .into(),
-                            is_primary: true,
-                        }],
-                    });
+                        ),
+                    );
                 } else {
                     seen_flags.push(schema);
                 }
@@ -531,32 +518,22 @@ pub(crate) fn collect_command_diagnostics(
                 }
 
                 if args.len() < min_arity {
-                    diagnostics.push(Diagnostic {
-                        severity: if matches!(mode, CommandMode::Query) {
+                    push_primary_diagnostic_filtered(
+                        &mut diagnostics,
+                        if matches!(mode, CommandMode::Query) {
                             DiagnosticSeverity::Warning
                         } else {
                             DiagnosticSeverity::Error
                         },
-                        message: format!(
+                        *flag_range,
+                        format!(
                             "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
                             schema.long_name(),
                             format_arity(expected_arity),
                             command.name
-                        )
-                        .into(),
-                        range: *flag_range,
-                        labels: vec![crate::DiagnosticLabel {
-                            range: *flag_range,
-                            message: format!(
-                                "flag \"-{0}\" expects {1} argument(s) for command \"{2}\"",
-                                schema.long_name(),
-                                format_arity(expected_arity),
-                                command.name
-                            )
-                            .into(),
-                            is_primary: true,
-                        }],
-                    });
+                        ),
+                        include_warnings,
+                    );
                 }
                 seen_flag_instances.push((*flag_range, Some(schema)));
                 index += 1 + consumed;
@@ -572,30 +549,21 @@ pub(crate) fn collect_command_diagnostics(
     }
 
     if !mode_allows(command.mode_mask, mode) {
-        diagnostics.push(Diagnostic {
-            severity: if matches!(mode, CommandMode::Query) {
+        push_primary_diagnostic_filtered(
+            &mut diagnostics,
+            if matches!(mode, CommandMode::Query) {
                 DiagnosticSeverity::Warning
             } else {
                 DiagnosticSeverity::Error
             },
-            message: format!(
+            range,
+            format!(
                 "command \"{}\" is not available in {} mode",
                 command.name,
                 mode_label(mode)
-            )
-            .into(),
-            range,
-            labels: vec![crate::DiagnosticLabel {
-                range,
-                message: format!(
-                    "command \"{}\" is not available in {} mode",
-                    command.name,
-                    mode_label(mode)
-                )
-                .into(),
-                is_primary: true,
-            }],
-        });
+            ),
+            include_warnings,
+        );
     }
 
     for (flag_range, schema) in seen_flag_instances {
@@ -603,32 +571,22 @@ pub(crate) fn collect_command_diagnostics(
             continue;
         };
         if !mode_allows(schema.mode_mask(), mode) {
-            diagnostics.push(Diagnostic {
-                severity: if matches!(mode, CommandMode::Query) {
+            push_primary_diagnostic_filtered(
+                &mut diagnostics,
+                if matches!(mode, CommandMode::Query) {
                     DiagnosticSeverity::Warning
                 } else {
                     DiagnosticSeverity::Error
                 },
-                message: format!(
+                flag_range,
+                format!(
                     "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
                     schema.long_name(),
                     mode_label(mode),
                     command.name
-                )
-                .into(),
-                range: flag_range,
-                labels: vec![crate::DiagnosticLabel {
-                    range: flag_range,
-                    message: format!(
-                        "flag \"-{0}\" is not available in {1} mode for command \"{2}\"",
-                        schema.long_name(),
-                        mode_label(mode),
-                        command.name
-                    )
-                    .into(),
-                    is_primary: true,
-                }],
-            });
+                ),
+                include_warnings,
+            );
         }
     }
 

@@ -33,6 +33,12 @@ pub enum DiagnosticSeverity {
     Warning,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticFilter {
+    All,
+    ErrorsOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
@@ -185,7 +191,13 @@ pub fn analyze_with_registry<R>(
 where
     R: CommandRegistry + ?Sized,
 {
-    analyze_with_registry_mode(syntax, source, registry, AnalysisMode::Full)
+    analyze_with_registry_mode(
+        syntax,
+        source,
+        registry,
+        AnalysisMode::Full,
+        DiagnosticFilter::All,
+    )
 }
 
 #[must_use]
@@ -197,7 +209,27 @@ pub fn analyze_diagnostics_with_registry<R>(
 where
     R: CommandRegistry + ?Sized,
 {
-    analyze_with_registry_mode(syntax, source, registry, AnalysisMode::DiagnosticsOnly).diagnostics
+    analyze_diagnostics_with_registry_filtered(syntax, source, registry, DiagnosticFilter::All)
+}
+
+#[must_use]
+pub fn analyze_diagnostics_with_registry_filtered<R>(
+    syntax: &SourceFile,
+    source: SourceView<'_>,
+    registry: &R,
+    filter: DiagnosticFilter,
+) -> Vec<Diagnostic>
+where
+    R: CommandRegistry + ?Sized,
+{
+    analyze_with_registry_mode(
+        syntax,
+        source,
+        registry,
+        AnalysisMode::DiagnosticsOnly,
+        filter,
+    )
+    .diagnostics
 }
 
 fn analyze_with_registry_mode<R>(
@@ -205,6 +237,7 @@ fn analyze_with_registry_mode<R>(
     source: SourceView<'_>,
     registry: &R,
     mode: AnalysisMode,
+    filter: DiagnosticFilter,
 ) -> Analysis
 where
     R: CommandRegistry + ?Sized,
@@ -215,17 +248,19 @@ where
         source,
         registry,
         matches!(mode, AnalysisMode::Full),
+        filter,
     );
 
     for item in &syntax.items {
         analyzer.walk_item(item, collected.root_scope);
     }
 
-    let mut flow_lint = FlowLintAnalyzer::new(&collected, source);
-    flow_lint.walk_source(syntax);
-
     let mut diagnostics = analyzer.diagnostics;
-    diagnostics.extend(flow_lint.diagnostics);
+    if matches!(filter, DiagnosticFilter::All) {
+        let mut flow_lint = FlowLintAnalyzer::new(&collected, source);
+        flow_lint.walk_source(syntax);
+        diagnostics.extend(flow_lint.diagnostics);
+    }
 
     Analysis {
         diagnostics,

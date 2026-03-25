@@ -1,8 +1,9 @@
 use super::{
     CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    DiagnosticSeverity, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, PositionalSchema,
-    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ResolvedCallee,
-    ReturnBehavior, ValueShape, VariableKind, analyze, analyze_diagnostics_with_registry,
+    DiagnosticFilter, DiagnosticSeverity, EmptyCommandRegistry, FlagArity, FlagArityByMode,
+    FlagSchema, IdentTarget, PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy,
+    PositionalTailSchema, ResolvedCallee, ReturnBehavior, ValueShape, VariableKind, analyze,
+    analyze_diagnostics_with_registry, analyze_diagnostics_with_registry_filtered,
     analyze_with_registry,
 };
 use mel_ast::{
@@ -3433,4 +3434,32 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
 
     assert_eq!(full.normalized_invokes.len(), 1);
     assert_eq!(diagnostics_only, full.diagnostics);
+}
+
+#[test]
+fn diagnostics_error_filter_drops_warning_only_analysis() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Ident {
+                name_range: tr("$missing"),
+                range: text_range(0, 8),
+            },
+            range: text_range(0, 8),
+        }))],
+    };
+    let source_text = take_test_source();
+    let source_map = SourceMap::identity(source_text.len());
+    let source_view = SourceView::new(&source_text, &source_map);
+
+    let all = analyze_diagnostics_with_registry(&source, source_view, &EmptyCommandRegistry);
+    let errors_only = analyze_diagnostics_with_registry_filtered(
+        &source,
+        source_view,
+        &EmptyCommandRegistry,
+        DiagnosticFilter::ErrorsOnly,
+    );
+
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].severity, DiagnosticSeverity::Warning);
+    assert!(errors_only.is_empty());
 }
