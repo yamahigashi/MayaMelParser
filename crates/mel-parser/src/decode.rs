@@ -155,7 +155,8 @@ pub(crate) fn decode_source_with_encoding(
             message: format!(
                 "source is not valid {}; decoded with replacement",
                 encoding.label()
-            ),
+            )
+            .into(),
             range: text_range(0, input.len() as u32),
         }]
     } else {
@@ -228,7 +229,7 @@ fn decode_lossy_utf8_with_error(
         offset_map,
         text: Cow::Owned(text),
         diagnostics: vec![DecodeDiagnostic {
-            message: "source is not valid UTF-8; decoded lossily".to_owned(),
+            message: "source is not valid UTF-8; decoded lossily".into(),
             range: text_range(start, end),
         }],
     }

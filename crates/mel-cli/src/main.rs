@@ -185,28 +185,26 @@ fn print_single_file(
         } else {
             parse_light_file(path)?
         };
-        if fancy_diagnostics {
-            print!(
-                "{}",
-                format_light_single_file_output_with_style(&label, &parse, diagnostic_level, true,)?
-            );
-        } else {
-            write_light_single_file_output(io::stdout().lock(), &label, &parse, diagnostic_level)?;
-        }
+        write_light_single_file_output_with_style(
+            io::stdout().lock(),
+            &label,
+            &parse,
+            diagnostic_level,
+            fancy_diagnostics,
+        )?;
     } else {
         let parse = if let Some(encoding) = encoding {
             parse_file_with_encoding(path, encoding)?
         } else {
             parse_file(path)?
         };
-        if fancy_diagnostics {
-            print!(
-                "{}",
-                format_single_file_output_with_style(&label, &parse, diagnostic_level, true)?
-            );
-        } else {
-            write_single_file_output(io::stdout().lock(), &label, &parse, diagnostic_level)?;
-        }
+        write_single_file_output_with_style(
+            io::stdout().lock(),
+            &label,
+            &parse,
+            diagnostic_level,
+            fancy_diagnostics,
+        )?;
     }
     Ok(())
 }
@@ -382,22 +380,47 @@ fn format_single_file_output(
     format_single_file_output_with_style(label, parse, diagnostic_level, true)
 }
 
+#[cfg(test)]
 fn format_single_file_output_with_style(
     label: &str,
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
     fancy_diagnostics: bool,
 ) -> io::Result<String> {
-    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
-    let mut output = format_parse_summary(label, parse, diagnostic_counts(&diagnostics));
-    output.push_str(&render_file_diagnostics(
+    let mut output = Vec::new();
+    write_single_file_output_with_style(
+        &mut output,
         label,
-        parse.source_text.as_str(),
-        &parse.source_map,
-        &diagnostics,
+        parse,
+        diagnostic_level,
         fancy_diagnostics,
-    )?);
-    Ok(output)
+    )?;
+    String::from_utf8(output).map_err(io::Error::other)
+}
+
+fn write_single_file_output_with_style(
+    mut writer: impl Write,
+    label: &str,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+    fancy_diagnostics: bool,
+) -> io::Result<()> {
+    if fancy_diagnostics {
+        let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
+        let mut output = format_parse_summary(label, parse, diagnostic_counts(&diagnostics));
+        writer.write_all(output.as_bytes())?;
+        output.clear();
+        render_file_diagnostics_into(
+            &mut writer,
+            label,
+            parse.source_text.as_str(),
+            &parse.source_map,
+            &diagnostics,
+            true,
+        )
+    } else {
+        write_single_file_output(writer, label, parse, diagnostic_level)
+    }
 }
 
 fn write_single_file_output(
@@ -423,24 +446,49 @@ fn format_light_single_file_output(
     format_light_single_file_output_with_style(label, parse, diagnostic_level, true)
 }
 
+#[cfg(test)]
 fn format_light_single_file_output_with_style(
     label: &str,
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
     fancy_diagnostics: bool,
 ) -> io::Result<String> {
-    let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
-    let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
-    let mut output = String::new();
-    append_light_summary(&mut output, label, parse, &summary).expect("light summary append");
-    output.push_str(&render_file_diagnostics(
+    let mut output = Vec::new();
+    write_light_single_file_output_with_style(
+        &mut output,
         label,
-        parse.source_text.as_str(),
-        &parse.source_map,
-        &diagnostics,
+        parse,
+        diagnostic_level,
         fancy_diagnostics,
-    )?);
-    Ok(output)
+    )?;
+    String::from_utf8(output).map_err(io::Error::other)
+}
+
+fn write_light_single_file_output_with_style(
+    mut writer: impl Write,
+    label: &str,
+    parse: &LightParse,
+    diagnostic_level: CliDiagnosticLevel,
+    fancy_diagnostics: bool,
+) -> io::Result<()> {
+    if fancy_diagnostics {
+        let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
+        let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
+        let mut output = String::new();
+        append_light_summary(&mut output, label, parse, &summary).expect("light summary append");
+        writer.write_all(output.as_bytes())?;
+        output.clear();
+        render_file_diagnostics_into(
+            &mut writer,
+            label,
+            parse.source_text.as_str(),
+            &parse.source_map,
+            &diagnostics,
+            true,
+        )
+    } else {
+        write_light_single_file_output(writer, label, parse, diagnostic_level)
+    }
 }
 
 fn write_light_single_file_output(
@@ -485,17 +533,32 @@ fn append_light_summary(
 }
 
 #[derive(Debug, Clone)]
-struct FileDiagnostic {
+enum FileDiagnosticText<'a> {
+    Borrowed(&'a str),
+    Shared(Arc<str>),
+}
+
+impl FileDiagnosticText<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Shared(text) => text.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FileDiagnostic<'a> {
     stage: &'static str,
     severity: DiagnosticSeverity,
-    message: Arc<str>,
-    labels: Vec<FileDiagnosticLabel>,
+    message: FileDiagnosticText<'a>,
+    labels: Vec<FileDiagnosticLabel<'a>>,
 }
 
 #[derive(Clone, Debug)]
-struct FileDiagnosticLabel {
+struct FileDiagnosticLabel<'a> {
     range: TextRange,
-    message: Arc<str>,
+    message: Option<FileDiagnosticText<'a>>,
     is_primary: bool,
 }
 
@@ -514,23 +577,22 @@ struct CompactDiagnosticContext<'a> {
     line_starts: &'a [usize],
 }
 
-fn render_file_diagnostics(
+fn render_file_diagnostics_into(
+    mut writer: impl Write,
     label: &str,
     source_text: &str,
     source_map: &mel_syntax::SourceMap,
-    diagnostics: &[FileDiagnostic],
+    diagnostics: &[FileDiagnostic<'_>],
     fancy_diagnostics: bool,
-) -> io::Result<String> {
+) -> io::Result<()> {
     if diagnostics.is_empty() {
-        return Ok(String::new());
+        return Ok(());
     }
 
     if !fancy_diagnostics {
-        return Ok(render_compact_file_diagnostics(
-            source_text,
-            source_map,
-            diagnostics,
-        ));
+        return writer.write_all(
+            render_compact_file_diagnostics(source_text, source_map, diagnostics).as_bytes(),
+        );
     }
 
     let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
@@ -551,9 +613,14 @@ fn render_file_diagnostics(
             let source_span = source_map.display_range(label.range);
             let range = display_map
                 .display_range(text_range(source_span.start as u32, source_span.end as u32));
+            let message = label
+                .message
+                .as_ref()
+                .map(FileDiagnosticText::as_str)
+                .unwrap_or("");
             let mapped = BorrowedDiagnosticLabel {
                 range: text_range(range.start as u32, range.end as u32),
-                message: label.message.as_ref(),
+                message,
                 is_primary: label.is_primary,
             };
             display_labels.push(mapped);
@@ -581,7 +648,7 @@ fn render_file_diagnostics(
             &mut report_message,
             "{}: {}",
             diagnostic.stage,
-            diagnostic.message.as_ref()
+            diagnostic.message.as_str()
         )
         .expect("diagnostic message append");
         let mut report = Report::build(report_kind(diagnostic.severity), (label, primary_range))
@@ -593,9 +660,14 @@ fn render_file_diagnostics(
             } else {
                 Color::Cyan
             };
+            let message = if message.is_empty() {
+                diagnostic.message.as_str()
+            } else {
+                *message
+            };
             report = report.with_label(
                 Label::new((label, range.clone()))
-                    .with_message(*message)
+                    .with_message(message)
                     .with_color(color),
             );
         }
@@ -605,13 +677,13 @@ fn render_file_diagnostics(
             .map_err(io::Error::other)?;
     }
 
-    String::from_utf8(rendered).map_err(io::Error::other)
+    writer.write_all(&rendered)
 }
 
 fn render_compact_file_diagnostics(
     source_text: &str,
     source_map: &SourceMap,
-    diagnostics: &[FileDiagnostic],
+    diagnostics: &[FileDiagnostic<'_>],
 ) -> String {
     let mut rendered = String::new();
     append_compact_file_diagnostics(&mut rendered, source_text, source_map, diagnostics);
@@ -622,7 +694,7 @@ fn append_compact_file_diagnostics(
     output: &mut String,
     source_text: &str,
     source_map: &SourceMap,
-    diagnostics: &[FileDiagnostic],
+    diagnostics: &[FileDiagnostic<'_>],
 ) {
     if diagnostics.is_empty() {
         return;
@@ -648,7 +720,7 @@ fn append_compact_file_diagnostics(
             output,
             "{severity}: {}: {}",
             diagnostic.stage,
-            diagnostic.message.as_ref()
+            diagnostic.message.as_str()
         )
         .expect("compact diagnostic append");
         if let Some(offset) = primary_range {
@@ -681,7 +753,7 @@ fn append_compact_parse_diagnostics(
             output,
             "decode",
             DiagnosticSeverity::Error,
-            diagnostic.message.as_str(),
+            diagnostic.message.as_ref(),
             Some(diagnostic.range),
             &context,
         );
@@ -691,7 +763,7 @@ fn append_compact_parse_diagnostics(
             output,
             "lex",
             DiagnosticSeverity::Error,
-            diagnostic.message.as_str(),
+            diagnostic.message,
             Some(diagnostic.range),
             &context,
         );
@@ -701,7 +773,7 @@ fn append_compact_parse_diagnostics(
             output,
             "parse",
             DiagnosticSeverity::Error,
-            diagnostic.message.as_str(),
+            diagnostic.message,
             Some(diagnostic.range),
             &context,
         );
@@ -907,35 +979,35 @@ fn isolate_diagnostic_source_lines_into<'a>(
     }));
 }
 
-fn collect_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<FileDiagnostic> {
+fn collect_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<FileDiagnostic<'_>> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "decode",
         severity: DiagnosticSeverity::Error,
-        message: Arc::<str>::from(diagnostic.message.as_str()),
+        message: FileDiagnosticText::Borrowed(diagnostic.message.as_ref()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: Arc::<str>::from(diagnostic.message.as_str()),
+            message: None,
             is_primary: true,
         }],
     }));
     diagnostics.extend(parse.lex_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "lex",
         severity: DiagnosticSeverity::Error,
-        message: Arc::<str>::from(diagnostic.message.as_str()),
+        message: FileDiagnosticText::Borrowed(diagnostic.message),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: Arc::<str>::from(diagnostic.message.as_str()),
+            message: None,
             is_primary: true,
         }],
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "parse",
         severity: DiagnosticSeverity::Error,
-        message: Arc::<str>::from(diagnostic.message.as_str()),
+        message: FileDiagnosticText::Borrowed(diagnostic.message),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: Arc::<str>::from(diagnostic.message.as_str()),
+            message: None,
             is_primary: true,
         }],
     }));
@@ -945,7 +1017,7 @@ fn collect_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<FileDiagn
             .map(|diagnostic| FileDiagnostic {
                 stage: "sema",
                 severity: diagnostic.severity,
-                message: diagnostic.message,
+                message: FileDiagnosticText::Shared(diagnostic.message),
                 labels: diagnostic
                     .labels
                     .into_iter()
@@ -984,25 +1056,25 @@ fn parse_diagnostic_counts(
     }
 }
 
-fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
+fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic<'_>> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "decode",
         severity: DiagnosticSeverity::Error,
-        message: Arc::<str>::from(diagnostic.message.as_str()),
+        message: FileDiagnosticText::Borrowed(diagnostic.message.as_ref()),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: Arc::<str>::from(diagnostic.message.as_str()),
+            message: None,
             is_primary: true,
         }],
     }));
     diagnostics.extend(parse.errors.iter().map(|diagnostic| FileDiagnostic {
         stage: "light",
         severity: DiagnosticSeverity::Error,
-        message: Arc::<str>::from(diagnostic.message.as_str()),
+        message: FileDiagnosticText::Borrowed(diagnostic.message),
         labels: vec![FileDiagnosticLabel {
             range: diagnostic.range,
-            message: Arc::<str>::from(diagnostic.message.as_str()),
+            message: None,
             is_primary: true,
         }],
     }));
@@ -1012,7 +1084,7 @@ fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic> {
 fn filtered_parse_diagnostics(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<FileDiagnostic> {
+) -> Vec<FileDiagnostic<'_>> {
     match diagnostic_level {
         CliDiagnosticLevel::All => collect_diagnostics(parse, DiagnosticFilter::All),
         CliDiagnosticLevel::Error => filter_diagnostics(
@@ -1026,7 +1098,7 @@ fn filtered_parse_diagnostics(
 fn filtered_light_diagnostics(
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<FileDiagnostic> {
+) -> Vec<FileDiagnostic<'_>> {
     match diagnostic_level {
         CliDiagnosticLevel::None => Vec::new(),
         _ => filter_diagnostics(collect_light_diagnostics(parse), diagnostic_level),
@@ -1034,9 +1106,9 @@ fn filtered_light_diagnostics(
 }
 
 fn filter_diagnostics(
-    diagnostics: Vec<FileDiagnostic>,
+    diagnostics: Vec<FileDiagnostic<'_>>,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<FileDiagnostic> {
+) -> Vec<FileDiagnostic<'_>> {
     match diagnostic_level {
         CliDiagnosticLevel::All => diagnostics,
         CliDiagnosticLevel::Error => diagnostics
@@ -1056,7 +1128,7 @@ struct DiagnosticCounts {
     light: usize,
 }
 
-fn diagnostic_counts(diagnostics: &[FileDiagnostic]) -> DiagnosticCounts {
+fn diagnostic_counts(diagnostics: &[FileDiagnostic<'_>]) -> DiagnosticCounts {
     let mut counts = DiagnosticCounts::default();
     for diagnostic in diagnostics {
         match diagnostic.stage {
@@ -1071,10 +1143,10 @@ fn diagnostic_counts(diagnostics: &[FileDiagnostic]) -> DiagnosticCounts {
     counts
 }
 
-fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel {
+fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel<'static> {
     FileDiagnosticLabel {
         range: label.range,
-        message: label.message,
+        message: Some(FileDiagnosticText::Shared(label.message)),
         is_primary: label.is_primary,
     }
 }
@@ -1110,7 +1182,7 @@ fn summarize_parse_file(
         parse_error_messages: diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.stage == "parse")
-            .map(|diagnostic| diagnostic.message.to_string())
+            .map(|diagnostic| diagnostic.message.as_str().to_owned())
             .collect(),
         semantic_diagnostics: counts.sema,
     }

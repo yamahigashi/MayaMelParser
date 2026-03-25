@@ -13,6 +13,7 @@ mod remap;
 #[cfg(test)]
 mod tests;
 
+use std::borrow::Cow;
 use std::{fs, io, ops::Range, path::Path};
 
 use decode::{decode_source_auto, decode_source_with_encoding};
@@ -34,13 +35,13 @@ use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeDiagnostic {
-    pub message: String,
+    pub message: Cow<'static, str>,
     pub range: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
-    pub message: String,
+    pub message: &'static str,
     pub range: TextRange,
 }
 

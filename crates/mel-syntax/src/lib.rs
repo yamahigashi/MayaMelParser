@@ -240,17 +240,14 @@ impl TokenKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexDiagnostic {
-    pub message: String,
+    pub message: &'static str,
     pub range: TextRange,
 }
 
 impl LexDiagnostic {
     #[must_use]
-    pub fn new(message: impl Into<String>, range: TextRange) -> Self {
-        Self {
-            message: message.into(),
-            range,
-        }
+    pub const fn new(message: &'static str, range: TextRange) -> Self {
+        Self { message, range }
     }
 }
 

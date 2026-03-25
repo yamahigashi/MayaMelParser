@@ -690,7 +690,7 @@ impl<'a> LightScanner<'a> {
             }
         }
         self.errors.push(ParseError {
-            message: "unterminated string literal in lightweight surface parse".to_owned(),
+            message: "unterminated string literal in lightweight surface parse",
             range: text_range(start as u32, self.text.len() as u32),
         });
         self.text.len()
@@ -710,7 +710,7 @@ impl<'a> LightScanner<'a> {
             }
         }
         self.errors.push(ParseError {
-            message: "unterminated backquote capture in lightweight surface parse".to_owned(),
+            message: "unterminated backquote capture in lightweight surface parse",
             range: text_range(start as u32, self.text.len() as u32),
         });
         self.text.len()
@@ -747,7 +747,7 @@ impl<'a> LightScanner<'a> {
             }
         }
         self.errors.push(ParseError {
-            message: "unterminated grouped surface in lightweight parse".to_owned(),
+            message: "unterminated grouped surface in lightweight parse",
             range: text_range(start as u32, self.text.len() as u32),
         });
         self.text.len()
@@ -766,7 +766,7 @@ impl<'a> LightScanner<'a> {
             cursor = self.next_offset(cursor);
         }
         self.errors.push(ParseError {
-            message: "unterminated vector literal in lightweight parse".to_owned(),
+            message: "unterminated vector literal in lightweight parse",
             range: text_range(start as u32, self.text.len() as u32),
         });
         self.text.len()
@@ -805,7 +805,7 @@ impl<'a> LightScanner<'a> {
             }
         }
         self.errors.push(ParseError {
-            message: "unterminated proc body in lightweight surface parse".to_owned(),
+            message: "unterminated proc body in lightweight surface parse",
             range: text_range(start as u32, self.text.len() as u32),
         });
         self.text.len()

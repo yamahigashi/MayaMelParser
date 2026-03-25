@@ -2071,7 +2071,11 @@ impl<'a> Parser<'a> {
         None
     }
 
-    fn expect_stmt_terminator(&mut self, message: &str, context: StmtContext) -> Option<u32> {
+    fn expect_stmt_terminator(
+        &mut self,
+        message: &'static str,
+        context: StmtContext,
+    ) -> Option<u32> {
         if let Some(token) = self.eat(TokenKind::Semi) {
             Some(range_end(token.range))
         } else if self.can_omit_stmt_semi(context) {
@@ -2142,7 +2146,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, kind: TokenKind, message: &str) -> Option<Token> {
+    fn expect(&mut self, kind: TokenKind, message: &'static str) -> Option<Token> {
         if let Some(token) = self.eat(kind) {
             Some(token)
         } else {
@@ -2208,11 +2212,8 @@ impl<'a> Parser<'a> {
         text_range(0, 0)
     }
 
-    fn error(&mut self, message: &str, range: TextRange) {
-        self.errors.push(ParseError {
-            message: message.to_owned(),
-            range,
-        });
+    fn error(&mut self, message: &'static str, range: TextRange) {
+        self.errors.push(ParseError { message, range });
     }
 
     fn recover_to_decl_boundary(&mut self) {
