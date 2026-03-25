@@ -212,7 +212,9 @@ fn print_corpus_summary(
                 .unwrap_or_else(|| parse_light_file(&path))
             {
                 Ok(parse) => {
-                    let file_summary = light_file_summary(&path, &parse, diagnostic_level);
+                    let diagnostics = filtered_light_diagnostics(&parse, diagnostic_level);
+                    let file_summary =
+                        light_file_summary(&path, &parse, diagnostic_counts(&diagnostics));
                     summary.record(file_summary);
                 }
                 Err(error) => {
@@ -323,19 +325,14 @@ fn collect_source_files_recursive(
 }
 
 fn print_parse_summary(label: &str, parse: &Parse) {
+    let diagnostics = filtered_parse_diagnostics(parse, CliDiagnosticLevel::All);
     print!(
         "{}",
-        format_parse_summary(label, parse, CliDiagnosticLevel::All)
+        format_parse_summary(label, parse, diagnostic_counts(&diagnostics))
     );
 }
 
-fn format_parse_summary(
-    label: &str,
-    parse: &Parse,
-    diagnostic_level: CliDiagnosticLevel,
-) -> String {
-    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
-    let counts = diagnostic_counts(&diagnostics);
+fn format_parse_summary(label: &str, parse: &Parse, counts: DiagnosticCounts) -> String {
     format!(
         "source: {label}\nencoding: {}\nitems: {}\ndecode diagnostics: {}\nlexical diagnostics: {}\nparse errors: {}\nsemantic diagnostics: {}\n",
         parse.source_encoding.label(),
@@ -353,7 +350,7 @@ fn format_single_file_output(
     diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<String> {
     let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
-    let mut output = format_parse_summary(label, parse, diagnostic_level);
+    let mut output = format_parse_summary(label, parse, diagnostic_counts(&diagnostics));
     output.push_str(&render_file_diagnostics(
         label,
         parse.source_text.as_str(),
@@ -368,8 +365,8 @@ fn format_light_single_file_output(
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<String> {
-    let summary = light_file_summary(Path::new(label), parse, diagnostic_level);
     let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
+    let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
     let mut output = format!(
         "source: {label}\nmode: lightweight\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
         parse.source_encoding.label(),
@@ -888,10 +885,9 @@ struct LightFileSummary {
 fn light_file_summary(
     path: &Path,
     parse: &LightParse,
-    diagnostic_level: CliDiagnosticLevel,
+    counts: DiagnosticCounts,
 ) -> LightFileSummary {
     let facts = collect_top_level_facts_light(parse);
-    let counts = diagnostic_counts(&filtered_light_diagnostics(parse, diagnostic_level));
     let mut command_items = 0;
     let mut proc_items = 0;
     let mut other_items = 0;
@@ -1151,6 +1147,19 @@ mod tests {
         assert!(output.contains("semantic diagnostics: 0"));
         assert!(!output.contains("Error:"));
         assert!(!output.contains("Warning:"));
+    }
+
+    #[test]
+    fn error_diagnostic_level_keeps_semantic_error_count() {
+        let output = format_single_file_output(
+            "sema-fixture",
+            &parse_source("addAttr;\n"),
+            CliDiagnosticLevel::Error,
+        )
+        .expect("filtered output");
+        assert!(output.contains("semantic diagnostics: 1"));
+        assert!(output.contains("Error:"));
+        assert!(output.contains("command \"addAttr\" expects"));
     }
 
     #[test]
