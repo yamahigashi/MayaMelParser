@@ -5,6 +5,7 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use std::{
     collections::HashMap,
     fs, io,
+    io::IsTerminal,
     path::{Path, PathBuf},
 };
 
@@ -171,6 +172,7 @@ fn print_single_file(
     diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
     let label = path.display().to_string();
+    let fancy_diagnostics = io::stdout().is_terminal();
     if lightweight {
         let parse = if let Some(encoding) = encoding {
             parse_light_file_with_encoding(path, encoding)?
@@ -179,7 +181,12 @@ fn print_single_file(
         };
         print!(
             "{}",
-            format_light_single_file_output(&label, &parse, diagnostic_level)?
+            format_light_single_file_output_with_style(
+                &label,
+                &parse,
+                diagnostic_level,
+                fancy_diagnostics,
+            )?
         );
     } else {
         let parse = if let Some(encoding) = encoding {
@@ -189,7 +196,12 @@ fn print_single_file(
         };
         print!(
             "{}",
-            format_single_file_output(&label, &parse, diagnostic_level)?
+            format_single_file_output_with_style(
+                &label,
+                &parse,
+                diagnostic_level,
+                fancy_diagnostics,
+            )?
         );
     }
     Ok(())
@@ -344,10 +356,20 @@ fn format_parse_summary(label: &str, parse: &Parse, counts: DiagnosticCounts) ->
     )
 }
 
+#[cfg(test)]
 fn format_single_file_output(
     label: &str,
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<String> {
+    format_single_file_output_with_style(label, parse, diagnostic_level, true)
+}
+
+fn format_single_file_output_with_style(
+    label: &str,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+    fancy_diagnostics: bool,
 ) -> io::Result<String> {
     let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
     let mut output = format_parse_summary(label, parse, diagnostic_counts(&diagnostics));
@@ -356,14 +378,25 @@ fn format_single_file_output(
         parse.source_text.as_str(),
         &parse.source_map,
         diagnostics,
+        fancy_diagnostics,
     )?);
     Ok(output)
 }
 
+#[cfg(test)]
 fn format_light_single_file_output(
     label: &str,
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<String> {
+    format_light_single_file_output_with_style(label, parse, diagnostic_level, true)
+}
+
+fn format_light_single_file_output_with_style(
+    label: &str,
+    parse: &LightParse,
+    diagnostic_level: CliDiagnosticLevel,
+    fancy_diagnostics: bool,
 ) -> io::Result<String> {
     let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
     let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
@@ -385,6 +418,7 @@ fn format_light_single_file_output(
         parse.source_text.as_str(),
         &parse.source_map,
         diagnostics,
+        fancy_diagnostics,
     )?);
     Ok(output)
 }
@@ -409,9 +443,18 @@ fn render_file_diagnostics(
     source_text: &str,
     source_map: &mel_syntax::SourceMap,
     diagnostics: Vec<FileDiagnostic>,
+    fancy_diagnostics: bool,
 ) -> io::Result<String> {
     if diagnostics.is_empty() {
         return Ok(String::new());
+    }
+
+    if !fancy_diagnostics {
+        return Ok(render_compact_file_diagnostics(
+            source_text,
+            source_map,
+            diagnostics,
+        ));
     }
 
     let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
@@ -470,6 +513,68 @@ fn render_file_diagnostics(
     }
 
     String::from_utf8(rendered).map_err(io::Error::other)
+}
+
+fn render_compact_file_diagnostics(
+    source_text: &str,
+    source_map: &SourceMap,
+    diagnostics: Vec<FileDiagnostic>,
+) -> String {
+    let (display_text, display_map) = normalize_diagnostic_source_text(source_text);
+    let line_starts = compute_line_starts(display_text.as_str());
+    let mut rendered = String::new();
+
+    for diagnostic in diagnostics {
+        let primary_range = diagnostic
+            .labels
+            .iter()
+            .find(|label| label.is_primary)
+            .or_else(|| diagnostic.labels.first())
+            .map(|label| {
+                let source_span = source_map.display_range(label.range);
+                display_map
+                    .display_range(text_range(source_span.start as u32, source_span.end as u32))
+            });
+        let severity = match diagnostic.severity {
+            DiagnosticSeverity::Error => "Error",
+            DiagnosticSeverity::Warning => "Warning",
+        };
+        rendered.push_str(severity);
+        rendered.push_str(": ");
+        rendered.push_str(diagnostic.stage);
+        rendered.push_str(": ");
+        rendered.push_str(diagnostic.message.as_str());
+        if let Some(range) = primary_range {
+            let (line, column) = line_col_for_offset(&line_starts, range.start);
+            rendered.push_str(" @ ");
+            rendered.push_str(&(line + 1).to_string());
+            rendered.push(':');
+            rendered.push_str(&(column + 1).to_string());
+        }
+        rendered.push('\n');
+    }
+
+    rendered
+}
+
+fn compute_line_starts(source_text: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (idx, byte) in source_text.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push(idx + 1);
+        }
+    }
+    starts
+}
+
+fn line_col_for_offset(line_starts: &[usize], offset: usize) -> (usize, usize) {
+    match line_starts.binary_search(&offset) {
+        Ok(index) => (index, 0),
+        Err(next_index) => {
+            let line_index = next_index.saturating_sub(1);
+            (line_index, offset.saturating_sub(line_starts[line_index]))
+        }
+    }
 }
 
 fn normalize_diagnostic_source_text(source_text: &str) -> (String, SourceMap) {
@@ -962,7 +1067,7 @@ mod tests {
     use super::{
         Args, CliDiagnosticLevel, CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary,
         format_light_corpus_summary, format_light_single_file_output, format_single_file_output,
-        parse_cli_args, print_path_output,
+        format_single_file_output_with_style, parse_cli_args, print_path_output,
     };
     use clap::{CommandFactory, error::ErrorKind};
     use mel_parser::{
@@ -1160,6 +1265,21 @@ mod tests {
         assert!(output.contains("semantic diagnostics: 1"));
         assert!(output.contains("Error:"));
         assert!(output.contains("command \"addAttr\" expects"));
+    }
+
+    #[test]
+    fn compact_output_uses_single_line_diagnostics_for_non_terminal_output() {
+        let output = format_single_file_output_with_style(
+            "sema-fixture",
+            &parse_source("addAttr;\n"),
+            CliDiagnosticLevel::Error,
+            false,
+        )
+        .expect("compact output");
+        assert!(output.contains("semantic diagnostics: 1"));
+        assert!(output.contains("Error: sema: command \"addAttr\" expects"));
+        assert!(output.contains("@ 1:1"));
+        assert!(!output.contains("╭"));
     }
 
     #[test]
