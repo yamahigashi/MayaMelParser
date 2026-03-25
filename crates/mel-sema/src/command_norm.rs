@@ -1,5 +1,6 @@
 use mel_ast::ShellWord;
 use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
+use std::sync::Arc;
 
 use crate::{
     CommandModeMask, CommandSchema, Diagnostic, DiagnosticSeverity, FlagArity, FlagArityByMode,
@@ -94,6 +95,25 @@ impl ResolvedFlagSchema<'_> {
             Self::Synthetic(schema) => schema.allows_multiple,
         }
     }
+}
+
+fn push_primary_diagnostic(
+    diagnostics: &mut Vec<Diagnostic>,
+    severity: DiagnosticSeverity,
+    range: TextRange,
+    message: impl Into<Arc<str>>,
+) {
+    let message = message.into();
+    diagnostics.push(Diagnostic {
+        severity,
+        message: message.clone(),
+        range,
+        labels: vec![crate::DiagnosticLabel {
+            range,
+            message,
+            is_primary: true,
+        }],
+    });
 }
 
 pub(crate) fn normalize_shell_like_invoke(
@@ -750,46 +770,28 @@ fn validate_positionals(
     let positional_len = positional_args.len();
 
     if prefix_len == 0 && matches!(schema.tail, PositionalTailSchema::None) && positional_len > 0 {
-        diagnostics.push(Diagnostic {
-            severity: DiagnosticSeverity::Error,
-            message: format!(
+        push_primary_diagnostic(
+            diagnostics,
+            DiagnosticSeverity::Error,
+            command_range,
+            format!(
                 "command \"{}\" does not accept positional arguments",
                 command.name
-            )
-            .into(),
-            range: command_range,
-            labels: vec![crate::DiagnosticLabel {
-                range: command_range,
-                message: format!(
-                    "command \"{}\" does not accept positional arguments",
-                    command.name
-                )
-                .into(),
-                is_primary: true,
-            }],
-        });
+            ),
+        );
         return;
     }
 
     if positional_len < required_prefix_len {
-        diagnostics.push(Diagnostic {
-            severity: DiagnosticSeverity::Error,
-            message: format!(
+        push_primary_diagnostic(
+            diagnostics,
+            DiagnosticSeverity::Error,
+            command_range,
+            format!(
                 "command \"{}\" expects {} positional argument(s) but call provides {}",
                 command.name, required_prefix_len, positional_len
-            )
-            .into(),
-            range: command_range,
-            labels: vec![crate::DiagnosticLabel {
-                range: command_range,
-                message: format!(
-                    "command \"{}\" expects {} positional argument(s) but call provides {}",
-                    command.name, required_prefix_len, positional_len
-                )
-                .into(),
-                is_primary: true,
-            }],
-        });
+            ),
+        );
         return;
     }
 
@@ -813,24 +815,15 @@ fn validate_positionals(
     match schema.tail {
         PositionalTailSchema::None => {
             if !tail_args.is_empty() {
-                diagnostics.push(Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    message: format!(
+                push_primary_diagnostic(
+                    diagnostics,
+                    DiagnosticSeverity::Error,
+                    command_range,
+                    format!(
                         "command \"{}\" expects {} positional argument(s) but call provides {}",
                         command.name, prefix_len, positional_len
-                    )
-                    .into(),
-                    range: command_range,
-                    labels: vec![crate::DiagnosticLabel {
-                        range: command_range,
-                        message: format!(
-                            "command \"{}\" expects {} positional argument(s) but call provides {}",
-                            command.name, prefix_len, positional_len
-                        )
-                        .into(),
-                        is_primary: true,
-                    }],
-                });
+                    ),
+                );
             }
         }
         PositionalTailSchema::Opaque { min, max } => {

@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     fs, io,
     io::IsTerminal,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -180,30 +181,28 @@ fn print_single_file(
         } else {
             parse_light_file(path)?
         };
-        print!(
-            "{}",
-            format_light_single_file_output_with_style(
-                &label,
-                &parse,
-                diagnostic_level,
-                fancy_diagnostics,
-            )?
-        );
+        if fancy_diagnostics {
+            print!(
+                "{}",
+                format_light_single_file_output_with_style(&label, &parse, diagnostic_level, true,)?
+            );
+        } else {
+            write_light_single_file_output(io::stdout().lock(), &label, &parse, diagnostic_level)?;
+        }
     } else {
         let parse = if let Some(encoding) = encoding {
             parse_file_with_encoding(path, encoding)?
         } else {
             parse_file(path)?
         };
-        print!(
-            "{}",
-            format_single_file_output_with_style(
-                &label,
-                &parse,
-                diagnostic_level,
-                fancy_diagnostics,
-            )?
-        );
+        if fancy_diagnostics {
+            print!(
+                "{}",
+                format_single_file_output_with_style(&label, &parse, diagnostic_level, true)?
+            );
+        } else {
+            write_single_file_output(io::stdout().lock(), &label, &parse, diagnostic_level)?;
+        }
     }
     Ok(())
 }
@@ -384,6 +383,24 @@ fn format_single_file_output_with_style(
     Ok(output)
 }
 
+fn write_single_file_output(
+    mut writer: impl Write,
+    label: &str,
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<()> {
+    let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
+    writer.write_all(
+        format_parse_summary(label, parse, diagnostic_counts(&diagnostics)).as_bytes(),
+    )?;
+    write_compact_file_diagnostics(
+        &mut writer,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        &diagnostics,
+    )
+}
+
 #[cfg(test)]
 fn format_light_single_file_output(
     label: &str,
@@ -422,6 +439,36 @@ fn format_light_single_file_output_with_style(
         fancy_diagnostics,
     )?);
     Ok(output)
+}
+
+fn write_light_single_file_output(
+    mut writer: impl Write,
+    label: &str,
+    parse: &LightParse,
+    diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<()> {
+    let diagnostics = filtered_light_diagnostics(parse, diagnostic_level);
+    let summary = light_file_summary(Path::new(label), parse, diagnostic_counts(&diagnostics));
+    write!(
+        writer,
+        "source: {label}\nmode: lightweight\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
+        parse.source_encoding.label(),
+        summary.items,
+        summary.command_items,
+        summary.proc_items,
+        summary.other_items,
+        summary.opaque_tail_commands,
+        summary.specialized_set_attr,
+        summary.set_attr_with_opaque_tail,
+        summary.decode_errors,
+        summary.light_parse_errors,
+    )?;
+    write_compact_file_diagnostics(
+        &mut writer,
+        parse.source_text.as_str(),
+        &parse.source_map,
+        &diagnostics,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -527,8 +574,19 @@ fn render_compact_file_diagnostics(
     source_map: &SourceMap,
     diagnostics: &[FileDiagnostic],
 ) -> String {
+    let mut rendered = Vec::new();
+    write_compact_file_diagnostics(&mut rendered, source_text, source_map, diagnostics)
+        .expect("in-memory rendering should not fail");
+    String::from_utf8(rendered).expect("compact diagnostics should remain utf-8")
+}
+
+fn write_compact_file_diagnostics(
+    mut writer: impl Write,
+    source_text: &str,
+    source_map: &SourceMap,
+    diagnostics: &[FileDiagnostic],
+) -> io::Result<()> {
     let line_starts = compute_normalized_line_starts(source_text);
-    let mut rendered = String::new();
 
     for diagnostic in diagnostics {
         let primary_range = diagnostic
@@ -544,22 +602,20 @@ fn render_compact_file_diagnostics(
             DiagnosticSeverity::Error => "Error",
             DiagnosticSeverity::Warning => "Warning",
         };
-        rendered.push_str(severity);
-        rendered.push_str(": ");
-        rendered.push_str(diagnostic.stage);
-        rendered.push_str(": ");
-        rendered.push_str(diagnostic.message.as_ref());
+        write!(
+            writer,
+            "{severity}: {}: {}",
+            diagnostic.stage,
+            diagnostic.message.as_ref()
+        )?;
         if let Some(offset) = primary_range {
             let (line, column) = normalized_line_col_for_offset(source_text, &line_starts, offset);
-            rendered.push_str(" @ ");
-            rendered.push_str(&(line + 1).to_string());
-            rendered.push(':');
-            rendered.push_str(&(column + 1).to_string());
+            write!(writer, " @ {}:{}", line + 1, column + 1)?;
         }
-        rendered.push('\n');
+        writer.write_all(b"\n")?;
     }
 
-    rendered
+    Ok(())
 }
 
 fn compute_normalized_line_starts(source_text: &str) -> Vec<usize> {

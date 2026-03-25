@@ -955,10 +955,10 @@ impl<'a> Parser<'a> {
                 }
 
                 let member_token = self.bump();
-                let member_name = self.token_text(member_token).to_owned();
+                let member_name = self.token_text(member_token);
                 let range = text_range(range_start(lhs.range()), range_end(member_token.range));
 
-                lhs = if let Some(component) = parse_vector_component_name(&member_name) {
+                lhs = if let Some(component) = parse_vector_component_name(member_name) {
                     Expr::ComponentAccess {
                         range,
                         target: Box::new(lhs),
@@ -1969,9 +1969,9 @@ impl<'a> Parser<'a> {
                 }
 
                 let member_token = self.bump();
-                let member_name = self.token_text(member_token).to_owned();
+                let member_name = self.token_text(member_token);
                 let range = text_range(range_start(expr.range()), range_end(member_token.range));
-                expr = if let Some(component) = parse_vector_component_name(&member_name) {
+                expr = if let Some(component) = parse_vector_component_name(member_name) {
                     Expr::ComponentAccess {
                         range,
                         target: Box::new(expr),
