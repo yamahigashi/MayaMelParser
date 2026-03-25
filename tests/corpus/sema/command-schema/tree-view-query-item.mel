@@ -1,0 +1,3 @@
+string $item = "root";
+string $tree = "myTree";
+string $annotation = `treeView -q -item $item -itemAnnotation $tree`;

@@ -1,0 +1,2 @@
+string $edges[] = {"pCube1.e[0]", "pCube1.e[1]"};
+string $expanded[] = `filterExpand -selectionMask 32 $edges`;

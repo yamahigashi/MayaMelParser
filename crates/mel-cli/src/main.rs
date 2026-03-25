@@ -1611,6 +1611,206 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_sema_delete_selection_omission_fixture() {
+        insta::assert_snapshot!(
+            "sema_delete_selection_omission",
+            render_snapshot(
+                "sema/command-schema/delete-selection-omission.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/delete-selection-omission.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_sets_selection_omission_fixture() {
+        insta::assert_snapshot!(
+            "sema_sets_selection_omission",
+            render_snapshot(
+                "sema/command-schema/sets-selection-omission.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/sets-selection-omission.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_poly_list_component_conversion_selection_omission_fixture() {
+        insta::assert_snapshot!(
+            "sema_poly_list_component_conversion_selection_omission",
+            render_snapshot(
+                "sema/command-schema/poly-list-component-conversion-selection-omission.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/poly-list-component-conversion-selection-omission.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_filter_expand_explicit_list_fixture() {
+        insta::assert_snapshot!(
+            "sema_filter_expand_explicit_list",
+            render_snapshot(
+                "sema/command-schema/filter-expand-explicit-list.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/filter-expand-explicit-list.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_eval_echo_single_script_fixture() {
+        insta::assert_snapshot!(
+            "sema_eval_echo_single_script",
+            render_snapshot(
+                "sema/command-schema/eval-echo-single-script.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/eval-echo-single-script.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_shading_node_single_type_fixture() {
+        insta::assert_snapshot!(
+            "sema_shading_node_single_type",
+            render_snapshot(
+                "sema/command-schema/shading-node-single-type.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/shading-node-single-type.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_poly_edit_uv_explicit_target_fixture() {
+        insta::assert_snapshot!(
+            "sema_poly_edit_uv_explicit_target",
+            render_snapshot(
+                "sema/command-schema/poly-edit-uv-explicit-target.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/poly-edit-uv-explicit-target.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_anim_layer_target_fixture() {
+        insta::assert_snapshot!(
+            "sema_anim_layer_target",
+            render_snapshot(
+                "sema/command-schema/anim-layer-target.mel",
+                include_str!("../../../tests/corpus/sema/command-schema/anim-layer-target.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_reference_query_target_fixture() {
+        insta::assert_snapshot!(
+            "sema_reference_query_target",
+            render_snapshot(
+                "sema/command-schema/reference-query-target.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/reference-query-target.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_tree_view_query_item_fixture() {
+        insta::assert_snapshot!(
+            "sema_tree_view_query_item",
+            render_snapshot(
+                "sema/command-schema/tree-view-query-item.mel",
+                include_str!("../../../tests/corpus/sema/command-schema/tree-view-query-item.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_attribute_exists_two_args_fixture() {
+        insta::assert_snapshot!(
+            "sema_attribute_exists_two_args",
+            render_snapshot(
+                "sema/command-schema/attribute-exists-two-args.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/attribute-exists-two-args.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_set_render_pass_type_target_fixture() {
+        insta::assert_snapshot!(
+            "sema_set_render_pass_type_target",
+            render_snapshot(
+                "sema/command-schema/set-render-pass-type-target.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/set-render-pass-type-target.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_namespace_info_current_fixture() {
+        insta::assert_snapshot!(
+            "sema_namespace_info_current",
+            render_snapshot(
+                "sema/command-schema/namespace-info-current.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/namespace-info-current.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_particle_query_target_fixture() {
+        insta::assert_snapshot!(
+            "sema_particle_query_target",
+            render_snapshot(
+                "sema/command-schema/particle-query-target.mel",
+                include_str!("../../../tests/corpus/sema/command-schema/particle-query-target.mel"),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_list_transforms_single_arg_fixture() {
+        insta::assert_snapshot!(
+            "sema_list_transforms_single_arg",
+            render_snapshot(
+                "sema/command-schema/list-transforms-single-arg.mel",
+                include_str!(
+                    "../../../tests/corpus/sema/command-schema/list-transforms-single-arg.mel"
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_sema_move_target_tail_fixture() {
+        insta::assert_snapshot!(
+            "sema_move_target_tail",
+            render_snapshot(
+                "sema/command-schema/move-target-tail.mel",
+                include_str!("../../../tests/corpus/sema/command-schema/move-target-tail.mel"),
+            )
+        );
+    }
+
+    #[test]
     fn snapshot_sema_for_in_binding_implicit_fixture() {
         insta::assert_snapshot!(
             "sema_for_in_binding_implicit",

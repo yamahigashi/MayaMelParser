@@ -1,0 +1,11 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"sema/command-schema/sets-selection-omission.mel\",\ninclude_str!(\"../../../tests/corpus/sema/command-schema/sets-selection-omission.mel\"),)"
+---
+source: sema/command-schema/sets-selection-omission.mel
+encoding: utf-8
+items: 1
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 0

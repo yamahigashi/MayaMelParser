@@ -1,0 +1,2 @@
+string $shape = "nurbsHairShape1";
+string $xforms[] = `listTransforms $shape`;

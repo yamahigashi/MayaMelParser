@@ -2508,13 +2508,67 @@ mod tests {
 
     #[test]
     fn embedded_registry_keeps_selection_aware_positional_policy() {
-        let schema = MayaCommandRegistry::new()
-            .lookup("ikHandle")
-            .expect("embedded schema for ikHandle");
+        for command_name in ["ikHandle", "delete", "sets", "polyListComponentConversion"] {
+            let schema = MayaCommandRegistry::new()
+                .lookup(command_name)
+                .unwrap_or_else(|| panic!("embedded schema for {command_name}"));
+            assert_eq!(
+                schema.positionals.prefix[0].source_policy,
+                PositionalSourcePolicy::ExplicitOrCurrentSelection
+            );
+        }
+    }
+
+    #[test]
+    fn embedded_registry_keeps_relaxed_backlog_positional_shapes() {
+        let registry = MayaCommandRegistry::new();
+
+        let filter_expand = registry
+            .lookup("filterExpand")
+            .expect("embedded schema for filterExpand");
+        assert!(matches!(
+            filter_expand.positionals.tail,
+            PositionalTailSchema::Opaque { min: 0, max: None }
+        ));
+
+        let shading_node = registry
+            .lookup("shadingNode")
+            .expect("embedded schema for shadingNode");
+        assert_eq!(shading_node.positionals.prefix.len(), 1);
+        assert!(matches!(
+            shading_node.positionals.tail,
+            PositionalTailSchema::Shaped {
+                min: 0,
+                max: Some(1),
+                value_shapes,
+            } if value_shapes == [ValueShape::String]
+        ));
+
+        let attribute_exists = registry
+            .lookup("attributeExists")
+            .expect("embedded schema for attributeExists");
+        assert_eq!(attribute_exists.positionals.prefix.len(), 2);
+
+        let namespace_info = registry
+            .lookup("namespaceInfo")
+            .expect("embedded schema for namespaceInfo");
+        assert!(namespace_info.positionals.prefix.is_empty());
+        assert!(matches!(
+            namespace_info.positionals.tail,
+            PositionalTailSchema::Opaque { min: 0, max: None }
+        ));
+
+        let particle = registry
+            .lookup("particle")
+            .expect("embedded schema for particle");
         assert_eq!(
-            schema.positionals.prefix[0].source_policy,
+            particle.positionals.prefix[0].source_policy,
             PositionalSourcePolicy::ExplicitOrCurrentSelection
         );
+        assert!(matches!(
+            particle.positionals.tail,
+            PositionalTailSchema::Opaque { min: 0, max: None }
+        ));
     }
 
     #[test]

@@ -1,0 +1,2 @@
+string $refNode = "sharedReferenceNode";
+string $path = `referenceQuery -filename $refNode`;

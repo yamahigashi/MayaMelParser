@@ -1,0 +1,11 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"sema/command-schema/tree-view-query-item.mel\",\ninclude_str!(\"../../../tests/corpus/sema/command-schema/tree-view-query-item.mel\"),)"
+---
+source: sema/command-schema/tree-view-query-item.mel
+encoding: utf-8
+items: 3
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 0

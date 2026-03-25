@@ -1,0 +1,2 @@
+string $obj = "pCube1";
+move -rpr 0.0 0.0 0.0 $obj;

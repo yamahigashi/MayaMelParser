@@ -1,0 +1,11 @@
+---
+source: crates/mel-cli/src/main.rs
+expression: "render_snapshot(\"sema/command-schema/eval-echo-single-script.mel\",\ninclude_str!(\"../../../tests/corpus/sema/command-schema/eval-echo-single-script.mel\"),)"
+---
+source: sema/command-schema/eval-echo-single-script.mel
+encoding: utf-8
+items: 2
+decode diagnostics: 0
+lexical diagnostics: 0
+parse errors: 0
+semantic diagnostics: 0

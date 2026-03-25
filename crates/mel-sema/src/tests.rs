@@ -860,6 +860,96 @@ fn shell_like_command_allows_selection_fallback_positional_omission() {
 }
 
 #[test]
+fn shell_like_delete_allows_selection_fallback_positional_omission() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("delete"),
+                    words: Vec::new(),
+                    captured: false,
+                },
+                range: text_range(0, 6),
+            }),
+            range: text_range(0, 7),
+        }))],
+    };
+
+    let mut command = command_schema("delete", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[SELECTION_STRING_SLOT],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn shell_like_sets_allows_selection_fallback_positional_omission() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("sets"),
+                    words: Vec::new(),
+                    captured: false,
+                },
+                range: text_range(0, 4),
+            }),
+            range: text_range(0, 5),
+        }))],
+    };
+
+    let mut command = command_schema("sets", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[SELECTION_STRING_SLOT],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
+fn shell_like_poly_list_component_conversion_allows_selection_fallback_positional_omission() {
+    let source = SourceFile {
+        items: vec![Item::Stmt(Box::new(Stmt::Expr {
+            expr: Expr::Invoke(InvokeExpr {
+                surface: InvokeSurface::ShellLike {
+                    head_range: tr("polyListComponentConversion"),
+                    words: Vec::new(),
+                    captured: false,
+                },
+                range: text_range(0, 27),
+            }),
+            range: text_range(0, 28),
+        }))],
+    };
+
+    let mut command = command_schema("polyListComponentConversion", CommandKind::Builtin);
+    command.positionals = PositionalSchema {
+        prefix: &[PositionalSlotSchema {
+            value_shapes: &[ValueShape::Unknown],
+            source_policy: PositionalSourcePolicy::ExplicitOrCurrentSelection,
+        }],
+        tail: PositionalTailSchema::None,
+    };
+    let registry = TestRegistry {
+        commands: vec![command],
+    };
+
+    let analysis = analyze_source_with_registry(&source, &registry);
+    assert!(analysis.diagnostics.is_empty());
+}
+
+#[test]
 fn shell_like_command_allows_explicit_positional_for_selection_fallback_slot() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
