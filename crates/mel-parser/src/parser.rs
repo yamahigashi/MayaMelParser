@@ -395,7 +395,7 @@ impl<'a> Parser<'a> {
         let end = range_end(end);
 
         Some(Stmt::If {
-            condition,
+            condition: Box::new(condition),
             then_branch: Box::new(then_branch),
             else_branch,
             range: text_range(range_start(if_token.range), end),
@@ -438,7 +438,7 @@ impl<'a> Parser<'a> {
         };
 
         Some(Stmt::While {
-            condition,
+            condition: Box::new(condition),
             range: text_range(range_start(while_token.range), range_end(stmt_range(&body))),
             body: Box::new(body),
         })
@@ -462,10 +462,10 @@ impl<'a> Parser<'a> {
             self.error("expected 'while' after do body", range);
             return Some(Stmt::DoWhile {
                 body: Box::new(body),
-                condition: Expr::Ident {
+                condition: Box::new(Expr::Ident {
                     name_range: range,
                     range,
-                },
+                }),
                 range: text_range(range_start(do_token.range), body_end.max(range_end(range))),
             });
         };
@@ -509,7 +509,7 @@ impl<'a> Parser<'a> {
 
         Some(Stmt::DoWhile {
             body: Box::new(body),
-            condition,
+            condition: Box::new(condition),
             range: text_range(range_start(do_token.range), end),
         })
     }
@@ -577,7 +577,7 @@ impl<'a> Parser<'a> {
         };
 
         Some(Stmt::Switch {
-            control,
+            control: Box::new(control),
             clauses,
             range: text_range(range_start(switch_token.range), end),
         })
@@ -682,8 +682,8 @@ impl<'a> Parser<'a> {
             let body = self.parse_stmt(StmtContext::Nested)?;
             let body_end = range_end(stmt_range(&body)).max(range_end(close.range));
             return Some(Stmt::ForIn {
-                binding,
-                iterable,
+                binding: Box::new(binding),
+                iterable: Box::new(iterable),
                 body: Box::new(body),
                 range: text_range(range_start(for_token.range), body_end),
             });
@@ -716,7 +716,7 @@ impl<'a> Parser<'a> {
         let body_end = range_end(stmt_range(&body)).max(range_end(close.range));
         Some(Stmt::For {
             init,
-            condition,
+            condition: condition.map(Box::new),
             update,
             body: Box::new(body),
             range: text_range(range_start(for_token.range), body_end),

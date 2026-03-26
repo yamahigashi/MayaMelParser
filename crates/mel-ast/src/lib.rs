@@ -46,36 +46,36 @@ pub enum Stmt {
         range: TextRange,
     },
     If {
-        condition: Expr,
+        condition: Box<Expr>,
         then_branch: Box<Stmt>,
         else_branch: Option<Box<Stmt>>,
         range: TextRange,
     },
     While {
-        condition: Expr,
+        condition: Box<Expr>,
         body: Box<Stmt>,
         range: TextRange,
     },
     DoWhile {
         body: Box<Stmt>,
-        condition: Expr,
+        condition: Box<Expr>,
         range: TextRange,
     },
     Switch {
-        control: Expr,
+        control: Box<Expr>,
         clauses: Vec<SwitchClause>,
         range: TextRange,
     },
     For {
         init: Option<Vec<Expr>>,
-        condition: Option<Expr>,
+        condition: Option<Box<Expr>>,
         update: Option<Vec<Expr>>,
         body: Box<Stmt>,
         range: TextRange,
     },
     ForIn {
-        binding: Expr,
-        iterable: Expr,
+        binding: Box<Expr>,
+        iterable: Box<Expr>,
         body: Box<Stmt>,
         range: TextRange,
     },
@@ -439,6 +439,7 @@ impl ShellWord {
 mod tests {
     use super::{Expr, InvokeExpr, InvokeSurface, ShellWord};
     use mel_syntax::text_range;
+    use std::mem::size_of;
 
     #[test]
     fn unresolved_invoke_is_constructible() {
@@ -465,5 +466,10 @@ mod tests {
 
         assert!(matches!(invoke.surface, InvokeSurface::ShellLike { .. }));
         assert_eq!(invoke.range, text_range(0, 12));
+    }
+
+    #[test]
+    fn boxed_stmt_payloads_keep_ast_layout_compact() {
+        assert_eq!(size_of::<super::Stmt>(), 72);
     }
 }

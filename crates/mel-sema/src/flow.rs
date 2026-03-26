@@ -220,7 +220,7 @@ impl<'a> FlowLintAnalyzer<'a> {
                 ..
             } => self.walk_for_stmt(
                 init.as_deref(),
-                condition.as_ref(),
+                condition.as_deref(),
                 update.as_deref(),
                 body,
                 current_scope,

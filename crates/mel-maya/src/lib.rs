@@ -1191,10 +1191,10 @@ where
             Item::Proc(proc_def) => items.push(proc_item(parse, proc_def)),
             Item::Stmt(stmt) => match &**stmt {
                 Stmt::Proc { proc_def, .. } => items.push(proc_item(parse, proc_def)),
-                Stmt::Expr {
-                    expr: Expr::Invoke(invoke),
-                    ..
-                } => {
+                Stmt::Expr { expr, .. } => {
+                    let Expr::Invoke(invoke) = expr else {
+                        continue;
+                    };
                     if let InvokeSurface::ShellLike {
                         head_range,
                         words,
@@ -1853,11 +1853,14 @@ where
             message: "promoted command slice was not a statement".to_owned(),
         });
     };
-    let Stmt::Expr {
-        expr: Expr::Invoke(invoke),
-        ..
-    } = &**stmt
-    else {
+    let Stmt::Expr { expr, .. } = &**stmt else {
+        return Err(MayaPromotionError {
+            command_span: command.span,
+            head: Some(head),
+            message: "promoted command slice was not an invoke statement".to_owned(),
+        });
+    };
+    let Expr::Invoke(invoke) = expr else {
         return Err(MayaPromotionError {
             command_span: command.span,
             head: Some(head),

@@ -1807,10 +1807,10 @@ fn if_without_else_keeps_maybe_unwritten_state() {
                         range: text_range(13, 24),
                     },
                     Stmt::If {
-                        condition: Expr::Int {
+                        condition: Box::new(Expr::Int {
                             value: 1,
                             range: text_range(29, 30),
-                        },
+                        }),
                         then_branch: Box::new(Stmt::Block {
                             statements: vec![Stmt::Expr {
                                 expr: Expr::Assign {
@@ -1878,10 +1878,10 @@ fn if_else_assigning_both_branches_does_not_warn() {
                         range: text_range(13, 24),
                     },
                     Stmt::If {
-                        condition: Expr::Int {
+                        condition: Box::new(Expr::Int {
                             value: 1,
                             range: text_range(29, 30),
-                        },
+                        }),
                         then_branch: Box::new(Stmt::Block {
                             statements: vec![Stmt::Expr {
                                 expr: Expr::Assign {
@@ -1963,10 +1963,10 @@ fn while_loop_write_only_does_not_make_post_read_definite() {
                         range: text_range(13, 24),
                     },
                     Stmt::While {
-                        condition: Expr::Int {
+                        condition: Box::new(Expr::Int {
                             value: 1,
                             range: text_range(32, 33),
-                        },
+                        }),
                         body: Box::new(Stmt::Block {
                             statements: vec![Stmt::Expr {
                                 expr: Expr::Assign {
@@ -2051,10 +2051,10 @@ fn do_while_unconditional_write_allows_post_read() {
                             }],
                             range: text_range(27, 44),
                         }),
-                        condition: Expr::Int {
+                        condition: Box::new(Expr::Int {
                             value: 0,
                             range: text_range(51, 52),
-                        },
+                        }),
                         range: text_range(25, 53),
                     },
                     Stmt::Expr {
@@ -2417,14 +2417,14 @@ fn unresolved_variable_for_in_binding_is_not_reported() {
             }],
             body: Stmt::Block {
                 statements: vec![Stmt::ForIn {
-                    binding: Expr::Ident {
+                    binding: Box::new(Expr::Ident {
                         name_range: tr("$item"),
                         range: text_range(24, 29),
-                    },
-                    iterable: Expr::Ident {
+                    }),
+                    iterable: Box::new(Expr::Ident {
                         name_range: tr("$items"),
                         range: text_range(33, 39),
-                    },
+                    }),
                     body: Box::new(Stmt::Block {
                         statements: vec![Stmt::Expr {
                             expr: invoke_expr(InvokeExpr {
@@ -2466,14 +2466,14 @@ fn unresolved_variable_for_in_iterable_is_still_reported() {
             params: Vec::new(),
             body: Stmt::Block {
                 statements: vec![Stmt::ForIn {
-                    binding: Expr::Ident {
+                    binding: Box::new(Expr::Ident {
                         name_range: tr("$item"),
                         range: text_range(13, 18),
-                    },
-                    iterable: Expr::Ident {
+                    }),
+                    iterable: Box::new(Expr::Ident {
                         name_range: tr("$missing"),
                         range: text_range(22, 30),
-                    },
+                    }),
                     body: Box::new(Stmt::Block {
                         statements: vec![Stmt::Expr {
                             expr: invoke_expr(InvokeExpr {
