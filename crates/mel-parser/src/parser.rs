@@ -3,7 +3,7 @@ use mel_ast::{
     ProcReturnType, ShellWord, SourceFile, Stmt, SwitchClause, SwitchLabel, TypeName, UnaryOp,
     UpdateOp, VarDecl, VectorComponent,
 };
-use mel_lexer::lex_significant;
+use mel_lexer::{Lexer, significant_lexer};
 use mel_syntax::{SourceMap, TextRange, Token, TokenKind, range_end, range_start, text_range};
 
 use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding};
@@ -11,9 +11,17 @@ use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding};
 pub(crate) struct Parser<'a> {
     input: &'a str,
     options: ParseOptions,
-    tokens: Vec<Token>,
+    tokens: TokenWindow<'a>,
     pos: usize,
+    rewind_floor: Option<usize>,
     errors: Vec<ParseError>,
+}
+
+struct TokenWindow<'a> {
+    lexer: Lexer<'a>,
+    tokens: Vec<Token>,
+    base_index: usize,
+    eof_seen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,16 +35,14 @@ impl<'a> Parser<'a> {
         Self {
             input,
             options,
-            tokens: Vec::new(),
+            tokens: TokenWindow::new(input),
             pos: 0,
+            rewind_floor: None,
             errors: Vec::new(),
         }
     }
 
     pub(crate) fn parse(mut self) -> Parse {
-        let lexed = lex_significant(self.input);
-        self.tokens = lexed.tokens;
-
         let mut items = Vec::new();
         while !self.at(TokenKind::Eof) {
             if let Some(item) = self.parse_item() {
@@ -54,9 +60,21 @@ impl<'a> Parser<'a> {
             source_map: SourceMap::identity(self.input.len()),
             source_encoding: SourceEncoding::Utf8,
             decode_errors: Vec::new(),
-            lex_errors: lexed.diagnostics,
+            lex_errors: self.tokens.finish_diagnostics(),
             errors: self.errors,
         }
+    }
+
+    fn set_pos(&mut self, pos: usize) {
+        self.pos = pos;
+        self.prune_consumed_tokens();
+    }
+
+    fn prune_consumed_tokens(&mut self) {
+        let keep_from = self
+            .rewind_floor
+            .unwrap_or_else(|| self.pos.saturating_sub(1));
+        self.tokens.discard_before(keep_from);
     }
 
     fn parse_item(&mut self) -> Option<Item> {
@@ -105,7 +123,8 @@ impl<'a> Parser<'a> {
                     match self.parse_proc_param() {
                         Some(param) => params.push(param),
                         None => {
-                            self.error("expected proc parameter", self.current().range);
+                            let range = self.current().range;
+                            self.error("expected proc parameter", range);
                             self.recover_to_proc_param_boundary();
                         }
                     }
@@ -152,7 +171,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_proc_return_type(&mut self) -> Option<ProcReturnType> {
-        if !self.at(TokenKind::Ident) || !is_type_keyword(self.token_text(self.current())) {
+        let current = self.current();
+        if current.kind != TokenKind::Ident || !is_type_keyword(self.token_text(current)) {
             return None;
         }
 
@@ -667,9 +687,12 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LParen, "expected '(' after for")?;
 
         let checkpoint = self.pos;
+        self.rewind_floor = Some(checkpoint);
         if let Some(binding) = self.parse_expr()
             && self.eat_keyword("in").is_some()
         {
+            self.rewind_floor = None;
+            self.prune_consumed_tokens();
             let iterable = if let Some(expr) = self.parse_expr() {
                 expr
             } else {
@@ -689,7 +712,8 @@ impl<'a> Parser<'a> {
             });
         }
 
-        self.pos = checkpoint;
+        self.rewind_floor = None;
+        self.set_pos(checkpoint);
 
         let init = if self.at(TokenKind::Semi) {
             None
@@ -735,10 +759,8 @@ impl<'a> Parser<'a> {
             }
 
             if self.at(TokenKind::Semi) || self.at(TokenKind::RParen) {
-                self.error(
-                    "expected expression after ',' in for clause",
-                    self.current().range,
-                );
+                let range = self.current().range;
+                self.error("expected expression after ',' in for clause", range);
                 break;
             }
         }
@@ -796,7 +818,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn starts_var_decl(&self) -> bool {
+    fn starts_var_decl(&mut self) -> bool {
         if self.at_keyword("global") {
             if self.peek_keyword() == Some("proc") {
                 return false;
@@ -805,14 +827,15 @@ impl<'a> Parser<'a> {
             return self.peek_keyword().is_some_and(is_type_keyword);
         }
 
-        self.at(TokenKind::Ident) && is_type_keyword(self.token_text(self.current()))
+        let current = self.current();
+        current.kind == TokenKind::Ident && is_type_keyword(self.token_text(current))
     }
 
-    fn starts_command_stmt(&self) -> bool {
+    fn starts_command_stmt(&mut self) -> bool {
         self.at(TokenKind::Ident) && !self.starts_function_stmt()
     }
 
-    fn starts_function_stmt(&self) -> bool {
+    fn starts_function_stmt(&mut self) -> bool {
         if !self.at(TokenKind::Ident) || self.peek_kind() != Some(TokenKind::LParen) {
             return false;
         }
@@ -846,7 +869,8 @@ impl<'a> Parser<'a> {
             match self.parse_declarator() {
                 Some(declarator) => declarators.push(declarator),
                 None => {
-                    self.error("expected variable declarator", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected variable declarator", range);
                     self.recover_to_decl_boundary();
                 }
             }
@@ -876,7 +900,8 @@ impl<'a> Parser<'a> {
         let ident = if let Some(token) = self.eat(TokenKind::Ident) {
             token
         } else {
-            self.error("expected identifier after '$'", self.current().range);
+            let range = self.current().range;
+            self.error("expected identifier after '$'", range);
             return Some(Declarator {
                 name_range: dollar.range,
                 array_size: None,
@@ -900,7 +925,8 @@ impl<'a> Parser<'a> {
                     Some(expr)
                 }
                 None => {
-                    self.error("expected expression after '='", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected expression after '='", range);
                     None
                 }
             }
@@ -950,7 +976,8 @@ impl<'a> Parser<'a> {
 
                 self.bump();
                 if self.current().kind != TokenKind::Ident {
-                    self.error("expected member name after '.'", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected member name after '.'", range);
                     return Some(lhs);
                 }
 
@@ -1030,19 +1057,22 @@ impl<'a> Parser<'a> {
                 let then_expr = if let Some(expr) = self.parse_expr_bp(0) {
                     expr
                 } else {
-                    self.error("expected expression after '?'", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected expression after '?'", range);
                     return Some(lhs);
                 };
 
                 if self.eat(TokenKind::Colon).is_none() {
-                    self.error("expected ':' in ternary expression", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected ':' in ternary expression", range);
                     return Some(lhs);
                 }
 
                 let else_expr = if let Some(expr) = self.parse_expr_bp(l_bp) {
                     expr
                 } else {
-                    self.error("expected expression after ':'", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected expression after ':'", range);
                     return Some(lhs);
                 };
 
@@ -1070,7 +1100,8 @@ impl<'a> Parser<'a> {
             let rhs = if let Some(expr) = self.parse_expr_bp(r_bp) {
                 expr
             } else {
-                self.error("expected expression after operator", self.current().range);
+                let range = self.current().range;
+                self.error("expected expression after operator", range);
                 return Some(lhs);
             };
 
@@ -1125,10 +1156,8 @@ impl<'a> Parser<'a> {
         let expr = if let Some(expr) = self.parse_expr_bp(80) {
             expr
         } else {
-            self.error(
-                "expected expression after prefix update",
-                self.current().range,
-            );
+            let range = self.current().range;
+            self.error("expected expression after prefix update", range);
             return None;
         };
 
@@ -1143,10 +1172,8 @@ impl<'a> Parser<'a> {
         let expr = if let Some(expr) = self.parse_expr_bp(80) {
             expr
         } else {
-            self.error(
-                "expected expression after unary operator",
-                self.current().range,
-            );
+            let range = self.current().range;
+            self.error("expected expression after unary operator", range);
             return None;
         };
 
@@ -1228,12 +1255,12 @@ impl<'a> Parser<'a> {
         let start = range_start(self.token_at(start_index).range);
         let end = range_end(self.token_at(end_index).range);
         let range = text_range(start, end);
-        self.pos = end_index + 1;
+        self.set_pos(end_index + 1);
 
         Some(Expr::BareWord { text: range, range })
     }
 
-    fn at_path_like_bareword_expr(&self) -> bool {
+    fn at_path_like_bareword_expr(&mut self) -> bool {
         let start_index = self.current_index();
         let start_kind = self.token_at(start_index).kind;
         self.scan_path_like_bareword_end(start_index)
@@ -1241,7 +1268,7 @@ impl<'a> Parser<'a> {
                 start_kind != TokenKind::Ident
                     || (start_index..=end_index).any(|index| {
                         matches!(
-                            self.tokens.get(index).map(|token| token.kind),
+                            self.kind_at(index),
                             Some(TokenKind::Pipe | TokenKind::Colon)
                         )
                     })
@@ -1253,7 +1280,8 @@ impl<'a> Parser<'a> {
         let ident = if let Some(token) = self.eat(TokenKind::Ident) {
             token
         } else {
-            self.error("expected identifier after '$'", self.current().range);
+            let range = self.current().range;
+            self.error("expected identifier after '$'", range);
             return Some(Expr::Ident {
                 name_range: dollar.range,
                 range: dollar.range,
@@ -1266,7 +1294,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn at_cast_expr(&self) -> bool {
+    fn at_cast_expr(&mut self) -> bool {
         if !self.at(TokenKind::LParen) {
             return false;
         }
@@ -1313,10 +1341,8 @@ impl<'a> Parser<'a> {
         self.eat(TokenKind::LParen)?;
         let expr = self.parse_expr()?;
         if self.eat(TokenKind::RParen).is_none() {
-            self.error(
-                "expected ')' to close grouped expression",
-                self.current().range,
-            );
+            let range = self.current().range;
+            self.error("expected ')' to close grouped expression", range);
             self.recover_to_rparen_or_stmt_boundary();
             let _ = self.eat(TokenKind::RParen);
         }
@@ -1331,10 +1357,8 @@ impl<'a> Parser<'a> {
             if let Some(expr) = self.parse_expr() {
                 elements.push(expr);
             } else {
-                self.error(
-                    "expected expression inside brace list",
-                    self.current().range,
-                );
+                let range = self.current().range;
+                self.error("expected expression inside brace list", range);
                 self.recover_to_brace_list_boundary();
             }
 
@@ -1366,10 +1390,8 @@ impl<'a> Parser<'a> {
             if let Some(expr) = self.parse_expr() {
                 elements.push(expr);
             } else {
-                self.error(
-                    "expected expression inside vector literal",
-                    self.current().range,
-                );
+                let range = self.current().range;
+                self.error("expected expression inside vector literal", range);
                 self.recover_to_vector_literal_boundary();
             }
 
@@ -1403,10 +1425,8 @@ impl<'a> Parser<'a> {
                 if let Some(expr) = self.parse_expr() {
                     args.push(expr);
                 } else {
-                    self.error(
-                        "expected expression as function argument",
-                        self.current().range,
-                    );
+                    let range = self.current().range;
+                    self.error("expected expression as function argument", range);
                     break;
                 }
 
@@ -1459,10 +1479,8 @@ impl<'a> Parser<'a> {
 
             let Some(word) = self.parse_shell_word(captured) else {
                 let error_index = self.current_index();
-                self.error(
-                    "unexpected token in command invocation",
-                    self.current().range,
-                );
+                let range = self.current().range;
+                self.error("unexpected token in command invocation", range);
                 self.recover_to_shell_word_boundary(captured);
                 if self.current_index() == error_index && !self.at_shell_terminator(captured) {
                     self.bump();
@@ -1496,10 +1514,8 @@ impl<'a> Parser<'a> {
                 range: open.range,
             })
         } else {
-            self.error(
-                "expected command name after backquote",
-                self.current().range,
-            );
+            let range = self.current().range;
+            self.error("expected command name after backquote", range);
             InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: open.range,
@@ -1524,7 +1540,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn at_shell_terminator(&self, captured: bool) -> bool {
+    fn at_shell_terminator(&mut self, captured: bool) -> bool {
         if captured {
             self.at(TokenKind::Backquote)
         } else {
@@ -1532,7 +1548,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn at_captured_shell_recovery_boundary(&self) -> bool {
+    fn at_captured_shell_recovery_boundary(&mut self) -> bool {
         self.at(TokenKind::RParen) || self.at(TokenKind::Semi) || self.at(TokenKind::RBrace)
     }
 
@@ -1586,12 +1602,12 @@ impl<'a> Parser<'a> {
         let start = range_start(self.token_at(start_index).range);
         let end = range_end(self.token_at(end_index).range);
         let range = text_range(start, end);
-        self.pos = end_index + 1;
+        self.set_pos(end_index + 1);
 
         Some(ShellWord::BareWord { text: range, range })
     }
 
-    fn scan_shell_path_like_bareword_end(&self, start_index: usize) -> Option<usize> {
+    fn scan_shell_path_like_bareword_end(&mut self, start_index: usize) -> Option<usize> {
         if !matches!(
             self.token_at(start_index).kind,
             TokenKind::Ident | TokenKind::Pipe | TokenKind::Star | TokenKind::Colon
@@ -1610,7 +1626,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident | TokenKind::Star => {
                 while matches!(
-                    self.tokens.get(index).map(|token| token.kind),
+                    self.kind_at(index),
                     Some(TokenKind::Ident | TokenKind::Star)
                 ) && self.tokens_are_adjacent(end_index, index)
                 {
@@ -1619,10 +1635,7 @@ impl<'a> Parser<'a> {
                 }
 
                 while matches!(
-                    (
-                        self.tokens.get(index).map(|token| token.kind),
-                        self.tokens.get(index + 1).map(|token| token.kind)
-                    ),
+                    (self.kind_at(index), self.kind_at(index + 1)),
                     (
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
@@ -1633,7 +1646,7 @@ impl<'a> Parser<'a> {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
-                        self.tokens.get(index).map(|token| token.kind),
+                        self.kind_at(index),
                         Some(TokenKind::Ident | TokenKind::Star)
                     ) && self.tokens_are_adjacent(end_index, index)
                     {
@@ -1649,7 +1662,7 @@ impl<'a> Parser<'a> {
             if expecting_segment_start {
                 let mut consumed_atom = false;
                 while matches!(
-                    self.tokens.get(index).map(|token| token.kind),
+                    self.kind_at(index),
                     Some(TokenKind::Ident | TokenKind::Star)
                 ) && self.tokens_are_adjacent(end_index, index)
                 {
@@ -1663,10 +1676,7 @@ impl<'a> Parser<'a> {
                 }
 
                 while matches!(
-                    (
-                        self.tokens.get(index).map(|token| token.kind),
-                        self.tokens.get(index + 1).map(|token| token.kind)
-                    ),
+                    (self.kind_at(index), self.kind_at(index + 1)),
                     (
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
@@ -1677,7 +1687,7 @@ impl<'a> Parser<'a> {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
-                        self.tokens.get(index).map(|token| token.kind),
+                        self.kind_at(index),
                         Some(TokenKind::Ident | TokenKind::Star)
                     ) && self.tokens_are_adjacent(end_index, index)
                     {
@@ -1690,10 +1700,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if matches!(
-                self.tokens.get(index).map(|token| token.kind),
-                Some(TokenKind::Pipe)
-            ) && self.tokens_are_adjacent(end_index, index)
+            if matches!(self.kind_at(index), Some(TokenKind::Pipe))
+                && self.tokens_are_adjacent(end_index, index)
             {
                 end_index = index;
                 index += 1;
@@ -1702,10 +1710,7 @@ impl<'a> Parser<'a> {
             }
 
             if matches!(
-                (
-                    self.tokens.get(index).map(|token| token.kind),
-                    self.tokens.get(index + 1).map(|token| token.kind)
-                ),
+                (self.kind_at(index), self.kind_at(index + 1)),
                 (Some(TokenKind::Dot), Some(TokenKind::Ident))
             ) && self.tokens_are_adjacent(end_index, index)
                 && self.tokens_are_adjacent(index, index + 1)
@@ -1724,7 +1729,7 @@ impl<'a> Parser<'a> {
             }
 
             while matches!(
-                self.tokens.get(index).map(|token| token.kind),
+                self.kind_at(index),
                 Some(TokenKind::Ident | TokenKind::Star)
             ) && self.tokens_are_adjacent(end_index, index)
             {
@@ -1742,7 +1747,7 @@ impl<'a> Parser<'a> {
         Some(end_index)
     }
 
-    fn scan_path_like_bareword_end(&self, start_index: usize) -> Option<usize> {
+    fn scan_path_like_bareword_end(&mut self, start_index: usize) -> Option<usize> {
         if !matches!(
             self.token_at(start_index).kind,
             TokenKind::Ident | TokenKind::Pipe | TokenKind::Star | TokenKind::Colon
@@ -1761,7 +1766,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident | TokenKind::Star => {
                 while matches!(
-                    self.tokens.get(index).map(|token| token.kind),
+                    self.kind_at(index),
                     Some(TokenKind::Ident | TokenKind::Star)
                 ) && self.tokens_are_adjacent(end_index, index)
                 {
@@ -1770,10 +1775,7 @@ impl<'a> Parser<'a> {
                 }
 
                 while matches!(
-                    (
-                        self.tokens.get(index).map(|token| token.kind),
-                        self.tokens.get(index + 1).map(|token| token.kind)
-                    ),
+                    (self.kind_at(index), self.kind_at(index + 1)),
                     (
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
@@ -1784,7 +1786,7 @@ impl<'a> Parser<'a> {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
-                        self.tokens.get(index).map(|token| token.kind),
+                        self.kind_at(index),
                         Some(TokenKind::Ident | TokenKind::Star)
                     ) && self.tokens_are_adjacent(end_index, index)
                     {
@@ -1800,7 +1802,7 @@ impl<'a> Parser<'a> {
             if expecting_segment_start {
                 let mut consumed_atom = false;
                 while matches!(
-                    self.tokens.get(index).map(|token| token.kind),
+                    self.kind_at(index),
                     Some(TokenKind::Ident | TokenKind::Star)
                 ) && self.tokens_are_adjacent(end_index, index)
                 {
@@ -1814,10 +1816,7 @@ impl<'a> Parser<'a> {
                 }
 
                 while matches!(
-                    (
-                        self.tokens.get(index).map(|token| token.kind),
-                        self.tokens.get(index + 1).map(|token| token.kind)
-                    ),
+                    (self.kind_at(index), self.kind_at(index + 1)),
                     (
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
@@ -1828,7 +1827,7 @@ impl<'a> Parser<'a> {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
-                        self.tokens.get(index).map(|token| token.kind),
+                        self.kind_at(index),
                         Some(TokenKind::Ident | TokenKind::Star)
                     ) && self.tokens_are_adjacent(end_index, index)
                     {
@@ -1841,10 +1840,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if matches!(
-                self.tokens.get(index).map(|token| token.kind),
-                Some(TokenKind::Pipe)
-            ) && self.tokens_are_adjacent(end_index, index)
+            if matches!(self.kind_at(index), Some(TokenKind::Pipe))
+                && self.tokens_are_adjacent(end_index, index)
             {
                 end_index = index;
                 index += 1;
@@ -1853,10 +1850,7 @@ impl<'a> Parser<'a> {
             }
 
             if matches!(
-                (
-                    self.tokens.get(index).map(|token| token.kind),
-                    self.tokens.get(index + 1).map(|token| token.kind)
-                ),
+                (self.kind_at(index), self.kind_at(index + 1)),
                 (Some(TokenKind::Dot), Some(TokenKind::Ident))
             ) && self.tokens_are_adjacent(end_index, index)
                 && self.tokens_are_adjacent(index, index + 1)
@@ -1875,7 +1869,7 @@ impl<'a> Parser<'a> {
             }
 
             while matches!(
-                self.tokens.get(index).map(|token| token.kind),
+                self.kind_at(index),
                 Some(TokenKind::Ident | TokenKind::Star)
             ) && self.tokens_are_adjacent(end_index, index)
             {
@@ -1893,15 +1887,15 @@ impl<'a> Parser<'a> {
         Some(end_index)
     }
 
-    fn bareword_bracket_suffix_end(&self, start_index: usize) -> Option<usize> {
+    fn bareword_bracket_suffix_end(&mut self, start_index: usize) -> Option<usize> {
         if self.token_at(start_index).kind != TokenKind::LBracket {
             return None;
         }
 
         match (
-            self.tokens.get(start_index + 1).map(|token| token.kind),
-            self.tokens.get(start_index + 2).map(|token| token.kind),
-            self.tokens.get(start_index + 3).map(|token| token.kind),
+            self.kind_at(start_index + 1),
+            self.kind_at(start_index + 2),
+            self.kind_at(start_index + 3),
         ) {
             (Some(TokenKind::IntLiteral), Some(TokenKind::RBracket), _) => Some(start_index + 2),
             (Some(TokenKind::Dollar), Some(TokenKind::Ident), Some(TokenKind::RBracket)) => {
@@ -2000,7 +1994,8 @@ impl<'a> Parser<'a> {
             if self.at(TokenKind::Dot) {
                 self.bump();
                 if self.current().kind != TokenKind::Ident {
-                    self.error("expected member name after '.'", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected member name after '.'", range);
                     break;
                 }
 
@@ -2028,7 +2023,8 @@ impl<'a> Parser<'a> {
                 let index = if let Some(index) = self.parse_expr() {
                     index
                 } else {
-                    self.error("expected expression inside index", self.current().range);
+                    let range = self.current().range;
+                    self.error("expected expression inside index", range);
                     break;
                 };
 
@@ -2065,10 +2061,8 @@ impl<'a> Parser<'a> {
         let end = if let Some(close) = self.eat(TokenKind::RParen) {
             range_end(close.range)
         } else {
-            self.error(
-                "expected ')' to close grouped expression",
-                self.current().range,
-            );
+            let range = self.current().range;
+            self.error("expected ')' to close grouped expression", range);
             self.recover_to_rparen_or_stmt_boundary();
             self.eat(TokenKind::RParen)
                 .map(|token| range_end(token.range))
@@ -2131,17 +2125,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn can_omit_stmt_semi(&self, context: StmtContext) -> bool {
+    fn can_omit_stmt_semi(&mut self, context: StmtContext) -> bool {
         matches!(self.options.mode, ParseMode::AllowTrailingStmtWithoutSemi)
             && matches!(context, StmtContext::TopLevel)
             && self.at(TokenKind::Eof)
     }
 
-    fn at(&self, kind: TokenKind) -> bool {
+    fn at(&mut self, kind: TokenKind) -> bool {
         self.current().kind == kind
     }
 
-    fn can_start_shell_word(&self, captured: bool) -> bool {
+    fn can_start_shell_word(&mut self, captured: bool) -> bool {
         matches!(
             self.current().kind,
             TokenKind::StringLiteral
@@ -2165,8 +2159,9 @@ impl<'a> Parser<'a> {
             || (self.at(TokenKind::Dot) && self.peek_kind() == Some(TokenKind::Dot))
     }
 
-    fn at_keyword(&self, keyword: &str) -> bool {
-        self.current().kind == TokenKind::Ident && self.token_text(self.current()) == keyword
+    fn at_keyword(&mut self, keyword: &str) -> bool {
+        let current = self.current();
+        current.kind == TokenKind::Ident && self.token_text(current) == keyword
     }
 
     fn eat(&mut self, kind: TokenKind) -> Option<Token> {
@@ -2189,7 +2184,8 @@ impl<'a> Parser<'a> {
         if let Some(token) = self.eat(kind) {
             Some(token)
         } else {
-            self.error(message, self.current().range);
+            let range = self.current().range;
+            self.error(message, range);
             None
         }
     }
@@ -2198,31 +2194,31 @@ impl<'a> Parser<'a> {
         let index = self.current_index();
         let token = self.token_at(index);
         if token.kind != TokenKind::Eof {
-            self.pos = index + 1;
+            self.set_pos(index + 1);
         }
         token
     }
 
-    fn current(&self) -> Token {
+    fn current(&mut self) -> Token {
         self.token_at(self.current_index())
     }
 
-    fn peek_kind(&self) -> Option<TokenKind> {
+    fn peek_kind(&mut self) -> Option<TokenKind> {
         self.nth_kind_after_current(1)
     }
 
-    fn peek_keyword(&self) -> Option<&'a str> {
+    fn peek_keyword(&mut self) -> Option<&'a str> {
         let next = self.next_significant_index(self.current_index() + 1);
-        let token = self.tokens.get(next).copied()?;
+        let token = self.token_at(next);
         (token.kind == TokenKind::Ident).then(|| self.token_text(token))
     }
 
-    fn nth_kind_after_current(&self, n: usize) -> Option<TokenKind> {
+    fn nth_kind_after_current(&mut self, n: usize) -> Option<TokenKind> {
         let mut index = self.current_index();
         for _ in 0..n {
             index = self.next_significant_index(index + 1);
         }
-        self.tokens.get(index).map(|token| token.kind)
+        self.kind_at(index)
     }
 
     fn token_text(&self, token: Token) -> &'a str {
@@ -2231,24 +2227,15 @@ impl<'a> Parser<'a> {
         &self.input[start..end]
     }
 
-    fn previous_range(&self) -> TextRange {
+    fn previous_range(&mut self) -> TextRange {
         self.current_index()
             .checked_sub(1)
             .map(|index| self.token_at(index).range)
             .unwrap_or(text_range(0, 0))
     }
 
-    fn previous_significant_range(&self) -> TextRange {
-        let mut index = self.current_index();
-        while index > 0 {
-            index -= 1;
-            let token = self.token_at(index);
-            if !token.kind.is_trivia() {
-                return token.range;
-            }
-        }
-
-        text_range(0, 0)
+    fn previous_significant_range(&mut self) -> TextRange {
+        self.previous_range()
     }
 
     fn error(&mut self, message: &'static str, range: TextRange) {
@@ -2315,7 +2302,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn at_stmt_recovery_boundary(&self) -> bool {
+    fn at_stmt_recovery_boundary(&mut self) -> bool {
         self.at(TokenKind::Dollar)
             || self.at(TokenKind::LBrace)
             || self.at(TokenKind::Backquote)
@@ -2342,10 +2329,10 @@ impl<'a> Parser<'a> {
     }
 
     fn current_index(&self) -> usize {
-        self.next_significant_index(self.pos)
+        self.pos
     }
 
-    fn matching_rparen_index(&self, open_index: usize) -> Option<usize> {
+    fn matching_rparen_index(&mut self, open_index: usize) -> Option<usize> {
         if self.token_at(open_index).kind != TokenKind::LParen {
             return None;
         }
@@ -2369,7 +2356,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn has_line_break_between(&self, left_index: usize, right_index: usize) -> bool {
+    fn has_line_break_between(&mut self, left_index: usize, right_index: usize) -> bool {
         if right_index <= left_index {
             return false;
         }
@@ -2381,7 +2368,7 @@ impl<'a> Parser<'a> {
         self.input[start.min(end)..end.max(start)].contains('\n')
     }
 
-    fn tokens_are_adjacent(&self, left_index: usize, right_index: usize) -> bool {
+    fn tokens_are_adjacent(&mut self, left_index: usize, right_index: usize) -> bool {
         if right_index <= left_index {
             return false;
         }
@@ -2391,7 +2378,7 @@ impl<'a> Parser<'a> {
         range_end(left.range) as usize == range_start(right.range) as usize
     }
 
-    fn starts_stmt_after_function_args(&self, index: usize) -> bool {
+    fn starts_stmt_after_function_args(&mut self, index: usize) -> bool {
         let token = self.token_at(index);
         match token.kind {
             TokenKind::Dollar => {
@@ -2431,23 +2418,89 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn next_significant_index(&self, start: usize) -> usize {
-        let mut index = start;
-        while let Some(token) = self.tokens.get(index) {
-            if !token.kind.is_trivia() {
-                return index;
-            }
-            index += 1;
-        }
-        self.tokens.len().saturating_sub(1)
+    fn next_significant_index(&mut self, start: usize) -> usize {
+        self.tokens.clamp_index(start)
     }
 
-    fn token_at(&self, index: usize) -> Token {
+    fn token_at(&mut self, index: usize) -> Token {
+        self.tokens.token_at(index)
+    }
+
+    fn kind_at(&mut self, index: usize) -> Option<TokenKind> {
+        Some(self.token_at(index).kind)
+    }
+}
+
+impl<'a> TokenWindow<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            lexer: significant_lexer(input),
+            tokens: Vec::new(),
+            base_index: 0,
+            eof_seen: false,
+        }
+    }
+
+    fn token_at(&mut self, index: usize) -> Token {
+        self.ensure_loaded(index);
+        let relative = index.saturating_sub(self.base_index);
         self.tokens
-            .get(index)
+            .get(relative)
             .copied()
             .or_else(|| self.tokens.last().copied())
             .unwrap_or(Token::new(TokenKind::Eof, text_range(0, 0)))
+    }
+
+    fn clamp_index(&mut self, index: usize) -> usize {
+        self.ensure_loaded(index);
+        if index < self.base_index {
+            self.base_index
+        } else {
+            let last_index = self.base_index + self.tokens.len().saturating_sub(1);
+            index.min(last_index)
+        }
+    }
+
+    fn discard_before(&mut self, keep_from: usize) {
+        const PRUNE_GRANULARITY: usize = 16384;
+        const HISTORY_TAIL: usize = 128;
+
+        if keep_from <= self.base_index + PRUNE_GRANULARITY {
+            return;
+        }
+
+        let target = keep_from.saturating_sub(HISTORY_TAIL);
+        let max_drop = self.tokens.len().saturating_sub(2);
+        let drop = target.saturating_sub(self.base_index).min(max_drop);
+        if drop == 0 {
+            return;
+        }
+
+        self.tokens.drain(..drop);
+        self.base_index += drop;
+    }
+
+    fn finish_diagnostics(mut self) -> Vec<mel_syntax::LexDiagnostic> {
+        while !self.eof_seen {
+            self.ensure_loaded(self.base_index + self.tokens.len());
+        }
+        self.lexer.finish()
+    }
+
+    fn ensure_loaded(&mut self, index: usize) {
+        while self.base_index + self.tokens.len() <= index && !self.eof_seen {
+            let Some(token) = self.lexer.next() else {
+                break;
+            };
+            self.eof_seen = token.kind == TokenKind::Eof;
+            self.tokens.push(token);
+        }
+
+        if self.tokens.is_empty() {
+            self.eof_seen = true;
+            self.tokens
+                .push(Token::new(TokenKind::Eof, text_range(0, 0)));
+        }
     }
 }
 
