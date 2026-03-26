@@ -1,9 +1,9 @@
-use encoding_rs::{Encoding, GBK, SHIFT_JIS};
+use encoding_rs::{DecoderResult, Encoding, GBK, SHIFT_JIS};
 use std::borrow::Cow;
 use std::str::Utf8Error;
 use std::sync::Arc;
 
-use mel_syntax::{TextRange, range_end, range_start, text_range};
+use mel_syntax::{SourceMapEdit, TextRange, range_end, range_start, text_range};
 
 use crate::{DecodeDiagnostic, SourceEncoding};
 
@@ -22,6 +22,11 @@ enum OffsetMapKind {
     Indexed {
         decoded_to_source: Box<[u32]>,
         source_to_decoded: Arc<[u32]>,
+    },
+    Sparse {
+        source_len: usize,
+        display_len: usize,
+        edits: Arc<[SourceMapEdit]>,
     },
 }
 
@@ -86,6 +91,11 @@ impl OffsetMap {
                 .copied()
                 .or_else(|| decoded_to_source.last().copied())
                 .unwrap_or(offset),
+            OffsetMapKind::Sparse {
+                source_len,
+                display_len,
+                edits,
+            } => sparse_display_to_source(*source_len, *display_len, edits, offset as usize),
         }
     }
 
@@ -104,6 +114,15 @@ impl OffsetMap {
             } => {
                 mel_syntax::SourceMap::from_shared_source_to_display(Arc::clone(source_to_decoded))
             }
+            OffsetMapKind::Sparse {
+                source_len,
+                display_len,
+                edits,
+            } => mel_syntax::SourceMap::from_sparse_edits(
+                *source_len,
+                *display_len,
+                Arc::clone(edits),
+            ),
         }
     }
 }
@@ -157,9 +176,26 @@ pub(crate) fn decode_source_with_encoding(
         };
     }
 
-    let (text, _, had_errors) = encoding_rs_encoding(encoding).decode(input);
-    let offset_map = OffsetMap::from_decoded_text(text.as_ref(), input.len(), encoding)
-        .unwrap_or_else(|| OffsetMap::identity(text.len()));
+    let encoding_rs = encoding_rs_encoding(encoding);
+    if Encoding::ascii_valid_up_to(input) == input.len() {
+        let text = std::str::from_utf8(input).unwrap_or_default();
+        return DecodedSource {
+            encoding,
+            text: Cow::Borrowed(text),
+            offset_map: OffsetMap::identity(text.len()),
+            diagnostics: Vec::new(),
+        };
+    }
+
+    let (text, _, had_errors) = encoding_rs.decode(input);
+    let offset_map = if had_errors {
+        OffsetMap::from_decoded_text(text.as_ref(), input.len(), encoding)
+            .unwrap_or_else(|| OffsetMap::identity(text.len()))
+    } else {
+        OffsetMap::from_ascii_compatible_text(input, text.as_ref(), encoding)
+            .or_else(|| OffsetMap::from_decoded_text(text.as_ref(), input.len(), encoding))
+            .unwrap_or_else(|| OffsetMap::identity(text.len()))
+    };
     let diagnostics = if had_errors {
         vec![DecodeDiagnostic {
             message: format!(
@@ -179,6 +215,31 @@ pub(crate) fn decode_source_with_encoding(
         offset_map,
         diagnostics,
     }
+}
+
+fn sparse_display_to_source(
+    source_len: usize,
+    display_len: usize,
+    edits: &[SourceMapEdit],
+    offset: usize,
+) -> u32 {
+    let clamped = offset.min(display_len) as u32;
+    let Some(index) = edits
+        .partition_point(|edit| edit.display_start() <= clamped)
+        .checked_sub(1)
+    else {
+        return clamped;
+    };
+    let edit = edits[index];
+    if clamped == edit.display_start() {
+        return edit.source_start();
+    }
+    if clamped <= edit.display_end() {
+        return edit.source_end();
+    }
+    let mapped = (clamped as i64 - (edit.display_end() as i64 - edit.source_end() as i64))
+        .clamp(0, source_len as i64);
+    mapped as u32
 }
 
 fn decode_auto_sample(input: &[u8], valid_up_to: usize) -> &[u8] {
@@ -345,6 +406,88 @@ fn append_decoded_char_mapping(
         .skip(source_start + 1)
     {
         *mapped = decoded_end as u32;
+    }
+}
+
+impl OffsetMap {
+    fn from_ascii_compatible_text(
+        input: &[u8],
+        text: &str,
+        encoding: SourceEncoding,
+    ) -> Option<Self> {
+        let mut source_offset = 0usize;
+        let mut display_offset = 0usize;
+        let mut edits = Vec::new();
+
+        while source_offset < input.len() || display_offset < text.len() {
+            let ascii_run = Encoding::ascii_valid_up_to(&input[source_offset..]);
+            if ascii_run > 0 {
+                source_offset += ascii_run;
+                display_offset += ascii_run;
+                continue;
+            }
+
+            let run_display_end = next_ascii_display_boundary(text, display_offset);
+            let display_len = run_display_end.saturating_sub(display_offset);
+            let display_run = &text[display_offset..run_display_end];
+            let source_len =
+                source_len_for_decoded_run(&input[source_offset..], display_run, encoding)?;
+            if source_len != display_len {
+                edits.push(SourceMapEdit::new(
+                    u32::try_from(source_offset).unwrap_or(u32::MAX),
+                    u32::try_from(source_offset + source_len).unwrap_or(u32::MAX),
+                    u32::try_from(display_offset).unwrap_or(u32::MAX),
+                    u32::try_from(run_display_end).unwrap_or(u32::MAX),
+                ));
+            }
+            source_offset += source_len;
+            display_offset = run_display_end;
+        }
+
+        if source_offset != input.len() || display_offset != text.len() {
+            return None;
+        }
+
+        if edits.is_empty() && input.len() == text.len() {
+            return Some(Self::identity(text.len()));
+        }
+
+        Some(Self {
+            kind: OffsetMapKind::Sparse {
+                source_len: input.len(),
+                display_len: text.len(),
+                edits: Arc::from(edits),
+            },
+        })
+    }
+}
+
+fn next_ascii_display_boundary(text: &str, display_offset: usize) -> usize {
+    let mut end = display_offset;
+    for ch in text[display_offset..].chars() {
+        if ch.is_ascii() {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+    end
+}
+
+fn source_len_for_decoded_run(
+    input: &[u8],
+    display_run: &str,
+    encoding: SourceEncoding,
+) -> Option<usize> {
+    let mut decoder = encoding_rs_encoding(encoding).new_decoder_without_bom_handling();
+    let mut output = vec![0; display_run.len()];
+    let (result, read, written) =
+        decoder.decode_to_utf8_without_replacement(input, &mut output, false);
+
+    match result {
+        DecoderResult::InputEmpty | DecoderResult::OutputFull => (written == display_run.len()
+            && &output[..written] == display_run.as_bytes())
+        .then_some(read),
+        DecoderResult::Malformed(_, _) => None,
     }
 }
 

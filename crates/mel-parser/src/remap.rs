@@ -3,20 +3,10 @@ use mel_ast::{
 };
 use mel_syntax::TextRange;
 
-use crate::{Parse, decode::OffsetMap};
+use crate::Parse;
 
 pub(crate) trait RangeMapper {
     fn map_range(&self, range: TextRange) -> TextRange;
-}
-
-impl RangeMapper for OffsetMap {
-    fn map_range(&self, range: TextRange) -> TextRange {
-        OffsetMap::map_range(self, range)
-    }
-}
-
-pub(crate) fn remap_parse_ranges(parse: &mut Parse, map: &OffsetMap) {
-    remap_parse_ranges_with_mapper(parse, map);
 }
 
 pub(crate) fn remap_parse_ranges_with_mapper(parse: &mut Parse, mapper: &impl RangeMapper) {

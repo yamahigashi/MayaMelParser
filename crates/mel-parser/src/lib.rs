@@ -29,7 +29,7 @@ pub use light::{
     scan_light_source_with_sink,
 };
 use parser::Parser;
-use remap::{RangeMapper, remap_parse_ranges, remap_source_file_ranges};
+use remap::{RangeMapper, remap_parse_ranges_with_mapper, remap_source_file_ranges};
 
 use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
 
@@ -217,6 +217,17 @@ impl RangeMapper for SourceViewRangeMapper<'_> {
     }
 }
 
+struct SourceMapRangeMapper<'a> {
+    source_map: &'a SourceMap,
+}
+
+impl RangeMapper for SourceMapRangeMapper<'_> {
+    fn map_range(&self, range: TextRange) -> TextRange {
+        self.source_map
+            .source_range_from_display_range(usize::from(range.start())..usize::from(range.end()))
+    }
+}
+
 fn parse_owned_source(
     source_text: String,
     source_map: SourceMap,
@@ -233,14 +244,20 @@ fn parse_owned_source(
 }
 
 fn parse_decoded_source(decoded: decode::DecodedSource<'_>, options: ParseOptions) -> Parse {
+    let source_map = decoded.offset_map.source_map();
     let mut parse = parse_owned_source(
         decoded.text.into_owned(),
-        decoded.offset_map.source_map(),
+        source_map.clone(),
         decoded.encoding,
         decoded.diagnostics,
         options,
     );
-    remap_parse_ranges(&mut parse, &decoded.offset_map);
+    remap_parse_ranges_with_mapper(
+        &mut parse,
+        &SourceMapRangeMapper {
+            source_map: &source_map,
+        },
+    );
     parse
 }
 

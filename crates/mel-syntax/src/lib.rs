@@ -36,10 +36,69 @@ pub fn text_slice(text: &str, range: TextRange) -> &str {
     &text[range_start(range) as usize..range_end(range) as usize]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceMapEdit {
+    source_start: u32,
+    source_end: u32,
+    display_start: u32,
+    display_end: u32,
+}
+
+impl SourceMapEdit {
+    #[must_use]
+    pub const fn new(
+        source_start: u32,
+        source_end: u32,
+        display_start: u32,
+        display_end: u32,
+    ) -> Self {
+        Self {
+            source_start,
+            source_end,
+            display_start,
+            display_end,
+        }
+    }
+
+    #[must_use]
+    pub const fn source_start(self) -> u32 {
+        self.source_start
+    }
+
+    #[must_use]
+    pub const fn source_end(self) -> u32 {
+        self.source_end
+    }
+
+    #[must_use]
+    pub const fn display_start(self) -> u32 {
+        self.display_start
+    }
+
+    #[must_use]
+    pub const fn display_end(self) -> u32 {
+        self.display_end
+    }
+
+    #[must_use]
+    pub const fn delta_after(self) -> i64 {
+        self.display_end as i64 - self.source_end as i64
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SourceMapKind {
-    Identity { len: usize },
-    Indexed { source_to_display: Arc<[u32]> },
+    Identity {
+        len: usize,
+    },
+    Indexed {
+        source_to_display: Arc<[u32]>,
+    },
+    Sparse {
+        source_len: usize,
+        display_len: usize,
+        edits: Arc<[SourceMapEdit]>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +134,24 @@ impl SourceMap {
     }
 
     #[must_use]
+    pub fn from_sparse_edits(
+        source_len: usize,
+        display_len: usize,
+        edits: Arc<[SourceMapEdit]>,
+    ) -> Self {
+        if source_len == display_len && edits.is_empty() {
+            return Self::identity(source_len);
+        }
+        Self {
+            kind: SourceMapKind::Sparse {
+                source_len,
+                display_len,
+                edits,
+            },
+        }
+    }
+
+    #[must_use]
     pub fn display_offset(&self, offset: u32) -> usize {
         match &self.kind {
             SourceMapKind::Identity { len } => usize::try_from(offset).unwrap_or(*len).min(*len),
@@ -84,6 +161,11 @@ impl SourceMap {
                 .or_else(|| source_to_display.last().copied())
                 .unwrap_or(offset)
                 as usize,
+            SourceMapKind::Sparse {
+                source_len,
+                display_len,
+                edits,
+            } => sparse_source_to_display(*source_len, *display_len, edits, offset),
         }
     }
 
@@ -114,6 +196,11 @@ impl SourceMap {
                     Err(index) => u32::try_from(index - 1).unwrap_or(u32::MAX),
                 }
             }
+            SourceMapKind::Sparse {
+                source_len,
+                display_len,
+                edits,
+            } => sparse_display_to_source(*source_len, *display_len, edits, display_offset),
         }
     }
 
@@ -124,6 +211,56 @@ impl SourceMap {
             self.source_offset_for_display(range.end),
         )
     }
+}
+
+fn sparse_source_to_display(
+    source_len: usize,
+    display_len: usize,
+    edits: &[SourceMapEdit],
+    offset: u32,
+) -> usize {
+    let clamped = usize::try_from(offset)
+        .unwrap_or(source_len)
+        .min(source_len) as u32;
+    let Some(index) = edits
+        .partition_point(|edit| edit.source_start() <= clamped)
+        .checked_sub(1)
+    else {
+        return clamped as usize;
+    };
+    let edit = edits[index];
+    if clamped == edit.source_start() {
+        return edit.display_start() as usize;
+    }
+    if clamped <= edit.source_end() {
+        return edit.display_end() as usize;
+    }
+    let mapped = (clamped as i64 + edit.delta_after()).clamp(0, display_len as i64);
+    mapped as usize
+}
+
+fn sparse_display_to_source(
+    source_len: usize,
+    display_len: usize,
+    edits: &[SourceMapEdit],
+    offset: usize,
+) -> u32 {
+    let clamped = offset.min(display_len) as u32;
+    let Some(index) = edits
+        .partition_point(|edit| edit.display_start() <= clamped)
+        .checked_sub(1)
+    else {
+        return clamped;
+    };
+    let edit = edits[index];
+    if clamped == edit.display_start() {
+        return edit.source_start();
+    }
+    if clamped <= edit.display_end() {
+        return edit.source_end();
+    }
+    let mapped = (clamped as i64 - edit.delta_after()).clamp(0, source_len as i64);
+    mapped as u32
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -265,7 +402,7 @@ pub struct Lexed {
 
 #[cfg(test)]
 mod tests {
-    use super::{LexDiagnostic, SourceMap, Token, TokenKind, range_len, text_range};
+    use super::{LexDiagnostic, SourceMap, SourceMapEdit, Token, TokenKind, range_len, text_range};
 
     #[test]
     fn text_range_helpers_keep_offsets() {
@@ -313,5 +450,34 @@ mod tests {
         assert_eq!(map.source_offset_for_display(5), 5);
         assert_eq!(map.source_offset_for_display(99), 8);
         assert_eq!(map.source_range_from_display_range(2..6), text_range(2, 6));
+    }
+
+    #[test]
+    fn sparse_source_map_handles_positive_delta() {
+        let map = SourceMap::from_sparse_edits(4, 5, vec![SourceMapEdit::new(1, 2, 1, 3)].into());
+        assert_eq!(map.display_offset(0), 0);
+        assert_eq!(map.display_offset(1), 1);
+        assert_eq!(map.display_offset(2), 3);
+        assert_eq!(map.display_offset(4), 5);
+        assert_eq!(map.source_offset_for_display(0), 0);
+        assert_eq!(map.source_offset_for_display(1), 1);
+        assert_eq!(map.source_offset_for_display(2), 2);
+        assert_eq!(map.source_offset_for_display(3), 2);
+        assert_eq!(map.source_offset_for_display(5), 4);
+    }
+
+    #[test]
+    fn sparse_source_map_handles_negative_delta() {
+        let map = SourceMap::from_sparse_edits(6, 4, vec![SourceMapEdit::new(1, 5, 1, 3)].into());
+        assert_eq!(map.display_offset(0), 0);
+        assert_eq!(map.display_offset(1), 1);
+        assert_eq!(map.display_offset(2), 3);
+        assert_eq!(map.display_offset(5), 3);
+        assert_eq!(map.display_offset(6), 4);
+        assert_eq!(map.source_offset_for_display(0), 0);
+        assert_eq!(map.source_offset_for_display(1), 1);
+        assert_eq!(map.source_offset_for_display(2), 5);
+        assert_eq!(map.source_offset_for_display(3), 5);
+        assert_eq!(map.source_offset_for_display(4), 6);
     }
 }

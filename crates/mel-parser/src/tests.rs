@@ -311,6 +311,82 @@ fn parse_bytes_keeps_utf8_source_text_and_identity_source_map() {
 }
 
 #[test]
+fn explicit_cp932_ascii_only_input_keeps_identity_offsets() {
+    let parse = parse_bytes_with_encoding(b"setAttr \".tx\" 1;\n", SourceEncoding::Cp932);
+
+    assert!(parse.decode_errors.is_empty());
+    assert_eq!(parse.source_encoding, SourceEncoding::Cp932);
+    assert_eq!(parse.source_map.display_offset(3), 3);
+    assert_eq!(parse.source_map.source_offset_for_display(3), 3);
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { head_range, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    assert_eq!(parse.source_slice(*head_range), "setAttr");
+}
+
+#[test]
+fn parse_source_view_range_rebases_gbk_spans_to_original_bytes() {
+    let (bytes, _, _) = GBK.encode("print 1;\nsetAttr \".名\" -type \"string\" \"值\";\n");
+    let parse = parse_light_bytes(bytes.as_ref());
+    let LightItem::Command(command) = &parse.source.items[1] else {
+        panic!("expected command");
+    };
+    let promoted = parse_source_view_range(parse.source_view(), command.span);
+    assert!(promoted.errors.is_empty());
+    let Item::Stmt(stmt) = &promoted.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { words, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    let ShellWord::QuotedString { text, .. } = &words[0] else {
+        panic!("expected quoted attr path");
+    };
+    assert_eq!(parse.source_slice(*text), "\".名\"");
+}
+
+#[test]
+fn malformed_cp932_decode_path_keeps_current_replacement_behavior() {
+    let parse = parse_bytes_with_encoding(b"print \"\x81\";\n", SourceEncoding::Cp932);
+    assert_eq!(parse.source_encoding, SourceEncoding::Cp932);
+    assert_eq!(parse.decode_errors.len(), 1);
+    assert!(parse.decode_errors[0].message.contains("cp932"));
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { head_range, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    assert_eq!(parse.source_slice(*head_range), "print");
+}
+
+#[test]
 fn parses_nested_proc_definition_statement_fixture() {
     let parse = parse_source(include_str!(
         "../../../tests/corpus/parser/statements/nested-proc-definition.mel"
