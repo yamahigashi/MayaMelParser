@@ -1,5 +1,6 @@
 use encoding_rs::{Encoding, GBK, SHIFT_JIS};
 use std::borrow::Cow;
+use std::str::Utf8Error;
 
 use mel_syntax::{TextRange, range_end, range_start, text_range};
 
@@ -105,30 +106,36 @@ impl OffsetMap {
 }
 
 pub(crate) fn decode_source_auto(input: &[u8]) -> DecodedSource<'_> {
-    if let Ok(text) = std::str::from_utf8(input) {
-        return DecodedSource {
+    match std::str::from_utf8(input) {
+        Ok(text) => DecodedSource {
             encoding: SourceEncoding::Utf8,
             text: Cow::Borrowed(text),
             offset_map: OffsetMap::identity(text.len()),
             diagnostics: Vec::new(),
-        };
+        },
+        Err(error) => decode_source_auto_with_error(input, error),
     }
+}
 
-    let utf8_lossy = decode_lossy_utf8(input);
-
-    let cp932 = decode_source_with_encoding(input, SourceEncoding::Cp932);
-    let gbk = decode_source_with_encoding(input, SourceEncoding::Gbk);
-    let best_non_utf8 = if decode_candidate_rank(&cp932) <= decode_candidate_rank(&gbk) {
-        cp932
+fn decode_source_auto_with_error(input: &[u8], utf8_error: Utf8Error) -> DecodedSource<'_> {
+    let sample = decode_auto_sample(input, utf8_error.valid_up_to());
+    let utf8_lossy_rank = decode_utf8_lossy_sample_rank(sample);
+    let cp932_rank = decode_non_utf8_sample_rank(sample, SourceEncoding::Cp932);
+    let gbk_rank = decode_non_utf8_sample_rank(sample, SourceEncoding::Gbk);
+    let (best_encoding, best_non_utf8_rank) = if cp932_rank <= gbk_rank {
+        (SourceEncoding::Cp932, cp932_rank)
     } else {
-        gbk
+        (SourceEncoding::Gbk, gbk_rank)
     };
 
-    if should_prefer_non_utf8(&best_non_utf8, &utf8_lossy) {
-        best_non_utf8
-    } else {
-        utf8_lossy
+    if best_non_utf8_rank.0 == 0 && best_non_utf8_rank.1 < utf8_lossy_rank.1 {
+        let decoded = decode_source_with_encoding(input, best_encoding);
+        if decoded.diagnostics.is_empty() {
+            return decoded;
+        }
     }
+
+    decode_lossy_utf8_with_error(input, utf8_error.valid_up_to() as u32, utf8_error)
 }
 
 pub(crate) fn decode_source_with_encoding(
@@ -171,33 +178,39 @@ pub(crate) fn decode_source_with_encoding(
     }
 }
 
-fn decode_lossy_utf8(input: &[u8]) -> DecodedSource<'_> {
-    match std::str::from_utf8(input) {
-        Ok(text) => DecodedSource {
-            encoding: SourceEncoding::Utf8,
-            text: Cow::Borrowed(text),
-            offset_map: OffsetMap::identity(text.len()),
-            diagnostics: Vec::new(),
-        },
-        Err(error) => decode_lossy_utf8_with_error(input, error.valid_up_to() as u32, error),
-    }
+fn decode_auto_sample(input: &[u8], valid_up_to: usize) -> &[u8] {
+    const SAMPLE_PREFIX_CONTEXT: usize = 256;
+    const SAMPLE_MAX_BYTES: usize = 64 * 1024;
+
+    let start = valid_up_to.saturating_sub(SAMPLE_PREFIX_CONTEXT);
+    let end = input.len().min(start.saturating_add(SAMPLE_MAX_BYTES));
+    &input[start..end]
 }
 
-fn decode_candidate_rank(decoded: &DecodedSource<'_>) -> (u8, usize, u8) {
-    let has_decode_errors = u8::from(!decoded.diagnostics.is_empty());
-    let suspicious_score = suspicious_text_score(decoded.text.as_ref());
-    let encoding_bias = match decoded.encoding {
+fn decode_utf8_lossy_sample_rank(sample: &[u8]) -> (u8, usize, u8) {
+    let text = String::from_utf8_lossy(sample);
+    (
+        1,
+        suspicious_text_score(text.as_ref()),
+        decode_encoding_bias(SourceEncoding::Utf8),
+    )
+}
+
+fn decode_non_utf8_sample_rank(sample: &[u8], encoding: SourceEncoding) -> (u8, usize, u8) {
+    let (text, _, had_errors) = encoding_rs_encoding(encoding).decode(sample);
+    (
+        u8::from(had_errors),
+        suspicious_text_score(text.as_ref()),
+        decode_encoding_bias(encoding),
+    )
+}
+
+fn decode_encoding_bias(encoding: SourceEncoding) -> u8 {
+    match encoding {
         SourceEncoding::Cp932 => 0,
         SourceEncoding::Gbk => 1,
         SourceEncoding::Utf8 => 2,
-    };
-    (has_decode_errors, suspicious_score, encoding_bias)
-}
-
-fn should_prefer_non_utf8(non_utf8: &DecodedSource<'_>, utf8_lossy: &DecodedSource<'_>) -> bool {
-    non_utf8.diagnostics.is_empty()
-        && suspicious_text_score(non_utf8.text.as_ref())
-            < suspicious_text_score(utf8_lossy.text.as_ref())
+    }
 }
 
 fn suspicious_text_score(text: &str) -> usize {

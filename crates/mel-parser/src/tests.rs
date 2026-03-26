@@ -2811,6 +2811,37 @@ fn auto_detects_cp932_and_maps_ranges_to_original_bytes() {
 }
 
 #[test]
+fn auto_detects_sparse_cp932_bytes_near_end_of_large_file() {
+    let prefix = "setAttr \".tx\" 1;\n".repeat(8192);
+    let source = format!("{prefix}print \"設定\";");
+    let (bytes, _, had_errors) = SHIFT_JIS.encode(&source);
+    assert!(!had_errors);
+
+    let parse = parse_bytes(bytes.as_ref());
+    assert_eq!(parse.source_encoding, SourceEncoding::Cp932);
+    assert!(parse.errors.is_empty());
+
+    match parse.syntax.items.last() {
+        Some(Item::Stmt(stmt)) => match &**stmt {
+            Stmt::Expr {
+                expr: Expr::Invoke(invoke),
+                ..
+            } => match &invoke.surface {
+                InvokeSurface::ShellLike { words, .. } => match words.last() {
+                    Some(ShellWord::QuotedString { range, .. }) => {
+                        assert_eq!(parse.string_literal_contents(*range), Some("設定"));
+                    }
+                    _ => panic!("expected quoted string"),
+                },
+                _ => panic!("expected shell-like invoke"),
+            },
+            _ => panic!("expected command expression"),
+        },
+        _ => panic!("expected trailing statement"),
+    }
+}
+
+#[test]
 fn explicit_gbk_decode_preserves_command_surface() {
     let source = r#"print "按钮";"#;
     let (bytes, _, had_errors) = GBK.encode(source);
