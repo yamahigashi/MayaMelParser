@@ -575,9 +575,9 @@ fn parses_command_leading_grouped_arg_fixture() {
                     assert!(matches!(
                         words[0],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Binary { .. },
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Binary { .. })
                     ));
                     assert!(matches!(words[1], ShellWord::Variable { .. }));
                 }
@@ -861,9 +861,9 @@ fn parses_command_point_constraint_brace_list_fixture() {
                     assert!(matches!(
                         words[1],
                         ShellWord::BraceList {
-                            expr: Expr::ArrayLiteral { ref elements, .. },
+                            ref expr,
                             ..
-                        } if elements.len() == 10
+                        } if matches!(&**expr, Expr::ArrayLiteral { elements, .. } if elements.len() == 10)
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -892,23 +892,23 @@ fn parses_command_orient_constraint_brace_list_fixture() {
                 } => {
                     assert_eq!(parse.source_slice(*head_range), "applyOrientConstraintArgs");
                     match &words[1] {
-                        ShellWord::BraceList {
-                            expr: Expr::ArrayLiteral { elements, .. },
-                            ..
-                        } => {
-                            assert!(matches!(
-                                elements[0],
-                                Expr::String { ref text, .. } if parse.source_slice(*text) == "\"1\""
-                            ));
-                            assert!(matches!(
-                                elements[7],
-                                Expr::String { ref text, .. } if parse.source_slice(*text) == "\"8\""
-                            ));
-                            assert!(matches!(
-                                elements[8],
-                                Expr::String { ref text, .. } if parse.source_slice(*text) == "\"\""
-                            ));
-                        }
+                        ShellWord::BraceList { expr, .. } => match &**expr {
+                            Expr::ArrayLiteral { elements, .. } => {
+                                assert!(matches!(
+                                    elements[0],
+                                    Expr::String { ref text, .. } if parse.source_slice(*text) == "\"1\""
+                                ));
+                                assert!(matches!(
+                                    elements[7],
+                                    Expr::String { ref text, .. } if parse.source_slice(*text) == "\"8\""
+                                ));
+                                assert!(matches!(
+                                    elements[8],
+                                    Expr::String { ref text, .. } if parse.source_slice(*text) == "\"\""
+                                ));
+                            }
+                            _ => panic!("expected array literal"),
+                        },
                         _ => panic!("expected brace-list shell word"),
                     }
                 }
@@ -942,9 +942,9 @@ fn parses_command_capture_vector_literal_fixture() {
                         assert!(matches!(
                             words[0],
                             ShellWord::VectorLiteral {
-                                expr: Expr::VectorLiteral { ref elements, .. },
+                                ref expr,
                                 ..
-                            } if elements.len() == 3
+                            } if matches!(&**expr, Expr::VectorLiteral { elements, .. } if elements.len() == 3)
                         ));
                     }
                     _ => panic!("expected shell-like invoke"),
@@ -969,9 +969,9 @@ fn parses_command_capture_vector_literal_fixture() {
                     assert!(matches!(
                         words[2],
                         ShellWord::GroupedExpr {
-                            expr: Expr::ComponentAccess { .. },
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::ComponentAccess { .. })
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -1075,9 +1075,9 @@ fn parses_command_dotted_variable_indexed_bareword_fixture() {
                     assert!(matches!(
                         words[0],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Binary { .. },
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Binary { .. })
                     ));
                     assert!(matches!(
                         words[1],
@@ -1311,16 +1311,16 @@ fn parses_command_grouped_args_fixture() {
                     assert!(matches!(
                         words[5],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Binary { .. },
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Binary { .. })
                     ));
                     assert!(matches!(
                         words[7],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Binary { .. },
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Binary { .. })
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -1343,16 +1343,16 @@ fn parses_command_grouped_args_fixture() {
                     assert!(matches!(
                         words[1],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Binary { .. },
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Binary { .. })
                     ));
                     assert!(matches!(
                         words[3],
                         ShellWord::Variable {
-                            expr: Expr::MemberAccess { ref member, .. },
+                            ref expr,
                             ..
-                        } if parse.source_slice(*member) == "name"
+                        } if matches!(&**expr, Expr::MemberAccess { member, .. } if parse.source_slice(*member) == "name")
                     ));
                     assert!(matches!(words[5], ShellWord::Capture { .. }));
                 }
@@ -1389,9 +1389,9 @@ fn parses_command_capture_grouped_function_call_fixture() {
                             assert!(matches!(
                                 words[1],
                                 ShellWord::GroupedExpr {
-                                    expr: Expr::Invoke(_),
+                                    ref expr,
                                     ..
-                                }
+                                } if matches!(&**expr, Expr::Invoke(_))
                             ));
                         }
                         _ => panic!("expected shell-like capture"),
@@ -1419,16 +1419,16 @@ fn parses_command_capture_grouped_function_call_fixture() {
                     assert!(matches!(
                         words[1],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Invoke(_),
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Invoke(_))
                     ));
                     assert!(matches!(
                         words[2],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Invoke(_),
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Invoke(_))
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),
@@ -2506,16 +2506,16 @@ fn reports_missing_closing_backquote_without_command_cascade_fixture() {
                     assert!(matches!(
                         words[1],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Invoke(_),
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Invoke(_))
                     ));
                     assert!(matches!(
                         words[2],
                         ShellWord::GroupedExpr {
-                            expr: Expr::Invoke(_),
+                            ref expr,
                             ..
-                        }
+                        } if matches!(&**expr, Expr::Invoke(_))
                     ));
                 }
                 _ => panic!("expected shell-like invoke"),

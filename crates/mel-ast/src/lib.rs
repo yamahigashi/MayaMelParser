@@ -174,7 +174,7 @@ pub enum Expr {
         expr: Box<Expr>,
         range: TextRange,
     },
-    Invoke(InvokeExpr),
+    Invoke(Box<InvokeExpr>),
 }
 
 impl Expr {
@@ -334,23 +334,23 @@ pub enum ShellWord {
         range: TextRange,
     },
     Variable {
-        expr: Expr,
+        expr: Box<Expr>,
         range: TextRange,
     },
     GroupedExpr {
-        expr: Expr,
+        expr: Box<Expr>,
         range: TextRange,
     },
     BraceList {
-        expr: Expr,
+        expr: Box<Expr>,
         range: TextRange,
     },
     VectorLiteral {
-        expr: Expr,
+        expr: Box<Expr>,
         range: TextRange,
     },
     Capture {
-        invoke: InvokeExpr,
+        invoke: Box<InvokeExpr>,
         range: TextRange,
     },
 }
@@ -451,10 +451,10 @@ mod tests {
                         range: text_range(3, 4),
                     },
                     ShellWord::Variable {
-                        expr: Expr::Ident {
+                        expr: Box::new(Expr::Ident {
                             name_range: text_range(5, 11),
                             range: text_range(5, 11),
-                        },
+                        }),
                         range: text_range(5, 11),
                     },
                 ],

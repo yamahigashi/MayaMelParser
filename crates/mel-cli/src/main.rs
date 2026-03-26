@@ -1667,26 +1667,30 @@ mod tests {
     fn error_diagnostic_level_keeps_semantic_error_count() {
         let output = format_single_file_output(
             "sema-fixture",
-            &parse_source("addAttr;\n"),
+            &parse_source(include_str!(
+                "../../../tests/corpus/sema/proc/typed-missing-value-return.mel"
+            )),
             CliDiagnosticLevel::Error,
         )
         .expect("filtered output");
         assert!(output.contains("semantic diagnostics: 1"));
         assert!(output.contains("Error:"));
-        assert!(output.contains("command \"addAttr\" expects"));
+        assert!(output.contains("declares a return type but never returns a value"));
     }
 
     #[test]
     fn compact_output_uses_single_line_diagnostics_for_non_terminal_output() {
         let output = format_single_file_output_with_style(
             "sema-fixture",
-            &parse_source("addAttr;\n"),
+            &parse_source(include_str!(
+                "../../../tests/corpus/sema/proc/typed-missing-value-return.mel"
+            )),
             CliDiagnosticLevel::Error,
             false,
         )
         .expect("compact output");
         assert!(output.contains("semantic diagnostics: 1"));
-        assert!(output.contains("Error: sema: command \"addAttr\" expects"));
+        assert!(output.contains("Error: sema: proc \"helper\" declares a return type"));
         assert!(output.contains("@ 1:1"));
         assert!(!output.contains("╭"));
     }

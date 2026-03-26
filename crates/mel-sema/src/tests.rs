@@ -35,6 +35,14 @@ fn take_test_source() -> String {
     })
 }
 
+fn invoke_expr(invoke: InvokeExpr) -> Expr {
+    Expr::Invoke(Box::new(invoke))
+}
+
+fn boxed_expr(expr: Expr) -> Box<Expr> {
+    Box::new(expr)
+}
+
 struct TestRegistry {
     commands: Vec<CommandSchema>,
 }
@@ -139,7 +147,7 @@ fn assert_single_diagnostic_severity(
 fn analyze_handles_non_utf8_source_ranges_via_source_view() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::Function {
                     head_range: text_range(0, 4),
                     args: Vec::new(),
@@ -166,7 +174,7 @@ fn function_local_proc_forward_reference_reports_diagnostic() {
     let source = SourceFile {
         items: vec![
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::Function {
                         head_range: tr("helper"),
                         args: Vec::new(),
@@ -210,7 +218,7 @@ fn proc_body_traversal_respects_visible_local_proc() {
             params: Vec::new(),
             body: Stmt::Block {
                 statements: vec![Stmt::Expr {
-                    expr: Expr::Invoke(InvokeExpr {
+                    expr: invoke_expr(InvokeExpr {
                         surface: InvokeSurface::Function {
                             head_range: tr("helper"),
                             args: Vec::new(),
@@ -251,7 +259,7 @@ fn ancestor_scope_local_proc_is_visible_in_nested_block() {
             })),
             Item::Stmt(Box::new(Stmt::Block {
                 statements: vec![Stmt::Expr {
-                    expr: Expr::Invoke(InvokeExpr {
+                    expr: invoke_expr(InvokeExpr {
                         surface: InvokeSurface::Function {
                             head_range: tr("helper"),
                             args: Vec::new(),
@@ -295,7 +303,7 @@ fn block_local_proc_does_not_leak_to_parent_scope() {
                 range: text_range(0, 20),
             })),
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::Function {
                         head_range: tr("helper"),
                         args: Vec::new(),
@@ -368,14 +376,14 @@ fn shell_like_calls_resolve_to_local_proc_without_diagnostic() {
                         name_range: tr("$value"),
                         range: text_range(39, 45),
                     }),
-                    rhs: Box::new(Expr::Invoke(InvokeExpr {
+                    rhs: Box::new(invoke_expr(InvokeExpr {
                         surface: InvokeSurface::ShellLike {
                             head_range: tr("helper"),
                             words: vec![ShellWord::Variable {
-                                expr: Expr::Ident {
+                                expr: boxed_expr(Expr::Ident {
                                     name_range: tr("$selection"),
                                     range: text_range(50, 60),
-                                },
+                                }),
                                 range: text_range(50, 60),
                             }],
                             captured: true,
@@ -401,7 +409,7 @@ fn shell_like_calls_resolve_to_local_proc_without_diagnostic() {
 fn shell_like_calls_without_proc_or_registry_remain_unresolved() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("unknown"),
                     words: Vec::new(),
@@ -426,7 +434,7 @@ fn shell_like_local_proc_forward_reference_reports_diagnostic() {
     let source = SourceFile {
         items: vec![
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::ShellLike {
                         head_range: tr("helper"),
                         words: vec![ShellWord::NumericLiteral {
@@ -470,7 +478,7 @@ fn shell_like_global_proc_resolves_without_diagnostic() {
     let source = SourceFile {
         items: vec![
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::ShellLike {
                         head_range: tr("helper"),
                         words: vec![ShellWord::QuotedString {
@@ -509,7 +517,7 @@ fn shell_like_global_proc_resolves_without_diagnostic() {
 fn builtin_command_resolves_with_registry() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::Function {
                     head_range: tr("sphere"),
                     args: Vec::new(),
@@ -536,7 +544,7 @@ fn builtin_command_resolves_with_registry() {
 fn plugin_command_resolves_with_registry() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("foo"),
                     words: Vec::new(),
@@ -565,7 +573,7 @@ fn proc_resolution_takes_precedence_over_registry_command() {
     let source = SourceFile {
         items: vec![
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::ShellLike {
                         head_range: tr("helper"),
                         words: Vec::new(),
@@ -630,7 +638,7 @@ fn function_style_proc_call_with_missing_argument_reports_diagnostic() {
                 range: text_range(0, 62),
             })),
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::Function {
                         head_range: tr("setNodeAttributes"),
                         args: vec![Expr::String {
@@ -692,7 +700,7 @@ fn shell_like_proc_call_with_matching_argument_count_has_no_diagnostic() {
                 range: text_range(0, 37),
             })),
             Item::Stmt(Box::new(Stmt::Expr {
-                expr: Expr::Invoke(InvokeExpr {
+                expr: invoke_expr(InvokeExpr {
                     surface: InvokeSurface::ShellLike {
                         head_range: tr("helper"),
                         words: vec![
@@ -726,7 +734,7 @@ fn shell_like_proc_call_with_matching_argument_count_has_no_diagnostic() {
 fn analyze_without_registry_leaves_builtin_unresolved() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::Function {
                     head_range: tr("sphere"),
                     args: Vec::new(),
@@ -748,7 +756,7 @@ fn analyze_without_registry_leaves_builtin_unresolved() {
 fn shell_like_command_reports_unexpected_positional_arguments() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("date"),
                     words: vec![ShellWord::QuotedString {
@@ -792,7 +800,7 @@ fn shell_like_command_reports_unexpected_positional_arguments() {
 fn shell_like_command_reports_missing_required_positional_argument() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("rename"),
                     words: vec![ShellWord::QuotedString {
@@ -836,7 +844,7 @@ fn shell_like_command_reports_missing_required_positional_argument() {
 fn shell_like_command_allows_selection_fallback_positional_omission() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("ikHandle"),
                     words: Vec::new(),
@@ -865,7 +873,7 @@ fn shell_like_command_allows_selection_fallback_positional_omission() {
 fn shell_like_delete_allows_selection_fallback_positional_omission() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("delete"),
                     words: Vec::new(),
@@ -894,7 +902,7 @@ fn shell_like_delete_allows_selection_fallback_positional_omission() {
 fn shell_like_sets_allows_selection_fallback_positional_omission() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("sets"),
                     words: Vec::new(),
@@ -923,7 +931,7 @@ fn shell_like_sets_allows_selection_fallback_positional_omission() {
 fn shell_like_poly_list_component_conversion_allows_selection_fallback_positional_omission() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("polyListComponentConversion"),
                     words: Vec::new(),
@@ -955,7 +963,7 @@ fn shell_like_poly_list_component_conversion_allows_selection_fallback_positiona
 fn shell_like_command_allows_explicit_positional_for_selection_fallback_slot() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("ikHandle"),
                     words: vec![ShellWord::QuotedString {
@@ -999,7 +1007,7 @@ fn shell_like_command_allows_selection_fallback_only_as_trailing_suffix() {
     };
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("badSelectionShape"),
                     words: vec![ShellWord::QuotedString {
@@ -1022,7 +1030,7 @@ fn shell_like_command_allows_selection_fallback_only_as_trailing_suffix() {
 fn shell_like_command_reports_positional_shape_mismatch_for_known_literals() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("rename"),
                     words: vec![
@@ -1068,7 +1076,7 @@ fn shell_like_command_reports_positional_shape_mismatch_for_known_literals() {
 fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![
@@ -1135,7 +1143,7 @@ fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
 fn shell_like_command_unknown_flag_is_warning() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![ShellWord::Flag {
@@ -1165,7 +1173,7 @@ fn shell_like_command_unknown_flag_is_warning() {
 fn shell_like_command_normalization_reports_mode_conflict() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![
@@ -1209,7 +1217,7 @@ fn shell_like_command_normalization_reports_mode_conflict() {
 fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![
@@ -1274,7 +1282,7 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
 fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![
@@ -1327,7 +1335,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
 fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![
@@ -1384,7 +1392,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
 fn shell_like_command_range_arity_reports_missing_required_argument() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![ShellWord::Flag {
@@ -1425,7 +1433,7 @@ fn shell_like_command_range_arity_reports_missing_required_argument() {
 fn shell_like_command_without_mode_flag_reports_unavailable_create_mode() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("queryOnly"),
                     words: vec![ShellWord::BareWord {
@@ -2419,7 +2427,7 @@ fn unresolved_variable_for_in_binding_is_not_reported() {
                     },
                     body: Box::new(Stmt::Block {
                         statements: vec![Stmt::Expr {
-                            expr: Expr::Invoke(InvokeExpr {
+                            expr: invoke_expr(InvokeExpr {
                                 surface: mel_ast::InvokeSurface::Function {
                                     head_range: tr("print"),
                                     args: vec![Expr::Ident {
@@ -2468,7 +2476,7 @@ fn unresolved_variable_for_in_iterable_is_still_reported() {
                     },
                     body: Box::new(Stmt::Block {
                         statements: vec![Stmt::Expr {
-                            expr: Expr::Invoke(InvokeExpr {
+                            expr: invoke_expr(InvokeExpr {
                                 surface: mel_ast::InvokeSurface::Function {
                                     head_range: tr("print"),
                                     args: vec![Expr::Ident {
@@ -2751,7 +2759,7 @@ fn proc_invoke_return_type_flows_into_initializer_check() {
                     declarators: vec![Declarator {
                         name_range: tr("$value"),
                         array_size: None,
-                        initializer: Some(Expr::Invoke(InvokeExpr {
+                        initializer: Some(invoke_expr(InvokeExpr {
                             surface: InvokeSurface::Function {
                                 head_range: tr("helper"),
                                 args: Vec::new(),
@@ -3276,7 +3284,7 @@ fn proc_invoke_return_type_flows_into_return_check() {
                 params: Vec::new(),
                 body: Stmt::Block {
                     statements: vec![Stmt::Return {
-                        expr: Some(Expr::Invoke(InvokeExpr {
+                        expr: Some(invoke_expr(InvokeExpr {
                             surface: InvokeSurface::Function {
                                 head_range: tr("helper"),
                                 args: Vec::new(),
@@ -3333,7 +3341,7 @@ fn proc_invoke_return_type_allows_matching_initializer() {
                     declarators: vec![Declarator {
                         name_range: tr("$value"),
                         array_size: None,
-                        initializer: Some(Expr::Invoke(InvokeExpr {
+                        initializer: Some(invoke_expr(InvokeExpr {
                             surface: InvokeSurface::Function {
                                 head_range: tr("helper"),
                                 args: Vec::new(),
@@ -3357,7 +3365,7 @@ fn proc_invoke_return_type_allows_matching_initializer() {
 fn diagnostics_only_analysis_matches_full_diagnostics() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("frameLayout"),
                     words: vec![
@@ -3468,7 +3476,7 @@ fn diagnostics_error_filter_drops_warning_only_analysis() {
 fn diagnostics_error_filter_still_reports_command_schema_errors() {
     let source = SourceFile {
         items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: Expr::Invoke(InvokeExpr {
+            expr: invoke_expr(InvokeExpr {
                 surface: InvokeSurface::ShellLike {
                     head_range: tr("addAttr"),
                     words: Vec::new(),

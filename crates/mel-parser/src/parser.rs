@@ -3,7 +3,7 @@ use mel_ast::{
     ProcReturnType, ShellWord, SourceFile, Stmt, SwitchClause, SwitchLabel, TypeName, UnaryOp,
     UpdateOp, VarDecl, VectorComponent,
 };
-use mel_lexer::lex;
+use mel_lexer::lex_significant;
 use mel_syntax::{SourceMap, TextRange, Token, TokenKind, range_end, range_start, text_range};
 
 use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding};
@@ -34,7 +34,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse(mut self) -> Parse {
-        let lexed = lex(self.input);
+        let lexed = lex_significant(self.input);
         self.tokens = lexed.tokens;
 
         let mut items = Vec::new();
@@ -781,7 +781,7 @@ impl<'a> Parser<'a> {
         let invoke = self.parse_shell_like_invoke(false)?;
         let end = self.expect_stmt_terminator("expected ';' after statement", context)?;
         Some(Stmt::Expr {
-            expr: Expr::Invoke(invoke),
+            expr: Expr::Invoke(Box::new(invoke)),
             range: text_range(start, end),
         })
     }
@@ -1160,9 +1160,9 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self) -> Option<Expr> {
         match self.current().kind {
             TokenKind::Dollar => self.parse_variable_expr(),
-            TokenKind::Ident if self.peek_kind() == Some(TokenKind::LParen) => {
-                self.parse_function_invoke().map(Expr::Invoke)
-            }
+            TokenKind::Ident if self.peek_kind() == Some(TokenKind::LParen) => self
+                .parse_function_invoke()
+                .map(|invoke| Expr::Invoke(Box::new(invoke))),
             TokenKind::Ident if self.at_path_like_bareword_expr() => {
                 self.parse_path_like_bareword_expr()
             }
@@ -1206,7 +1206,9 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LtLt => self.parse_vector_literal_expr(),
             TokenKind::LBrace => self.parse_brace_list_expr(),
-            TokenKind::Backquote => self.parse_backquoted_invoke().map(Expr::Invoke),
+            TokenKind::Backquote => self
+                .parse_backquoted_invoke()
+                .map(|invoke| Expr::Invoke(Box::new(invoke))),
             TokenKind::LParen => self.parse_grouped_expr(),
             _ => None,
         }
@@ -1610,7 +1612,8 @@ impl<'a> Parser<'a> {
                 while matches!(
                     self.tokens.get(index).map(|token| token.kind),
                     Some(TokenKind::Ident | TokenKind::Star)
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                {
                     end_index = index;
                     index += 1;
                 }
@@ -1624,13 +1627,16 @@ impl<'a> Parser<'a> {
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
                     )
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                    && self.tokens_are_adjacent(index, index + 1)
+                {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
                         self.tokens.get(index).map(|token| token.kind),
                         Some(TokenKind::Ident | TokenKind::Star)
-                    ) {
+                    ) && self.tokens_are_adjacent(end_index, index)
+                    {
                         end_index = index;
                         index += 1;
                     }
@@ -1645,7 +1651,8 @@ impl<'a> Parser<'a> {
                 while matches!(
                     self.tokens.get(index).map(|token| token.kind),
                     Some(TokenKind::Ident | TokenKind::Star)
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                {
                     end_index = index;
                     index += 1;
                     consumed_atom = true;
@@ -1664,13 +1671,16 @@ impl<'a> Parser<'a> {
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
                     )
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                    && self.tokens_are_adjacent(index, index + 1)
+                {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
                         self.tokens.get(index).map(|token| token.kind),
                         Some(TokenKind::Ident | TokenKind::Star)
-                    ) {
+                    ) && self.tokens_are_adjacent(end_index, index)
+                    {
                         end_index = index;
                         index += 1;
                     }
@@ -1683,7 +1693,8 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.tokens.get(index).map(|token| token.kind),
                 Some(TokenKind::Pipe)
-            ) {
+            ) && self.tokens_are_adjacent(end_index, index)
+            {
                 end_index = index;
                 index += 1;
                 expecting_segment_start = true;
@@ -1696,13 +1707,17 @@ impl<'a> Parser<'a> {
                     self.tokens.get(index + 1).map(|token| token.kind)
                 ),
                 (Some(TokenKind::Dot), Some(TokenKind::Ident))
-            ) {
+            ) && self.tokens_are_adjacent(end_index, index)
+                && self.tokens_are_adjacent(index, index + 1)
+            {
                 end_index = index + 1;
                 index += 2;
                 continue;
             }
 
-            if let Some(suffix_end) = self.bareword_bracket_suffix_end(index) {
+            if self.tokens_are_adjacent(end_index, index)
+                && let Some(suffix_end) = self.bareword_bracket_suffix_end(index)
+            {
                 end_index = suffix_end;
                 index = suffix_end + 1;
                 continue;
@@ -1711,7 +1726,8 @@ impl<'a> Parser<'a> {
             while matches!(
                 self.tokens.get(index).map(|token| token.kind),
                 Some(TokenKind::Ident | TokenKind::Star)
-            ) {
+            ) && self.tokens_are_adjacent(end_index, index)
+            {
                 end_index = index;
                 index += 1;
             }
@@ -1747,7 +1763,8 @@ impl<'a> Parser<'a> {
                 while matches!(
                     self.tokens.get(index).map(|token| token.kind),
                     Some(TokenKind::Ident | TokenKind::Star)
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                {
                     end_index = index;
                     index += 1;
                 }
@@ -1761,13 +1778,16 @@ impl<'a> Parser<'a> {
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
                     )
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                    && self.tokens_are_adjacent(index, index + 1)
+                {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
                         self.tokens.get(index).map(|token| token.kind),
                         Some(TokenKind::Ident | TokenKind::Star)
-                    ) {
+                    ) && self.tokens_are_adjacent(end_index, index)
+                    {
                         end_index = index;
                         index += 1;
                     }
@@ -1782,7 +1802,8 @@ impl<'a> Parser<'a> {
                 while matches!(
                     self.tokens.get(index).map(|token| token.kind),
                     Some(TokenKind::Ident | TokenKind::Star)
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                {
                     end_index = index;
                     index += 1;
                     consumed_atom = true;
@@ -1801,13 +1822,16 @@ impl<'a> Parser<'a> {
                         Some(TokenKind::Colon),
                         Some(TokenKind::Ident | TokenKind::Star)
                     )
-                ) {
+                ) && self.tokens_are_adjacent(end_index, index)
+                    && self.tokens_are_adjacent(index, index + 1)
+                {
                     end_index = index + 1;
                     index += 2;
                     while matches!(
                         self.tokens.get(index).map(|token| token.kind),
                         Some(TokenKind::Ident | TokenKind::Star)
-                    ) {
+                    ) && self.tokens_are_adjacent(end_index, index)
+                    {
                         end_index = index;
                         index += 1;
                     }
@@ -1820,7 +1844,8 @@ impl<'a> Parser<'a> {
             if matches!(
                 self.tokens.get(index).map(|token| token.kind),
                 Some(TokenKind::Pipe)
-            ) {
+            ) && self.tokens_are_adjacent(end_index, index)
+            {
                 end_index = index;
                 index += 1;
                 expecting_segment_start = true;
@@ -1833,13 +1858,17 @@ impl<'a> Parser<'a> {
                     self.tokens.get(index + 1).map(|token| token.kind)
                 ),
                 (Some(TokenKind::Dot), Some(TokenKind::Ident))
-            ) {
+            ) && self.tokens_are_adjacent(end_index, index)
+                && self.tokens_are_adjacent(index, index + 1)
+            {
                 end_index = index + 1;
                 index += 2;
                 continue;
             }
 
-            if let Some(suffix_end) = self.bareword_bracket_suffix_end(index) {
+            if self.tokens_are_adjacent(end_index, index)
+                && let Some(suffix_end) = self.bareword_bracket_suffix_end(index)
+            {
                 end_index = suffix_end;
                 index = suffix_end + 1;
                 continue;
@@ -1848,7 +1877,8 @@ impl<'a> Parser<'a> {
             while matches!(
                 self.tokens.get(index).map(|token| token.kind),
                 Some(TokenKind::Ident | TokenKind::Star)
-            ) {
+            ) && self.tokens_are_adjacent(end_index, index)
+            {
                 end_index = index;
                 index += 1;
             }
@@ -1948,13 +1978,19 @@ impl<'a> Parser<'a> {
     fn parse_brace_list_shell_word(&mut self) -> Option<ShellWord> {
         let expr = self.parse_brace_list_expr()?;
         let range = expr.range();
-        Some(ShellWord::BraceList { expr, range })
+        Some(ShellWord::BraceList {
+            expr: Box::new(expr),
+            range,
+        })
     }
 
     fn parse_vector_literal_shell_word(&mut self) -> Option<ShellWord> {
         let expr = self.parse_vector_literal_expr()?;
         let range = expr.range();
-        Some(ShellWord::VectorLiteral { expr, range })
+        Some(ShellWord::VectorLiteral {
+            expr: Box::new(expr),
+            range,
+        })
     }
 
     fn parse_variable_shell_word(&mut self) -> Option<ShellWord> {
@@ -2017,7 +2053,10 @@ impl<'a> Parser<'a> {
         }
 
         let range = expr.range();
-        Some(ShellWord::Variable { expr, range })
+        Some(ShellWord::Variable {
+            expr: Box::new(expr),
+            range,
+        })
     }
 
     fn parse_grouped_shell_word(&mut self) -> Option<ShellWord> {
@@ -2037,7 +2076,7 @@ impl<'a> Parser<'a> {
         };
 
         Some(ShellWord::GroupedExpr {
-            expr,
+            expr: Box::new(expr),
             range: text_range(range_start(open.range), end),
         })
     }
@@ -2046,7 +2085,7 @@ impl<'a> Parser<'a> {
         let invoke = self.parse_backquoted_invoke()?;
         Some(ShellWord::Capture {
             range: invoke.range,
-            invoke,
+            invoke: Box::new(invoke),
         })
     }
 
@@ -2340,6 +2379,16 @@ impl<'a> Parser<'a> {
         let start = range_end(left.range) as usize;
         let end = range_start(right.range) as usize;
         self.input[start.min(end)..end.max(start)].contains('\n')
+    }
+
+    fn tokens_are_adjacent(&self, left_index: usize, right_index: usize) -> bool {
+        if right_index <= left_index {
+            return false;
+        }
+
+        let left = self.token_at(left_index);
+        let right = self.token_at(right_index);
+        range_end(left.range) as usize == range_start(right.range) as usize
     }
 
     fn starts_stmt_after_function_args(&self, index: usize) -> bool {
