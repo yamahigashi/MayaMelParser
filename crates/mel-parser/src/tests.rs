@@ -2937,6 +2937,21 @@ fn lossy_utf8_truncated_sequence_maps_full_invalid_span_to_replacement() {
 }
 
 #[test]
+fn explicit_utf8_override_does_not_fall_back_to_cp932_auto_detection() {
+    let source = r#"print "設定";"#;
+    let (bytes, _, had_errors) = SHIFT_JIS.encode(source);
+    assert!(!had_errors);
+
+    let parse = parse_bytes_with_encoding(bytes.as_ref(), SourceEncoding::Utf8);
+    assert_eq!(parse.source_encoding, SourceEncoding::Utf8);
+    assert_eq!(parse.decode_errors.len(), 1);
+    assert_eq!(
+        parse.decode_errors[0].message,
+        "source is not valid UTF-8; decoded lossily"
+    );
+}
+
+#[test]
 fn reports_decimal_integer_literal_overflow() {
     let parse = parse_source("int $value = 9223372036854775808;");
     assert!(!parse.errors.is_empty());

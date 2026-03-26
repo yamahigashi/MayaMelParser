@@ -2,6 +2,7 @@
 //! Shared syntax primitives for the MEL parser workspace.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 pub use text_size::{TextRange, TextSize};
 
@@ -38,7 +39,7 @@ pub fn text_slice(text: &str, range: TextRange) -> &str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SourceMapKind {
     Identity { len: usize },
-    Indexed { source_to_display: Vec<u32> },
+    Indexed { source_to_display: Arc<[u32]> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,11 @@ impl SourceMap {
 
     #[must_use]
     pub fn from_source_to_display(source_to_display: Vec<u32>) -> Self {
+        Self::from_shared_source_to_display(source_to_display.into())
+    }
+
+    #[must_use]
+    pub fn from_shared_source_to_display(source_to_display: Arc<[u32]>) -> Self {
         if source_to_display
             .iter()
             .enumerate()

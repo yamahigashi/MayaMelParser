@@ -29,6 +29,7 @@ use mel_syntax::{SourceMap, TextRange, range_end, range_start, text_range};
 
 const TOP_RANK_LIMIT: usize = 10;
 const DIAGNOSTIC_TAB_WIDTH: usize = 1;
+const AUTO_LIGHTWEIGHT_FILE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(about = "Inspect MEL parse and diagnostic output", long_about = None)]
@@ -37,8 +38,10 @@ struct Args {
     encoding: CliEncoding,
     #[arg(long, value_enum, default_value_t = CliDiagnosticLevel::All)]
     diagnostic_level: CliDiagnosticLevel,
-    #[arg(long, conflicts_with = "inline_input")]
+    #[arg(long, conflicts_with_all = ["inline_input", "parse_strategy"])]
     lightweight: bool,
+    #[arg(long, value_enum, default_value_t = CliParseStrategy::Full)]
+    parse_strategy: CliParseStrategy,
     #[arg(value_name = "PATH", conflicts_with = "inline_input")]
     path: Option<PathBuf>,
     #[arg(long = "inline", value_name = "SOURCE", conflicts_with = "path")]
@@ -86,6 +89,17 @@ enum CliDiagnosticLevel {
     None,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum CliParseStrategy {
+    #[default]
+    #[value(name = "full")]
+    Full,
+    #[value(name = "light")]
+    Light,
+    #[value(name = "auto")]
+    Auto,
+}
+
 fn main() {
     match run() {
         Ok(()) => {}
@@ -115,7 +129,12 @@ fn run() -> Result<(), RunError> {
     let diagnostic_level = args.diagnostic_level;
 
     if let Some(path) = args.path {
-        return print_path_output(&path, selected_encoding, args.lightweight, diagnostic_level)
+        let parse_strategy = if args.lightweight {
+            CliParseStrategy::Light
+        } else {
+            args.parse_strategy
+        };
+        return print_path_output(&path, selected_encoding, parse_strategy, diagnostic_level)
             .map_err(|error| RunError::Message(error.to_string()));
     }
 
@@ -136,10 +155,11 @@ fn run() -> Result<(), RunError> {
 fn print_path_output(
     path: &Path,
     encoding: Option<SourceEncoding>,
-    lightweight: bool,
+    parse_strategy: CliParseStrategy,
     diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
+    let lightweight = resolve_path_strategy(path, &metadata, parse_strategy, diagnostic_level);
 
     if metadata.is_dir() {
         print_corpus_summary(path, encoding, lightweight, diagnostic_level)
@@ -154,6 +174,36 @@ fn print_path_output(
             ),
         ))
     }
+}
+
+fn resolve_path_strategy(
+    path: &Path,
+    metadata: &fs::Metadata,
+    parse_strategy: CliParseStrategy,
+    diagnostic_level: CliDiagnosticLevel,
+) -> bool {
+    match parse_strategy {
+        CliParseStrategy::Full => false,
+        CliParseStrategy::Light => true,
+        CliParseStrategy::Auto => {
+            metadata.is_file()
+                && should_auto_use_lightweight(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    metadata.len(),
+                    diagnostic_level,
+                )
+        }
+    }
+}
+
+fn should_auto_use_lightweight(
+    extension: Option<&str>,
+    size_bytes: u64,
+    diagnostic_level: CliDiagnosticLevel,
+) -> bool {
+    matches!(diagnostic_level, CliDiagnosticLevel::None)
+        && extension.is_some_and(|ext| ext.eq_ignore_ascii_case("ma"))
+        && size_bytes >= AUTO_LIGHTWEIGHT_FILE_SIZE_BYTES
 }
 
 fn parse_cli_args<I, T>(args: I) -> Result<Args, clap::Error>
@@ -1429,9 +1479,10 @@ fn format_light_corpus_summary(summary: &LightCorpusSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, CliDiagnosticLevel, CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary,
-        format_light_corpus_summary, format_light_single_file_output, format_single_file_output,
-        format_single_file_output_with_style, parse_cli_args, print_path_output,
+        Args, CliDiagnosticLevel, CliParseStrategy, CorpusSummary, FileSummary, LightCorpusSummary,
+        LightFileSummary, format_light_corpus_summary, format_light_single_file_output,
+        format_single_file_output, format_single_file_output_with_style, parse_cli_args,
+        print_path_output, should_auto_use_lightweight,
     };
     use clap::{CommandFactory, error::ErrorKind};
     use mel_parser::{
@@ -1554,6 +1605,13 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_parse_strategy_flag() {
+        let args = parse_cli_args(["mel-inspect", "--parse-strategy", "auto", "fixture.ma"])
+            .expect("parse strategy should parse");
+        assert_eq!(args.parse_strategy, CliParseStrategy::Auto);
+    }
+
+    #[test]
     fn cli_accepts_inline_flag() {
         let args = parse_cli_args(["mel-inspect", "--inline", r#"print "hello""#])
             .expect("inline should parse");
@@ -1608,6 +1666,43 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_lightweight_with_parse_strategy() {
+        let error = parse_cli_args([
+            "mel-inspect",
+            "--lightweight",
+            "--parse-strategy",
+            "auto",
+            "a.ma",
+        ])
+        .expect_err("lightweight should conflict with parse strategy");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn auto_strategy_uses_lightweight_for_large_ma_without_diagnostics() {
+        assert!(should_auto_use_lightweight(
+            Some("ma"),
+            super::AUTO_LIGHTWEIGHT_FILE_SIZE_BYTES,
+            CliDiagnosticLevel::None,
+        ));
+        assert!(!should_auto_use_lightweight(
+            Some("mel"),
+            super::AUTO_LIGHTWEIGHT_FILE_SIZE_BYTES,
+            CliDiagnosticLevel::None,
+        ));
+        assert!(!should_auto_use_lightweight(
+            Some("ma"),
+            super::AUTO_LIGHTWEIGHT_FILE_SIZE_BYTES,
+            CliDiagnosticLevel::Error,
+        ));
+        assert!(!should_auto_use_lightweight(
+            Some("ma"),
+            super::AUTO_LIGHTWEIGHT_FILE_SIZE_BYTES - 1,
+            CliDiagnosticLevel::None,
+        ));
+    }
+
+    #[test]
     fn cli_rejects_invalid_encoding() {
         let error = parse_cli_args([
             "mel-inspect",
@@ -1630,6 +1725,7 @@ mod tests {
         let help = String::from_utf8(help).expect("help should be utf8");
         assert!(help.contains("[PATH]"));
         assert!(help.contains("--lightweight"));
+        assert!(help.contains("--parse-strategy <PARSE_STRATEGY>"));
         assert!(help.contains("--inline <SOURCE>"));
         assert!(help.contains("--diagnostic-level <DIAGNOSTIC_LEVEL>"));
         assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
@@ -1739,8 +1835,9 @@ mod tests {
             use std::os::unix::net::UnixListener;
 
             let _listener = UnixListener::bind(&path).expect("socket should bind");
-            let error = print_path_output(&path, None, false, CliDiagnosticLevel::All)
-                .expect_err("socket path should fail");
+            let error =
+                print_path_output(&path, None, CliParseStrategy::Full, CliDiagnosticLevel::All)
+                    .expect_err("socket path should fail");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
 

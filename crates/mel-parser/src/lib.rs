@@ -266,7 +266,22 @@ fn parse_owned_bytes_with_encoding(
     options: ParseOptions,
 ) -> Parse {
     if matches!(encoding, SourceEncoding::Utf8) {
-        return parse_owned_bytes(input, options);
+        return match String::from_utf8(input) {
+            Ok(source_text) => {
+                let source_len = source_text.len();
+                parse_owned_source(
+                    source_text,
+                    SourceMap::identity(source_len),
+                    SourceEncoding::Utf8,
+                    Vec::new(),
+                    options,
+                )
+            }
+            Err(error) => parse_decoded_source(
+                decode_source_with_encoding(error.as_bytes(), SourceEncoding::Utf8),
+                options,
+            ),
+        };
     }
 
     parse_decoded_source(decode_source_with_encoding(&input, encoding), options)

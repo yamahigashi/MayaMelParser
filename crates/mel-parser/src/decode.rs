@@ -1,6 +1,7 @@
 use encoding_rs::{Encoding, GBK, SHIFT_JIS};
 use std::borrow::Cow;
 use std::str::Utf8Error;
+use std::sync::Arc;
 
 use mel_syntax::{TextRange, range_end, range_start, text_range};
 
@@ -19,8 +20,8 @@ enum OffsetMapKind {
         len: usize,
     },
     Indexed {
-        decoded_to_source: Vec<u32>,
-        source_to_decoded: Vec<u32>,
+        decoded_to_source: Box<[u32]>,
+        source_to_decoded: Arc<[u32]>,
     },
 }
 
@@ -67,8 +68,8 @@ impl OffsetMap {
         source_to_decoded[source_len] = u32::try_from(text.len()).unwrap_or(u32::MAX);
         Some(Self {
             kind: OffsetMapKind::Indexed {
-                decoded_to_source,
-                source_to_decoded,
+                decoded_to_source: decoded_to_source.into_boxed_slice(),
+                source_to_decoded: Arc::from(source_to_decoded),
             },
         })
     }
@@ -100,7 +101,9 @@ impl OffsetMap {
             OffsetMapKind::Identity { len } => mel_syntax::SourceMap::identity(*len),
             OffsetMapKind::Indexed {
                 source_to_decoded, ..
-            } => mel_syntax::SourceMap::from_source_to_display(source_to_decoded.clone()),
+            } => {
+                mel_syntax::SourceMap::from_shared_source_to_display(Arc::clone(source_to_decoded))
+            }
         }
     }
 }
@@ -307,8 +310,8 @@ fn decode_lossy_utf8_text_and_offset_map(input: &[u8]) -> (String, OffsetMap) {
         text,
         OffsetMap {
             kind: OffsetMapKind::Indexed {
-                decoded_to_source,
-                source_to_decoded,
+                decoded_to_source: decoded_to_source.into_boxed_slice(),
+                source_to_decoded: Arc::from(source_to_decoded),
             },
         },
     )
