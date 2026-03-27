@@ -74,9 +74,36 @@ impl<'a> Parser<'a> {
     }
 
     fn set_pos(&mut self, pos: usize) {
+        if pos == self.pos && self.token_cache_base == self.pos {
+            return;
+        }
+
+        let position_delta = pos.checked_sub(self.pos);
+        let can_advance_cache = position_delta
+            .is_some_and(|delta| self.token_cache_base == self.pos && delta < TOKEN_LOOKAHEAD);
         self.pos = pos;
         self.prune_consumed_tokens();
+
+        if let Some(delta) = position_delta.filter(|&delta| delta > 0) {
+            if can_advance_cache {
+                self.advance_token_cache_by(delta);
+                return;
+            }
+        } else {
+            self.refresh_token_cache();
+            return;
+        }
+
         self.refresh_token_cache();
+    }
+
+    fn advance_token_cache_by(&mut self, delta: usize) {
+        debug_assert!((1..TOKEN_LOOKAHEAD).contains(&delta));
+        self.token_cache.copy_within(delta.., 0);
+        for i in TOKEN_LOOKAHEAD - delta..TOKEN_LOOKAHEAD {
+            self.token_cache[i] = self.tokens.token_at(self.pos + i);
+        }
+        self.token_cache_base = self.pos;
     }
 
     fn prune_consumed_tokens(&mut self) {
