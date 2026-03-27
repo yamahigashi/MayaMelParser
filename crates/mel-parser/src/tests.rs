@@ -679,6 +679,36 @@ fn keeps_no_whitespace_ident_lparen_as_function_stmt() {
 }
 
 #[test]
+fn parses_function_stmt_across_line_break_and_following_keyword() {
+    let parse = parse_source("foo(\n    \"arg\"\n);\nif ($ready) {\n    print $ready;\n}\n");
+    assert!(parse.errors.is_empty());
+
+    match &parse.syntax.items[0] {
+        Item::Stmt(stmt) => match &**stmt {
+            Stmt::Expr {
+                expr: Expr::Invoke(invoke),
+                ..
+            } => match &invoke.surface {
+                InvokeSurface::Function {
+                    head_range, args, ..
+                } => {
+                    assert_eq!(parse.source_slice(*head_range), "foo");
+                    assert_eq!(args.len(), 1);
+                }
+                _ => panic!("expected function invoke"),
+            },
+            _ => panic!("expected expression statement"),
+        },
+        _ => panic!("expected statement"),
+    }
+
+    assert!(matches!(
+        parse.syntax.items[1],
+        Item::Stmt(ref stmt) if matches!(&**stmt, Stmt::If { .. })
+    ));
+}
+
+#[test]
 fn parses_function_stmt_spaced_lparen_fixture() {
     let parse = parse_source(include_str!(
         "../../../tests/corpus/parser/statements/function-stmt-spaced-lparen.mel"
@@ -1877,6 +1907,45 @@ fn parses_for_in_and_for_loop_fixtures() {
         parse.syntax.items[0],
         Item::Stmt(ref stmt) if matches!(&**stmt, Stmt::ForIn { .. })
     ));
+}
+
+#[test]
+fn parses_for_in_and_for_with_shared_prefix_tokens() {
+    let parse = parse_source(
+        "for ($item in some_array) {\n    print $item;\n}\nfor ($i = 0; $i < 3; ++$i) {\n    print $i;\n}\n",
+    );
+    assert!(parse.errors.is_empty());
+
+    match &parse.syntax.items[0] {
+        Item::Stmt(stmt) => match &**stmt {
+            Stmt::ForIn { binding, .. } => match &**binding {
+                Expr::Ident {
+                    name_range: _,
+                    range: _,
+                } => {}
+                _ => panic!("expected variable binding"),
+            },
+            _ => panic!("expected for-in statement"),
+        },
+        _ => panic!("expected statement"),
+    }
+
+    match &parse.syntax.items[1] {
+        Item::Stmt(stmt) => match &**stmt {
+            Stmt::For {
+                init,
+                condition,
+                update,
+                ..
+            } => {
+                assert!(init.is_some());
+                assert!(condition.is_some());
+                assert!(update.is_some());
+            }
+            _ => panic!("expected classic for statement"),
+        },
+        _ => panic!("expected statement"),
+    }
 }
 
 #[test]

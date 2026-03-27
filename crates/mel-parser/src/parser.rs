@@ -8,12 +8,16 @@ use mel_syntax::{SourceMap, TextRange, Token, TokenKind, range_end, range_start,
 
 use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding};
 
+const TOKEN_LOOKAHEAD: usize = 4;
+
 pub(crate) struct Parser<'a> {
     input: &'a str,
     options: ParseOptions,
     tokens: TokenWindow<'a>,
     pos: usize,
     rewind_floor: Option<usize>,
+    token_cache: [Token; TOKEN_LOOKAHEAD],
+    token_cache_base: usize,
     errors: Vec<ParseError>,
 }
 
@@ -32,14 +36,18 @@ enum StmtContext {
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(input: &'a str, options: ParseOptions) -> Self {
-        Self {
+        let mut parser = Self {
             input,
             options,
             tokens: TokenWindow::new(input),
             pos: 0,
             rewind_floor: None,
+            token_cache: [Token::new(TokenKind::Eof, text_range(0, 0)); TOKEN_LOOKAHEAD],
+            token_cache_base: 0,
             errors: Vec::new(),
-        }
+        };
+        parser.refresh_token_cache();
+        parser
     }
 
     pub(crate) fn parse(mut self) -> Parse {
@@ -68,6 +76,7 @@ impl<'a> Parser<'a> {
     fn set_pos(&mut self, pos: usize) {
         self.pos = pos;
         self.prune_consumed_tokens();
+        self.refresh_token_cache();
     }
 
     fn prune_consumed_tokens(&mut self) {
@@ -2192,7 +2201,7 @@ impl<'a> Parser<'a> {
 
     fn bump(&mut self) -> Token {
         let index = self.current_index();
-        let token = self.token_at(index);
+        let token = self.current();
         if token.kind != TokenKind::Eof {
             self.set_pos(index + 1);
         }
@@ -2200,7 +2209,10 @@ impl<'a> Parser<'a> {
     }
 
     fn current(&mut self) -> Token {
-        self.token_at(self.current_index())
+        if self.token_cache_base != self.pos {
+            self.refresh_token_cache();
+        }
+        self.token_cache[0]
     }
 
     fn peek_kind(&mut self) -> Option<TokenKind> {
@@ -2214,6 +2226,10 @@ impl<'a> Parser<'a> {
     }
 
     fn nth_kind_after_current(&mut self, n: usize) -> Option<TokenKind> {
+        if n < TOKEN_LOOKAHEAD {
+            return Some(self.token_at(self.current_index().saturating_add(n)).kind);
+        }
+
         let mut index = self.current_index();
         for _ in 0..n {
             index = self.next_significant_index(index + 1);
@@ -2423,7 +2439,17 @@ impl<'a> Parser<'a> {
     }
 
     fn token_at(&mut self, index: usize) -> Token {
+        if index >= self.token_cache_base && index - self.token_cache_base < TOKEN_LOOKAHEAD {
+            return self.token_cache[index - self.token_cache_base];
+        }
         self.tokens.token_at(index)
+    }
+
+    fn refresh_token_cache(&mut self) {
+        self.token_cache_base = self.pos;
+        for i in 0..TOKEN_LOOKAHEAD {
+            self.token_cache[i] = self.tokens.token_at(self.pos + i);
+        }
     }
 
     fn kind_at(&mut self, index: usize) -> Option<TokenKind> {
@@ -2488,7 +2514,14 @@ impl<'a> TokenWindow<'a> {
     }
 
     fn ensure_loaded(&mut self, index: usize) {
-        while self.base_index + self.tokens.len() <= index && !self.eof_seen {
+        const PREFETCH_CHUNK_TOKENS: usize = 32_768;
+        let target = index.saturating_add(PREFETCH_CHUNK_TOKENS);
+        let desired = target.saturating_add(1).saturating_sub(self.base_index);
+        if desired > self.tokens.len() {
+            self.tokens
+                .reserve(desired.saturating_sub(self.tokens.len()));
+        }
+        while self.base_index + self.tokens.len() <= target && !self.eof_seen {
             let Some(token) = self.lexer.next() else {
                 break;
             };
