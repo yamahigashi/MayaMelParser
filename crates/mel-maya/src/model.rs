@@ -253,7 +253,9 @@ pub struct MayaLightTopLevelCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRawShellItem {
+    /// Surface classification for this shell item.
     pub kind: MayaRawShellItemKind,
+    /// Lossless source span for the full raw item surface as it appeared in the command.
     pub span: TextRange,
     pub(crate) text_range: Option<TextRange>,
 }
@@ -293,11 +295,25 @@ pub struct MayaLightFlag {
 }
 
 impl MayaRawShellItem {
+    /// Returns the lexical text span used to derive [`Self::value_text`], when this item kind has one.
+    ///
+    /// This range is distinct from [`Self::span`]: `span` covers the full raw item surface,
+    /// while `text_range` points at the slice that backs value extraction for literal-like words.
+    #[must_use]
+    pub fn text_range(&self) -> Option<TextRange> {
+        self.text_range
+    }
+
+    /// Returns the lossless source text for the full raw item surface.
     #[must_use]
     pub fn source_text<'a>(&self, source: SourceView<'a>) -> &'a str {
         source.display_slice(self.span)
     }
 
+    /// Returns the lexical value text for literal-like words.
+    ///
+    /// This accessor uses [`Self::text_range`] and may further normalize the sliced text by kind,
+    /// such as stripping the surrounding quotes from quoted strings.
     #[must_use]
     pub fn value_text<'a>(&self, source: SourceView<'a>) -> Option<&'a str> {
         let text = source.slice(self.text_range?);

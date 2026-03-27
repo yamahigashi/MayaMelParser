@@ -486,6 +486,35 @@ fn grouped_expr_raw_item_uses_display_range_for_lossless_slice() {
 }
 
 #[test]
+fn quoted_string_raw_item_exposes_text_range_used_for_value_text() {
+    let parse = parse_source("setAttr \".label\" -type \"string\" \"value\";\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let item = &command.raw_items[3];
+    assert_eq!(item.kind, MayaRawShellItemKind::QuotedString);
+    assert_eq!(item.text_range(), Some(item.span));
+    assert_eq!(item.source_text(parse.source_view()), "\"value\"");
+    assert_eq!(item.value_text(parse.source_view()), Some("value"));
+}
+
+#[test]
+fn grouped_expr_raw_item_has_no_text_range() {
+    let parse = parse_source("setAttr \".b\" -type \"string\" (\"a\" + \"b\");\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let item = &command.raw_items[3];
+    assert_eq!(item.kind, MayaRawShellItemKind::GroupedExpr);
+    assert_eq!(item.text_range(), None);
+    assert_eq!(item.value_text(parse.source_view()), None);
+}
+
+#[test]
 fn light_collector_keeps_heavy_set_attr_tail_opaque() {
     let parse = parse_light_source(
         "createNode mesh -n \"meshShape\";\nsetAttr \".fc[0]\" -type \"polyFaces\" f 4 0 1 2 3 mu 0 4 0 1 2 3;\n",
