@@ -15,7 +15,7 @@ use mel_sema::{
     PositionalTailSchema, ReturnBehavior, ValueShape,
 };
 use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
-use std::sync::OnceLock;
+use std::{collections::HashMap, sync::OnceLock};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MayaCommandRegistry;
@@ -1216,11 +1216,8 @@ where
 {
     let overlay = OverlayRegistry::new(registry);
     let analysis = mel_sema::analyze_with_registry(&parse.syntax, parse.source_view(), &overlay);
-    let mut remaining_normalized: Vec<Option<MayaNormalizedCommand>> = analysis
-        .normalized_invokes
-        .into_iter()
-        .map(|invoke| Some(maya_normalized_command_from_parse(parse, invoke)))
-        .collect();
+    let mut remaining_normalized =
+        normalized_invoke_lookup_from_parse(parse, analysis.normalized_invokes);
     let mut items = Vec::new();
 
     for item in &parse.syntax.items {
@@ -1288,17 +1285,48 @@ fn proc_item(parse: &Parse, proc_def: &ProcDef) -> MayaTopLevelItem {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NormalizedInvokeKey {
+    head_range: TextRange,
+    span: TextRange,
+}
+
+impl NormalizedInvokeKey {
+    const fn new(head_range: TextRange, span: TextRange) -> Self {
+        Self { head_range, span }
+    }
+}
+
+fn normalized_invoke_lookup_from_parse(
+    parse: &Parse,
+    invokes: Vec<mel_sema::NormalizedCommandInvoke>,
+) -> HashMap<NormalizedInvokeKey, MayaNormalizedCommand> {
+    normalized_invoke_lookup_from_source(parse.source_view(), invokes)
+}
+
+fn normalized_invoke_lookup_from_source(
+    source: SourceView<'_>,
+    invokes: Vec<mel_sema::NormalizedCommandInvoke>,
+) -> HashMap<NormalizedInvokeKey, MayaNormalizedCommand> {
+    let mut lookup = HashMap::with_capacity(invokes.len());
+    for invoke in invokes {
+        let normalized = maya_normalized_command_from_source(source, invoke);
+        let key = NormalizedInvokeKey::new(normalized.head_range, normalized.span);
+        let previous = lookup.insert(key, normalized);
+        debug_assert!(
+            previous.is_none(),
+            "duplicate normalized invoke for {key:?}"
+        );
+    }
+    lookup
+}
+
 fn take_matching_normalized(
-    invokes: &mut [Option<MayaNormalizedCommand>],
+    invokes: &mut HashMap<NormalizedInvokeKey, MayaNormalizedCommand>,
     head_range: TextRange,
     range: TextRange,
 ) -> Option<MayaNormalizedCommand> {
-    let index = invokes.iter().position(|invoke| {
-        invoke
-            .as_ref()
-            .is_some_and(|invoke| invoke.head_range == head_range && invoke.span == range)
-    })?;
-    invokes[index].take()
+    invokes.remove(&NormalizedInvokeKey::new(head_range, range))
 }
 
 fn specialize_command(
@@ -1565,13 +1593,6 @@ fn stmt_range(stmt: &Stmt) -> TextRange {
         | Stmt::Break { range }
         | Stmt::Continue { range } => *range,
     }
-}
-
-fn maya_normalized_command_from_parse(
-    parse: &Parse,
-    value: mel_sema::NormalizedCommandInvoke,
-) -> MayaNormalizedCommand {
-    maya_normalized_command_from_source(parse.source_view(), value)
 }
 
 fn maya_normalized_command_from_source(
@@ -1857,16 +1878,8 @@ where
 
     let overlay = OverlayRegistry::new(registry);
     let analysis = mel_sema::analyze_with_registry(&slice.syntax, parse.source_view(), &overlay);
-    let mut remaining_normalized: Vec<Option<MayaNormalizedCommand>> = analysis
-        .normalized_invokes
-        .into_iter()
-        .map(|invoke| {
-            Some(maya_normalized_command_from_source(
-                parse.source_view(),
-                invoke,
-            ))
-        })
-        .collect();
+    let mut remaining_normalized =
+        normalized_invoke_lookup_from_source(parse.source_view(), analysis.normalized_invokes);
 
     let Some(item) = slice.syntax.items.first() else {
         return Err(MayaPromotionError {
@@ -2665,6 +2678,55 @@ mod tests {
     }
 
     #[test]
+    fn top_level_command_uses_its_own_normalized_invoke_when_capture_contains_command() {
+        let parse = parse_source("print `setAttr \".tx\" 1`;\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        let normalized = command
+            .normalized
+            .as_ref()
+            .expect("expected normalized command");
+        assert_eq!(normalized.head, "print");
+        assert_eq!(normalized.schema_name, "print");
+    }
+
+    #[test]
+    fn proc_like_shell_invoke_does_not_disturb_later_command_matching() {
+        let parse = parse_source(
+            "global proc foo(string $name) { }\ncreateNode transform;\nfoo bar;\nsetAttr \".v\" 1;\n",
+        );
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(create_node) = &facts.items[1] else {
+            panic!("expected createNode command");
+        };
+        assert_eq!(
+            create_node
+                .normalized
+                .as_ref()
+                .map(|command| command.schema_name.as_str()),
+            Some("createNode")
+        );
+        let MayaTopLevelItem::Command(proc_like) = &facts.items[2] else {
+            panic!("expected proc-like shell invoke");
+        };
+        assert!(proc_like.normalized.is_none());
+        let MayaTopLevelItem::Command(set_attr) = &facts.items[3] else {
+            panic!("expected setAttr command");
+        };
+        assert_eq!(
+            set_attr
+                .normalized
+                .as_ref()
+                .map(|command| command.schema_name.as_str()),
+            Some("setAttr")
+        );
+    }
+
+    #[test]
     fn raw_items_preserve_exponent_numeric_literals() {
         let parse = parse_source("setAttr \".v\" .5e+2;\n");
         assert!(parse.errors.is_empty());
@@ -3451,4 +3513,5 @@ mod tests {
             Some("\".名\"")
         );
     }
+
 }
