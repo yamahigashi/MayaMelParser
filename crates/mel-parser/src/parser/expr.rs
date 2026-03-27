@@ -9,12 +9,69 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_prefix_expr()?;
 
         loop {
-            if min_bp <= 90 {
-                let chain_start = self.current_index();
-                lhs = self.parse_member_index_chain(lhs);
-                if self.current_index() != chain_start {
-                    continue;
+            if self.at(TokenKind::Dot) {
+                let l_bp = 90;
+                if l_bp < min_bp {
+                    break;
                 }
+
+                self.bump();
+                if self.current().kind != TokenKind::Ident {
+                    let range = self.current().range;
+                    self.error("expected member name after '.'", range);
+                    return Some(lhs);
+                }
+
+                let member_token = self.bump();
+                let member_name = self.token_text(member_token);
+                let range = text_range(range_start(lhs.range()), range_end(member_token.range));
+
+                lhs = if let Some(component) = parse_vector_component_name(member_name) {
+                    Expr::ComponentAccess {
+                        range,
+                        target: Box::new(lhs),
+                        component,
+                    }
+                } else {
+                    Expr::MemberAccess {
+                        range,
+                        target: Box::new(lhs),
+                        member: member_token.range,
+                    }
+                };
+                continue;
+            }
+
+            if self.at(TokenKind::LBracket) {
+                let l_bp = 90;
+                if l_bp < min_bp {
+                    break;
+                }
+
+                let open = self.bump();
+                let index = if let Some(expr) = self.parse_expr() {
+                    expr
+                } else {
+                    let range = self.current().range;
+                    self.error("expected expression inside index", range);
+                    return Some(lhs);
+                };
+
+                let end = if let Some(close) = self.eat(TokenKind::RBracket) {
+                    range_end(close.range)
+                } else {
+                    let range = self.current().range;
+                    self.error("expected ']' after index expression", range);
+                    range_end(range).max(range_end(open.range))
+                };
+
+                let lhs_start = range_start(lhs.range());
+                lhs = Expr::Index {
+                    target: Box::new(lhs),
+                    index: Box::new(index),
+                    range: text_range(range_start(open.range).min(lhs_start), end),
+                };
+                continue;
             }
 
             if let Some(op) = self.parse_postfix_update_op() {
@@ -110,69 +167,6 @@ impl<'a> Parser<'a> {
         }
 
         Some(lhs)
-    }
-
-    pub(super) fn parse_member_index_chain(&mut self, mut expr: Expr) -> Expr {
-        loop {
-            if self.at(TokenKind::Dot) {
-                self.bump();
-                if self.current().kind != TokenKind::Ident {
-                    let range = self.current().range;
-                    self.error("expected member name after '.'", range);
-                    break;
-                }
-
-                let member_token = self.bump();
-                let member_name = self.token_text(member_token);
-                let range = text_range(range_start(expr.range()), range_end(member_token.range));
-
-                expr = if let Some(component) = parse_vector_component_name(member_name) {
-                    Expr::ComponentAccess {
-                        range,
-                        target: Box::new(expr),
-                        component,
-                    }
-                } else {
-                    Expr::MemberAccess {
-                        range,
-                        target: Box::new(expr),
-                        member: member_token.range,
-                    }
-                };
-                continue;
-            }
-
-            if self.at(TokenKind::LBracket) {
-                let open = self.bump();
-                let index = if let Some(index) = self.parse_expr() {
-                    index
-                } else {
-                    let range = self.current().range;
-                    self.error("expected expression inside index", range);
-                    break;
-                };
-
-                let end = if let Some(close) = self.eat(TokenKind::RBracket) {
-                    range_end(close.range)
-                } else {
-                    let range = self.current().range;
-                    self.error("expected ']' after index expression", range);
-                    range_end(range).max(range_end(open.range))
-                };
-
-                let expr_start = range_start(expr.range());
-                expr = Expr::Index {
-                    target: Box::new(expr),
-                    index: Box::new(index),
-                    range: text_range(range_start(open.range).min(expr_start), end),
-                };
-                continue;
-            }
-
-            break;
-        }
-
-        expr
     }
 
     pub(super) fn parse_prefix_expr(&mut self) -> Option<Expr> {

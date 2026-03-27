@@ -1197,3 +1197,28 @@ fn parses_shell_variable_member_index_chain_inline() {
         _ => panic!("expected indexed member access"),
     }
 }
+
+#[test]
+fn parses_shell_path_like_bareword_with_namespace_member_and_index() {
+    let parse = parse_source("select ns:node.attr[3];");
+    assert!(parse.errors.is_empty());
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected command statement");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke expression");
+    };
+    let InvokeSurface::ShellLike { words, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    let ShellWord::BareWord { text, .. } = &words[0] else {
+        panic!("expected bareword shell word");
+    };
+
+    assert_eq!(parse.source_slice(*text), "ns:node.attr[3]");
+}

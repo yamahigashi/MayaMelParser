@@ -231,8 +231,66 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_variable_shell_word(&mut self) -> Option<ShellWord> {
-        let expr = self.parse_variable_expr()?;
-        let expr = self.parse_member_index_chain(expr);
+        let mut expr = self.parse_variable_expr()?;
+
+        loop {
+            if self.at(TokenKind::Dot) {
+                self.bump();
+                if self.current().kind != TokenKind::Ident {
+                    let range = self.current().range;
+                    self.error("expected member name after '.'", range);
+                    break;
+                }
+
+                let member_token = self.bump();
+                let member_name = self.token_text(member_token);
+                let range = text_range(range_start(expr.range()), range_end(member_token.range));
+
+                expr = if let Some(component) = parse_vector_component_name(member_name) {
+                    Expr::ComponentAccess {
+                        range,
+                        target: Box::new(expr),
+                        component,
+                    }
+                } else {
+                    Expr::MemberAccess {
+                        range,
+                        target: Box::new(expr),
+                        member: member_token.range,
+                    }
+                };
+                continue;
+            }
+
+            if self.at(TokenKind::LBracket) {
+                let open = self.bump();
+                let index = if let Some(index) = self.parse_expr() {
+                    index
+                } else {
+                    let range = self.current().range;
+                    self.error("expected expression inside index", range);
+                    break;
+                };
+
+                let end = if let Some(close) = self.eat(TokenKind::RBracket) {
+                    range_end(close.range)
+                } else {
+                    let range = self.current().range;
+                    self.error("expected ']' after index expression", range);
+                    range_end(range).max(range_end(open.range))
+                };
+
+                let expr_start = range_start(expr.range());
+                expr = Expr::Index {
+                    target: Box::new(expr),
+                    index: Box::new(index),
+                    range: text_range(range_start(open.range).min(expr_start), end),
+                };
+                continue;
+            }
+
+            break;
+        }
 
         let range = expr.range();
         Some(ShellWord::Variable {
