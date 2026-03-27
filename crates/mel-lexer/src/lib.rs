@@ -263,12 +263,14 @@ impl<'a> Lexer<'a> {
                     Token::new(TokenKind::Ident, text_range(start as u32, i as u32))
                 }
                 _ => {
+                    let start = i;
+                    let end = next_codepoint_boundary(self.input, i);
                     self.diagnostics.push(LexDiagnostic::new(
                         "unknown character",
-                        text_range(i as u32, (i + 1) as u32),
+                        text_range(start as u32, end as u32),
                     ));
-                    i += 1;
-                    Token::new(TokenKind::Unknown, text_range((i - 1) as u32, i as u32))
+                    i = end;
+                    Token::new(TokenKind::Unknown, text_range(start as u32, end as u32))
                 }
             };
 
@@ -324,6 +326,14 @@ pub fn lex_significant(input: &str) -> Lexed {
 fn advance_token(kind: TokenKind, start: usize, end: usize, index: &mut usize) -> Token {
     *index = end;
     Token::new(kind, text_range(start as u32, end as u32))
+}
+
+fn next_codepoint_boundary(input: &str, start: usize) -> usize {
+    debug_assert!(input.is_char_boundary(start));
+    input[start..]
+        .chars()
+        .next()
+        .map_or(input.len(), |ch| start + ch.len_utf8())
 }
 
 fn lex_whitespace(bytes: &[u8], start: usize) -> usize {
@@ -840,5 +850,18 @@ mod tests {
         assert_eq!(lexed.diagnostics.len(), 1);
         assert_eq!(lexed.diagnostics[0].message, "unknown character");
         assert_eq!(lexed.diagnostics[0].range, text_range(0, 1));
+    }
+
+    #[test]
+    fn unknown_utf8_codepoint_produces_single_token_and_diagnostic() {
+        let lexed = lex("😀");
+        assert_eq!(lexed.tokens.len(), 2);
+        assert_eq!(lexed.tokens[0].kind, TokenKind::Unknown);
+        assert_eq!(lexed.tokens[0].range, text_range(0, 4));
+        assert_eq!(lexed.tokens[1].kind, TokenKind::Eof);
+        assert_eq!(lexed.tokens[1].range, text_range(4, 4));
+        assert_eq!(lexed.diagnostics.len(), 1);
+        assert_eq!(lexed.diagnostics[0].message, "unknown character");
+        assert_eq!(lexed.diagnostics[0].range, text_range(0, 4));
     }
 }

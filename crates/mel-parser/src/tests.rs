@@ -3141,6 +3141,42 @@ fn lossy_utf8_single_invalid_byte_keeps_display_ranges_aligned() {
 }
 
 #[test]
+fn utf8_unknown_codepoint_produces_single_lex_error_and_safe_display_slice() {
+    let parse = parse_source("😀;\n");
+    assert_eq!(parse.source_encoding, SourceEncoding::Utf8);
+    assert_eq!(parse.decode_errors.len(), 0);
+    assert_eq!(parse.lex_errors.len(), 1);
+    assert_eq!(parse.lex_errors[0].message, "unknown character");
+    assert_eq!(parse.lex_errors[0].range, text_range(0, 4));
+    assert_eq!(parse.display_slice(parse.lex_errors[0].range), "😀");
+}
+
+#[test]
+fn cp932_unknown_codepoint_remaps_to_original_source_bytes() {
+    let (bytes, _, had_errors) = SHIFT_JIS.encode("設;\n");
+    assert!(!had_errors);
+
+    let parse = parse_bytes_with_encoding(bytes.as_ref(), SourceEncoding::Cp932);
+    assert_eq!(parse.source_encoding, SourceEncoding::Cp932);
+    assert!(parse.decode_errors.is_empty());
+    assert_eq!(parse.lex_errors.len(), 1);
+    assert_eq!(parse.lex_errors[0].message, "unknown character");
+    assert_eq!(parse.lex_errors[0].range, text_range(0, 2));
+    assert_eq!(parse.display_slice(parse.lex_errors[0].range), "設");
+}
+
+#[test]
+fn lossy_utf8_unknown_codepoint_maps_full_replacement_character() {
+    let parse = parse_bytes_with_encoding(b"\xff;\n", SourceEncoding::Utf8);
+    assert_eq!(parse.source_encoding, SourceEncoding::Utf8);
+    assert_eq!(parse.decode_errors.len(), 1);
+    assert_eq!(parse.lex_errors.len(), 1);
+    assert_eq!(parse.lex_errors[0].message, "unknown character");
+    assert_eq!(parse.lex_errors[0].range, text_range(0, 1));
+    assert_eq!(parse.display_slice(parse.lex_errors[0].range), "\u{FFFD}");
+}
+
+#[test]
 fn lossy_utf8_truncated_sequence_maps_full_invalid_span_to_replacement() {
     let parse = parse_bytes_with_encoding(b"print \"A\xe3\x81\";\nprint(;\n", SourceEncoding::Utf8);
     assert_eq!(parse.source_encoding, SourceEncoding::Utf8);

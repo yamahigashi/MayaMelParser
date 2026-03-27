@@ -2267,6 +2267,8 @@ impl<'a> Parser<'a> {
     fn token_text(&self, token: Token) -> &'a str {
         let start = range_start(token.range) as usize;
         let end = range_end(token.range) as usize;
+        debug_assert!(self.input.is_char_boundary(start));
+        debug_assert!(self.input.is_char_boundary(end));
         &self.input[start..end]
     }
 
