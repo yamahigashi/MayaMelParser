@@ -14,6 +14,13 @@ pub(crate) struct DecodedSource<'a> {
     pub(crate) diagnostics: Vec<DecodeDiagnostic>,
 }
 
+pub(crate) struct DecodedOwnedSource {
+    pub(crate) encoding: SourceEncoding,
+    pub(crate) text: String,
+    pub(crate) offset_map: OffsetMap,
+    pub(crate) diagnostics: Vec<DecodeDiagnostic>,
+}
+
 #[derive(Debug, Clone)]
 enum OffsetMapKind {
     Identity {
@@ -139,6 +146,21 @@ pub(crate) fn decode_source_auto(input: &[u8]) -> DecodedSource<'_> {
     }
 }
 
+pub(crate) fn decode_owned_bytes_auto(input: Vec<u8>) -> DecodedOwnedSource {
+    match String::from_utf8(input) {
+        Ok(text) => {
+            let len = text.len();
+            DecodedOwnedSource {
+                encoding: SourceEncoding::Utf8,
+                text,
+                offset_map: OffsetMap::identity(len),
+                diagnostics: Vec::new(),
+            }
+        }
+        Err(error) => decode_source_auto(error.as_bytes()).into_owned(),
+    }
+}
+
 fn decode_source_auto_with_error(input: &[u8], utf8_error: Utf8Error) -> DecodedSource<'_> {
     let sample = decode_auto_sample(input, utf8_error.valid_up_to());
     let utf8_lossy_rank = decode_utf8_lossy_sample_rank(sample);
@@ -214,6 +236,52 @@ pub(crate) fn decode_source_with_encoding(
         text,
         offset_map,
         diagnostics,
+    }
+}
+
+pub(crate) fn decode_owned_bytes_with_encoding(
+    input: Vec<u8>,
+    encoding: SourceEncoding,
+) -> DecodedOwnedSource {
+    if matches!(encoding, SourceEncoding::Utf8) {
+        return match String::from_utf8(input) {
+            Ok(text) => {
+                let len = text.len();
+                DecodedOwnedSource {
+                    encoding,
+                    text,
+                    offset_map: OffsetMap::identity(len),
+                    diagnostics: Vec::new(),
+                }
+            }
+            Err(error) => {
+                decode_source_with_encoding(error.as_bytes(), SourceEncoding::Utf8).into_owned()
+            }
+        };
+    }
+
+    if Encoding::ascii_valid_up_to(&input) == input.len() {
+        let text = String::from_utf8(input).unwrap_or_default();
+        let len = text.len();
+        return DecodedOwnedSource {
+            encoding,
+            text,
+            offset_map: OffsetMap::identity(len),
+            diagnostics: Vec::new(),
+        };
+    }
+
+    decode_source_with_encoding(&input, encoding).into_owned()
+}
+
+impl DecodedSource<'_> {
+    fn into_owned(self) -> DecodedOwnedSource {
+        DecodedOwnedSource {
+            encoding: self.encoding,
+            text: self.text.into_owned(),
+            offset_map: self.offset_map,
+            diagnostics: self.diagnostics,
+        }
     }
 }
 

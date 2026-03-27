@@ -16,7 +16,10 @@ mod tests;
 use std::borrow::Cow;
 use std::{fs, io, ops::Range, path::Path};
 
-use decode::{decode_source_auto, decode_source_with_encoding};
+use decode::{
+    decode_owned_bytes_auto, decode_owned_bytes_with_encoding, decode_source_auto,
+    decode_source_with_encoding,
+};
 pub use light::{
     LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightProcSurface,
     LightScanReport, LightWord, parse_light_bytes, parse_light_bytes_with_encoding,
@@ -261,20 +264,26 @@ fn parse_decoded_source(decoded: decode::DecodedSource<'_>, options: ParseOption
     parse
 }
 
+fn parse_owned_decoded_source(decoded: decode::DecodedOwnedSource, options: ParseOptions) -> Parse {
+    let source_map = decoded.offset_map.source_map();
+    let mut parse = parse_owned_source(
+        decoded.text,
+        source_map.clone(),
+        decoded.encoding,
+        decoded.diagnostics,
+        options,
+    );
+    remap_parse_ranges_with_mapper(
+        &mut parse,
+        &SourceMapRangeMapper {
+            source_map: &source_map,
+        },
+    );
+    parse
+}
+
 fn parse_owned_bytes(input: Vec<u8>, options: ParseOptions) -> Parse {
-    match String::from_utf8(input) {
-        Ok(source_text) => {
-            let source_len = source_text.len();
-            parse_owned_source(
-                source_text,
-                SourceMap::identity(source_len),
-                SourceEncoding::Utf8,
-                Vec::new(),
-                options,
-            )
-        }
-        Err(error) => parse_decoded_source(decode_source_auto(error.as_bytes()), options),
-    }
+    parse_owned_decoded_source(decode_owned_bytes_auto(input), options)
 }
 
 fn parse_owned_bytes_with_encoding(
@@ -282,24 +291,5 @@ fn parse_owned_bytes_with_encoding(
     encoding: SourceEncoding,
     options: ParseOptions,
 ) -> Parse {
-    if matches!(encoding, SourceEncoding::Utf8) {
-        return match String::from_utf8(input) {
-            Ok(source_text) => {
-                let source_len = source_text.len();
-                parse_owned_source(
-                    source_text,
-                    SourceMap::identity(source_len),
-                    SourceEncoding::Utf8,
-                    Vec::new(),
-                    options,
-                )
-            }
-            Err(error) => parse_decoded_source(
-                decode_source_with_encoding(error.as_bytes(), SourceEncoding::Utf8),
-                options,
-            ),
-        };
-    }
-
-    parse_decoded_source(decode_source_with_encoding(&input, encoding), options)
+    parse_owned_decoded_source(decode_owned_bytes_with_encoding(input, encoding), options)
 }

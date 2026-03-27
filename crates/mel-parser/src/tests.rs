@@ -121,6 +121,80 @@ fn parse_file_reuses_owned_utf8_bytes_without_decode_diagnostics() {
 }
 
 #[test]
+fn parse_file_with_explicit_cp932_ascii_keeps_identity_offsets() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-cp932-ascii-{unique}.mel"));
+    fs::write(&path, b"setAttr \".tx\" 1;\n").expect("temp fixture should be writable");
+
+    let parse =
+        parse_file_with_encoding(&path, SourceEncoding::Cp932).expect("cp932 parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert!(parse.decode_errors.is_empty());
+    assert!(parse.errors.is_empty());
+    assert_eq!(parse.source_encoding, SourceEncoding::Cp932);
+    assert_eq!(parse.source_map.display_offset(3), 3);
+    assert_eq!(parse.source_map.source_offset_for_display(3), 3);
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected command statement");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke expression");
+    };
+    let InvokeSurface::ShellLike { head_range, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    assert_eq!(parse.source_slice(*head_range), "setAttr");
+}
+
+#[test]
+fn parse_file_auto_detects_cp932_and_preserves_source_slices() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-cp932-auto-{unique}.mel"));
+    let (bytes, _, had_errors) = SHIFT_JIS.encode("print \"設定\";\n");
+    assert!(!had_errors);
+    fs::write(&path, bytes.as_ref()).expect("temp fixture should be writable");
+
+    let parse = parse_file(&path).expect("auto cp932 parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert!(parse.decode_errors.is_empty());
+    assert!(parse.errors.is_empty());
+    assert_eq!(parse.source_encoding, SourceEncoding::Cp932);
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected command statement");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke expression");
+    };
+    let InvokeSurface::ShellLike { words, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    let ShellWord::QuotedString { range, .. } = &words[0] else {
+        panic!("expected quoted string");
+    };
+    assert_eq!(parse.string_literal_contents(*range), Some("設定"));
+}
+
+#[test]
 fn light_parse_keeps_proc_body_as_single_item() {
     let parse =
         parse_light_source("global proc foo() {\nsetAttr \".tx\" 1;\n}\nsetAttr \".ty\" 2;\n");
