@@ -14,7 +14,7 @@ use mel_sema::{
     NormalizedFlag, PositionalArg, PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy,
     PositionalTailSchema, ReturnBehavior, ValueShape,
 };
-use mel_syntax::{TextRange, range_end, range_start, text_range};
+use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 use std::sync::OnceLock;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -287,10 +287,9 @@ pub struct MayaLightTopLevelCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRawShellItem {
-    pub source_text: String,
-    pub value_text: Option<String>,
     pub kind: MayaRawShellItemKind,
     pub span: TextRange,
+    text_range: Option<TextRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,7 +312,7 @@ pub struct MayaPositionalArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaNormalizedFlag {
-    pub source_text: String,
+    pub source_range: TextRange,
     pub canonical_name: Option<String>,
     pub args: Vec<MayaPositionalArg>,
     pub span: TextRange,
@@ -321,10 +320,48 @@ pub struct MayaNormalizedFlag {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightFlag {
-    pub source_text: String,
+    pub source_range: TextRange,
     pub canonical_name: Option<String>,
     pub args: Vec<MayaPositionalArg>,
     pub span: TextRange,
+}
+
+impl MayaRawShellItem {
+    #[must_use]
+    pub fn source_text<'a>(&self, source: SourceView<'a>) -> &'a str {
+        source.display_slice(self.span)
+    }
+
+    #[must_use]
+    pub fn value_text<'a>(&self, source: SourceView<'a>) -> Option<&'a str> {
+        let text = source.slice(self.text_range?);
+        match self.kind {
+            MayaRawShellItemKind::Numeric | MayaRawShellItemKind::BareWord => Some(text),
+            MayaRawShellItemKind::QuotedString => text
+                .strip_prefix('"')
+                .and_then(|text| text.strip_suffix('"')),
+            MayaRawShellItemKind::Flag
+            | MayaRawShellItemKind::Variable
+            | MayaRawShellItemKind::GroupedExpr
+            | MayaRawShellItemKind::BraceList
+            | MayaRawShellItemKind::VectorLiteral
+            | MayaRawShellItemKind::Capture => None,
+        }
+    }
+}
+
+impl MayaNormalizedFlag {
+    #[must_use]
+    pub fn source_text<'a>(&self, source: SourceView<'a>) -> &'a str {
+        source.display_slice(self.source_range)
+    }
+}
+
+impl MayaLightFlag {
+    #[must_use]
+    pub fn source_text<'a>(&self, source: SourceView<'a>) -> &'a str {
+        source.display_slice(self.source_range)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1212,6 +1249,7 @@ where
                             .map(|word| raw_item_from_shell_word(parse, word))
                             .collect::<Vec<_>>();
                         let specialized = specialize_command(
+                            parse.source_view(),
                             &head,
                             invoke.range,
                             normalized.as_ref(),
@@ -1264,6 +1302,7 @@ fn take_matching_normalized(
 }
 
 fn specialize_command(
+    source: SourceView<'_>,
     head: &str,
     span: TextRange,
     normalized: Option<&MayaNormalizedCommand>,
@@ -1307,6 +1346,7 @@ fn specialize_command(
             span,
         })),
         "setAttr" => Some(MayaSpecializedCommand::SetAttr(specialize_set_attr(
+            source,
             span,
             &flags,
             &positionals,
@@ -1342,6 +1382,7 @@ fn specialize_command(
             span,
         })),
         _ => {
+            let _ = source;
             let _ = head;
             None
         }
@@ -1349,6 +1390,7 @@ fn specialize_command(
 }
 
 fn specialize_set_attr(
+    source: SourceView<'_>,
     span: TextRange,
     flags: &[MayaNormalizedFlag],
     positionals: &[MayaRawShellItem],
@@ -1358,7 +1400,7 @@ fn specialize_set_attr(
     let type_name = first_flag_arg(flags, "type");
     let type_text = type_name
         .as_ref()
-        .and_then(|item| item.value_text.as_deref())
+        .and_then(|item| item.value_text(source))
         .unwrap_or_default();
     let value_kind = match type_text {
         "string" if values.len() == 1 => MayaSetAttrValueKind::String,
@@ -1443,40 +1485,22 @@ fn raw_item_from_shell_word_with_source(
     source: mel_syntax::SourceView<'_>,
     word: &ShellWord,
 ) -> MayaRawShellItem {
-    let (value_text, kind, span) = match word {
-        ShellWord::Flag { range, .. } => (None, MayaRawShellItemKind::Flag, *range),
-        ShellWord::NumericLiteral { text, range } => (
-            Some(source.slice(*text).to_owned()),
-            MayaRawShellItemKind::Numeric,
-            *range,
-        ),
-        ShellWord::BareWord { text, range } => (
-            Some(source.slice(*text).to_owned()),
-            MayaRawShellItemKind::BareWord,
-            *range,
-        ),
-        ShellWord::QuotedString { text, range } => (
-            source
-                .slice(*text)
-                .strip_prefix('"')
-                .and_then(|text| text.strip_suffix('"'))
-                .map(str::to_owned),
-            MayaRawShellItemKind::QuotedString,
-            *range,
-        ),
-        ShellWord::Variable { range, .. } => (None, MayaRawShellItemKind::Variable, *range),
-        ShellWord::GroupedExpr { range, .. } => (None, MayaRawShellItemKind::GroupedExpr, *range),
-        ShellWord::BraceList { range, .. } => (None, MayaRawShellItemKind::BraceList, *range),
-        ShellWord::VectorLiteral { range, .. } => {
-            (None, MayaRawShellItemKind::VectorLiteral, *range)
-        }
-        ShellWord::Capture { range, .. } => (None, MayaRawShellItemKind::Capture, *range),
+    let _ = source;
+    let (kind, span) = match word {
+        ShellWord::Flag { range, .. } => (MayaRawShellItemKind::Flag, *range),
+        ShellWord::NumericLiteral { range, .. } => (MayaRawShellItemKind::Numeric, *range),
+        ShellWord::BareWord { range, .. } => (MayaRawShellItemKind::BareWord, *range),
+        ShellWord::QuotedString { range, .. } => (MayaRawShellItemKind::QuotedString, *range),
+        ShellWord::Variable { range, .. } => (MayaRawShellItemKind::Variable, *range),
+        ShellWord::GroupedExpr { range, .. } => (MayaRawShellItemKind::GroupedExpr, *range),
+        ShellWord::BraceList { range, .. } => (MayaRawShellItemKind::BraceList, *range),
+        ShellWord::VectorLiteral { range, .. } => (MayaRawShellItemKind::VectorLiteral, *range),
+        ShellWord::Capture { range, .. } => (MayaRawShellItemKind::Capture, *range),
     };
     MayaRawShellItem {
-        source_text: source.display_slice(span).to_owned(),
-        value_text,
         kind,
         span,
+        text_range: word.text_range(),
     }
 }
 
@@ -1588,7 +1612,7 @@ fn maya_normalized_flag_from_source(
     value: NormalizedFlag,
 ) -> MayaNormalizedFlag {
     MayaNormalizedFlag {
-        source_text: source.display_slice(value.source_range).to_owned(),
+        source_range: value.source_range,
         canonical_name: value.canonical_name.map(|name| name.to_string()),
         args: value
             .args
@@ -1748,9 +1772,22 @@ where
         .collect::<Vec<_>>();
     let promoted_span = command_payload_span(command.head_range, &raw_items);
     let normalized = registry.lookup(&head).map(|schema| {
-        normalize_light_command(&head, command.head_range, promoted_span, schema, &raw_items)
+        normalize_light_command(
+            parse,
+            &head,
+            command.head_range,
+            promoted_span,
+            schema,
+            &raw_items,
+        )
     });
-    let specialized = specialize_command(&head, promoted_span, normalized.as_ref(), &raw_items);
+    let specialized = specialize_command(
+        parse.source_view(),
+        &head,
+        promoted_span,
+        normalized.as_ref(),
+        &raw_items,
+    );
 
     Ok(MayaTopLevelCommand {
         head,
@@ -1887,6 +1924,7 @@ where
         .map(|word| raw_item_from_shell_word_with_source(parse.source_view(), word))
         .collect::<Vec<_>>();
     let specialized = specialize_command(
+        parse.source_view(),
         &promoted_head,
         invoke.range,
         normalized.as_ref(),
@@ -1905,13 +1943,14 @@ where
 }
 
 fn normalize_light_command(
+    parse: &LightParse,
     head: &str,
     head_range: TextRange,
     span: TextRange,
     schema: &CommandSchema,
     items: &[MayaRawShellItem],
 ) -> MayaNormalizedCommand {
-    let mode = detect_light_mode(schema, items);
+    let mode = detect_light_mode(parse, schema, items);
     let mut normalized_items = Vec::new();
     let mut index = 0;
 
@@ -1925,7 +1964,7 @@ fn normalize_light_command(
             continue;
         }
 
-        let schema_flag = find_flag_schema(schema, &item.source_text);
+        let schema_flag = find_flag_schema(schema, item.source_text(parse.source_view()));
         let expected_arity = schema_flag
             .as_ref()
             .map(|flag| arity_for_mode(flag.arity_by_mode, mode))
@@ -1949,7 +1988,7 @@ fn normalize_light_command(
             text_range(range_start(item.span), range_end(arg.item.span))
         });
         normalized_items.push(MayaNormalizedCommandItem::Flag(MayaNormalizedFlag {
-            source_text: item.source_text.clone(),
+            source_range: item.span,
             canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.to_string()),
             args,
             span: item_span,
@@ -2000,6 +2039,7 @@ where
         .collect::<Vec<_>>();
     let specialized = registry.lookup(&head).and_then(|schema| {
         specialize_light_command(
+            parse,
             &head,
             command.span,
             command.opaque_tail,
@@ -2020,42 +2060,48 @@ where
 
 fn raw_item_from_light_word(parse: &LightParse, word: &LightWord) -> MayaRawShellItem {
     let span = word.range();
-    let (value_text, kind) = match word {
-        LightWord::Flag { .. } => (None, MayaRawShellItemKind::Flag),
-        LightWord::NumericLiteral { text, .. } => (
-            Some(parse.source_slice(*text).to_owned()),
-            MayaRawShellItemKind::Numeric,
-        ),
-        LightWord::BareWord { text, .. } => (
-            Some(parse.source_slice(*text).to_owned()),
-            MayaRawShellItemKind::BareWord,
-        ),
-        LightWord::QuotedString { text, .. } => (
-            parse.string_literal_contents(*text).map(str::to_owned),
-            MayaRawShellItemKind::QuotedString,
-        ),
-        LightWord::Variable { .. } => (None, MayaRawShellItemKind::Variable),
-        LightWord::GroupedExpr { .. } => (None, MayaRawShellItemKind::GroupedExpr),
-        LightWord::BraceList { .. } => (None, MayaRawShellItemKind::BraceList),
-        LightWord::VectorLiteral { .. } => (None, MayaRawShellItemKind::VectorLiteral),
-        LightWord::Capture { .. } => (None, MayaRawShellItemKind::Capture),
+    let _ = parse;
+    let kind = match word {
+        LightWord::Flag { .. } => MayaRawShellItemKind::Flag,
+        LightWord::NumericLiteral { .. } => MayaRawShellItemKind::Numeric,
+        LightWord::BareWord { .. } => MayaRawShellItemKind::BareWord,
+        LightWord::QuotedString { .. } => MayaRawShellItemKind::QuotedString,
+        LightWord::Variable { .. } => MayaRawShellItemKind::Variable,
+        LightWord::GroupedExpr { .. } => MayaRawShellItemKind::GroupedExpr,
+        LightWord::BraceList { .. } => MayaRawShellItemKind::BraceList,
+        LightWord::VectorLiteral { .. } => MayaRawShellItemKind::VectorLiteral,
+        LightWord::Capture { .. } => MayaRawShellItemKind::Capture,
     };
     MayaRawShellItem {
-        source_text: parse.display_slice(span).to_owned(),
-        value_text,
         kind,
         span,
+        text_range: light_word_text_range(word),
+    }
+}
+
+fn light_word_text_range(word: &LightWord) -> Option<TextRange> {
+    match word {
+        LightWord::Flag { text, .. }
+        | LightWord::NumericLiteral { text, .. }
+        | LightWord::BareWord { text, .. }
+        | LightWord::QuotedString { text, .. } => Some(*text),
+        LightWord::Variable { .. }
+        | LightWord::GroupedExpr { .. }
+        | LightWord::BraceList { .. }
+        | LightWord::VectorLiteral { .. }
+        | LightWord::Capture { .. } => None,
     }
 }
 
 fn specialize_light_command(
+    parse: &LightParse,
     head: &str,
     span: TextRange,
     opaque_tail: Option<TextRange>,
     schema: &CommandSchema,
     prefix_items: &[MayaRawShellItem],
 ) -> Option<MayaLightSpecializedCommand> {
-    let (flags, positionals) = normalize_light_items(schema, prefix_items);
+    let (flags, positionals) = normalize_light_items(parse, schema, prefix_items);
     match schema.name.as_ref() {
         "requires" => Some(MayaLightSpecializedCommand::Requires(
             MayaLightRequiresCommand {
@@ -2109,7 +2155,7 @@ fn specialize_light_command(
             },
         )),
         "setAttr" => Some(MayaLightSpecializedCommand::SetAttr(
-            specialize_light_set_attr(span, opaque_tail, &flags, &positionals),
+            specialize_light_set_attr(parse, span, opaque_tail, &flags, &positionals),
         )),
         "addAttr" => Some(MayaLightSpecializedCommand::AddAttr(
             MayaLightAddAttrCommand {
@@ -2145,6 +2191,7 @@ fn specialize_light_command(
             span,
         })),
         _ => {
+            let _ = parse;
             let _ = head;
             None
         }
@@ -2152,6 +2199,7 @@ fn specialize_light_command(
 }
 
 fn specialize_light_set_attr(
+    parse: &LightParse,
     span: TextRange,
     opaque_tail: Option<TextRange>,
     flags: &[MayaLightFlag],
@@ -2162,7 +2210,7 @@ fn specialize_light_set_attr(
     let type_name = first_light_flag_arg(flags, "type");
     let type_text = type_name
         .as_ref()
-        .and_then(|item| item.value_text.as_deref())
+        .and_then(|item| item.value_text(parse.source_view()))
         .unwrap_or_default();
     let value_kind = match type_text {
         "string" if prefix_values.len() == 1 && opaque_tail.is_none() => {
@@ -2198,10 +2246,11 @@ fn specialize_light_set_attr(
 }
 
 fn normalize_light_items(
+    parse: &LightParse,
     schema: &CommandSchema,
     items: &[MayaRawShellItem],
 ) -> (Vec<MayaLightFlag>, Vec<MayaRawShellItem>) {
-    let mode = detect_light_mode(schema, items);
+    let mode = detect_light_mode(parse, schema, items);
     let mut index = 0;
     let mut flags = Vec::new();
     let mut positionals = Vec::new();
@@ -2214,7 +2263,7 @@ fn normalize_light_items(
             continue;
         }
 
-        let schema_flag = find_flag_schema(schema, &item.source_text);
+        let schema_flag = find_flag_schema(schema, item.source_text(parse.source_view()));
         let expected_arity = schema_flag
             .as_ref()
             .map(|flag| arity_for_mode(flag.arity_by_mode, mode))
@@ -2238,7 +2287,7 @@ fn normalize_light_items(
             text_range(range_start(item.span), range_end(arg.item.span))
         });
         flags.push(MayaLightFlag {
-            source_text: item.source_text.clone(),
+            source_range: item.span,
             canonical_name: schema_flag.as_ref().map(|flag| flag.long_name.to_string()),
             args,
             span,
@@ -2249,7 +2298,11 @@ fn normalize_light_items(
     (flags, positionals)
 }
 
-fn detect_light_mode(schema: &CommandSchema, items: &[MayaRawShellItem]) -> CommandMode {
+fn detect_light_mode(
+    parse: &LightParse,
+    schema: &CommandSchema,
+    items: &[MayaRawShellItem],
+) -> CommandMode {
     let mut create = false;
     let mut edit = false;
     let mut query = false;
@@ -2257,7 +2310,10 @@ fn detect_light_mode(schema: &CommandSchema, items: &[MayaRawShellItem]) -> Comm
         if item.kind != MayaRawShellItemKind::Flag {
             continue;
         }
-        match item.source_text.trim_start_matches('-') {
+        match item
+            .source_text(parse.source_view())
+            .trim_start_matches('-')
+        {
             "create" | "c" if schema.mode_mask.create => create = true,
             "edit" | "e" if schema.mode_mask.edit => edit = true,
             "query" | "q" if schema.mode_mask.query => query = true,
@@ -2617,8 +2673,14 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[1].kind, MayaRawShellItemKind::Numeric);
-        assert_eq!(command.raw_items[1].value_text.as_deref(), Some(".5e+2"));
-        assert_eq!(command.raw_items[1].source_text, ".5e+2");
+        assert_eq!(
+            command.raw_items[1].value_text(parse.source_view()),
+            Some(".5e+2")
+        );
+        assert_eq!(
+            command.raw_items[1].source_text(parse.source_view()),
+            ".5e+2"
+        );
     }
 
     #[test]
@@ -2683,11 +2745,14 @@ mod tests {
             set_attr
                 .type_name
                 .as_ref()
-                .and_then(|item| item.value_text.as_deref()),
+                .and_then(|item| item.value_text(parse.source_view())),
             Some("dataReferenceEdits")
         );
         assert_eq!(set_attr.values.len(), 3);
-        assert_eq!(set_attr.values[2].value_text.as_deref(), Some("5"));
+        assert_eq!(
+            set_attr.values[2].value_text(parse.source_view()),
+            Some("5")
+        );
     }
 
     #[test]
@@ -2706,16 +2771,55 @@ mod tests {
             create_node
                 .name
                 .as_ref()
-                .and_then(|item| item.value_text.as_deref()),
+                .and_then(|item| item.value_text(parse.source_view())),
             Some("pCube1")
         );
         assert_eq!(
             create_node
                 .parent
                 .as_ref()
-                .and_then(|item| item.value_text.as_deref()),
+                .and_then(|item| item.value_text(parse.source_view())),
             Some("|group1")
         );
+    }
+
+    #[test]
+    fn normalized_flag_accessor_preserves_flag_source_text() {
+        let parse = parse_source("setAttr \".v\" -type \"string\" \"hi\";\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts(&parse);
+        let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        let normalized = command
+            .normalized
+            .as_ref()
+            .expect("expected normalized command");
+        let flag = normalized
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MayaNormalizedCommandItem::Flag(flag) => Some(flag),
+                MayaNormalizedCommandItem::Positional(_) => None,
+            })
+            .expect("expected flag");
+        assert_eq!(flag.source_text(parse.source_view()), "-type");
+    }
+
+    #[test]
+    fn light_flag_accessor_preserves_flag_source_text() {
+        let parse = parse_light_source("setAttr \".v\" -type \"string\" \"hi\";\n");
+        assert!(parse.errors.is_empty());
+        let facts = collect_top_level_facts_light(&parse);
+        let MayaLightTopLevelItem::Command(command) = &facts.items[0] else {
+            panic!("expected command");
+        };
+        let Some(MayaLightSpecializedCommand::SetAttr(set_attr)) = command.specialized.as_ref()
+        else {
+            panic!("expected light setAttr specialization");
+        };
+        let flag = set_attr.flags.first().expect("expected flag");
+        assert_eq!(flag.source_text(parse.source_view()), "-type");
     }
 
     #[test]
@@ -2727,7 +2831,10 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[3].kind, MayaRawShellItemKind::GroupedExpr);
-        assert_eq!(command.raw_items[3].source_text, "(\"a\" + \"b\")");
+        assert_eq!(
+            command.raw_items[3].source_text(parse.source_view()),
+            "(\"a\" + \"b\")"
+        );
     }
 
     #[test]
@@ -2739,7 +2846,10 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[0].kind, MayaRawShellItemKind::Variable);
-        assert_eq!(command.raw_items[0].source_text, "$cmd");
+        assert_eq!(
+            command.raw_items[0].source_text(parse.source_view()),
+            "$cmd"
+        );
     }
 
     #[test]
@@ -2751,7 +2861,10 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[0].kind, MayaRawShellItemKind::BraceList);
-        assert_eq!(command.raw_items[0].source_text, "{\"a\", \"b\"}");
+        assert_eq!(
+            command.raw_items[0].source_text(parse.source_view()),
+            "{\"a\", \"b\"}"
+        );
     }
 
     #[test]
@@ -2766,7 +2879,10 @@ mod tests {
             command.raw_items[0].kind,
             MayaRawShellItemKind::VectorLiteral
         );
-        assert_eq!(command.raw_items[0].source_text, "<<1, 2, 3>>");
+        assert_eq!(
+            command.raw_items[0].source_text(parse.source_view()),
+            "<<1, 2, 3>>"
+        );
     }
 
     #[test]
@@ -2778,7 +2894,10 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[0].kind, MayaRawShellItemKind::Capture);
-        assert_eq!(command.raw_items[0].source_text, "`someCmd -q`");
+        assert_eq!(
+            command.raw_items[0].source_text(parse.source_view()),
+            "`someCmd -q`"
+        );
     }
 
     #[test]
@@ -2792,7 +2911,7 @@ mod tests {
         let actual = command
             .raw_items
             .iter()
-            .map(|item| item.source_text.as_str())
+            .map(|item| item.source_text(parse.source_view()))
             .collect::<Vec<_>>();
         assert_eq!(
             actual,
@@ -2816,7 +2935,10 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.raw_items[3].kind, MayaRawShellItemKind::GroupedExpr);
-        assert_eq!(command.raw_items[3].source_text, "(\"\u{FFFD}\")");
+        assert_eq!(
+            command.raw_items[3].source_text(parse.source_view()),
+            "(\"\u{FFFD}\")"
+        );
     }
 
     #[test]
@@ -2838,18 +2960,21 @@ mod tests {
             set_attr
                 .attr_path
                 .as_ref()
-                .and_then(|item| item.value_text.as_deref()),
+                .and_then(|item| item.value_text(parse.source_view())),
             Some(".fc[0]")
         );
         assert_eq!(
             set_attr
                 .type_name
                 .as_ref()
-                .and_then(|item| item.value_text.as_deref()),
+                .and_then(|item| item.value_text(parse.source_view())),
             Some("polyFaces")
         );
         assert!(command.opaque_tail.is_none());
-        assert_eq!(set_attr.prefix_values[0].value_text.as_deref(), Some("f"));
+        assert_eq!(
+            set_attr.prefix_values[0].value_text(parse.source_view()),
+            Some("f")
+        );
     }
 
     #[test]
@@ -2956,8 +3081,14 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.promotion_kind, MayaPromotionKind::PolicyPromoted);
-        assert_eq!(command.raw_items[0].source_text, "\".名\"");
-        assert_eq!(command.raw_items[3].value_text.as_deref(), Some("値"));
+        assert_eq!(
+            command.raw_items[0].source_text(parse.source_view()),
+            "\".名\""
+        );
+        assert_eq!(
+            command.raw_items[3].value_text(parse.source_view()),
+            Some("値")
+        );
     }
 
     #[test]
@@ -3199,7 +3330,10 @@ mod tests {
             panic!("expected command");
         };
         assert_eq!(command.promotion_kind, MayaPromotionKind::PolicyPromoted);
-        assert_eq!(command.raw_items[0].source_text, "transform");
+        assert_eq!(
+            command.raw_items[0].source_text(parse.source_view()),
+            "transform"
+        );
     }
 
     #[test]
