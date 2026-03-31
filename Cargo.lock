@@ -302,13 +302,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mel-cst"
-version = "0.1.0"
-dependencies = [
- "mel-syntax",
-]
-
-[[package]]
 name = "mel-lexer"
 version = "0.1.0"
 dependencies = [

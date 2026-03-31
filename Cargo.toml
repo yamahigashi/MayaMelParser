@@ -2,7 +2,6 @@
 members = [
     "crates/mel-syntax",
     "crates/mel-lexer",
-    "crates/mel-cst",
     "crates/mel-ast",
     "crates/mel-parser",
     "crates/mel-sema",

@@ -8,20 +8,22 @@ future editor-facing tooling.
 
 ## Current Status
 
-This repository is still early-stage and the internal APIs are not stable.
+The workspace is now solid enough for parser, semantic, and corpus-oriented
+experimentation, but internal crate APIs are still evolving as the architecture
+is tightened.
 
 Today the workspace already includes:
 
 - shared syntax primitives and span types
 - a lexer with trivia retention and lexical diagnostics
 - a parser for core MEL statement and expression surfaces, including a lightweight scan path
-- typed AST structures
+- typed AST structures used as the current parse output
 - generic semantic analysis for proc visibility, command normalization, and diagnostics
 - a Maya-specific metadata layer for builtin command registries and top-level command facts
 - a small local CLI for inspecting parse, diagnostics, and lightweight summaries
 
-The implementation is under active development, and crate boundaries are being
-treated as part of the long-term architecture.
+The implementation is under active development, but the current crate layout and
+CLI workflow are already useful for day-to-day parser and sema iteration.
 
 ## Getting Started
 
@@ -61,7 +63,6 @@ The workspace is organized around a generic MEL pipeline plus a Maya-specific la
 source
   -> mel-syntax
   -> mel-lexer
-  -> mel-cst
   -> mel-ast
   -> mel-parser
   -> mel-sema
@@ -69,8 +70,9 @@ source
   -> mel-cli
 ```
 
-The main design rule is that parsing preserves MEL surface structure and does
-not try to fully resolve meaning too early. In particular:
+The current implementation is intentionally AST-first. Parsing preserves MEL
+surface structure and does not try to fully resolve meaning too early. In
+particular:
 
 - parser output keeps command-style and function-style invocation surfaces
 - command, proc, and plugin-command resolution belongs to semantic analysis
@@ -78,11 +80,14 @@ not try to fully resolve meaning too early. In particular:
 - spans are carried through syntax and diagnostics
 - error recovery is treated as a first-class parser concern
 
+A lossless CST may be added later if formatter, source-to-source rewrite, or
+incremental editor workflows require it, but it is not part of the current
+workspace surface.
+
 ## Workspace Layout
 
 - `crates/mel-syntax`: shared span, token, and syntax primitives
 - `crates/mel-lexer`: tokenization and lexical diagnostics
-- `crates/mel-cst`: lossless concrete syntax layer scaffold
 - `crates/mel-ast`: typed AST shapes used by parser and sema
 - `crates/mel-parser`: parsing entry points, recovery, source decoding, and lightweight scanning
 - `crates/mel-sema`: generic semantic analysis, diagnostics, and registry-backed command normalization
@@ -106,7 +111,7 @@ defers language-specific resolution to later passes.
 
 ## Current Limitations
 
-- The workspace is still evolving and internal crate APIs may change.
+- The workspace is usable for parser/sema experimentation, but internal crate APIs may still change.
 - Parser recovery, semantic coverage, and corpus automation are incomplete.
 - Maya-specific command specialization exists for selected workflows, not the full language surface.
 - This repository is not aiming to be a formatter, interpreter, or complete Maya runtime integration.
