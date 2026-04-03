@@ -118,6 +118,7 @@ fn main() {
     );
 
     root.commands.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+    validate_command_schemas(&root.commands);
 
     let mut rendered = String::from("&[\n");
     for command in &root.commands {
@@ -232,6 +233,32 @@ fn render_positionals(value: Option<&RawPositionals>) -> String {
     rendered.push_str(&render_positional_tail(&value.tail));
     rendered.push_str(",\n        }");
     rendered
+}
+
+fn validate_command_schemas(commands: &[RawCommand]) {
+    for command in commands {
+        let Some(positionals) = command.positionals.as_ref() else {
+            continue;
+        };
+
+        let mut seen_selection_aware = false;
+        for (slot_index, slot) in positionals.prefix.iter().enumerate() {
+            let is_selection_aware = matches!(
+                slot.source_policy.as_deref(),
+                Some("explicit_or_current_selection")
+            );
+            if is_selection_aware {
+                seen_selection_aware = true;
+                continue;
+            }
+            if seen_selection_aware {
+                panic!(
+                    "command schema {:?} has non-trailing selection-aware positional slot before explicit-only slot at prefix index {}",
+                    command.name, slot_index
+                );
+            }
+        }
+    }
 }
 
 fn render_positional_tail(value: &RawPositionalTail) -> String {

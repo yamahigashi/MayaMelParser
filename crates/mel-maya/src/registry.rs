@@ -1,7 +1,7 @@
 use mel_sema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind, FlagArity,
     FlagArityByMode, FlagSchema, PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy,
-    PositionalTailSchema, ReturnBehavior, ValueShape,
+    PositionalTailSchema, ReturnBehavior, ValidatedCommandSchema, ValueShape,
 };
 use std::sync::OnceLock;
 
@@ -16,7 +16,7 @@ impl MayaCommandRegistry {
 }
 
 impl CommandRegistry for MayaCommandRegistry {
-    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
+    fn lookup(&self, name: &str) -> Option<&ValidatedCommandSchema> {
         shared_command_schemas()
             .binary_search_by(|schema| schema.name.as_ref().cmp(name))
             .ok()
@@ -59,8 +59,8 @@ struct EmbeddedCommandSchema {
 }
 
 impl EmbeddedCommandSchema {
-    fn to_shared_schema(self) -> CommandSchema {
-        CommandSchema {
+    fn to_shared_schema(self) -> ValidatedCommandSchema {
+        let schema = CommandSchema {
             name: self.name.into(),
             kind: self.kind,
             source_kind: self.source_kind,
@@ -68,7 +68,9 @@ impl EmbeddedCommandSchema {
             return_behavior: self.return_behavior,
             positionals: self.positionals,
             flags: self.build_effective_flags().into(),
-        }
+        };
+        ValidatedCommandSchema::new(schema)
+            .expect("embedded command schemas must satisfy mel-sema schema invariants")
     }
 
     fn build_effective_flags(self) -> Vec<FlagSchema> {
@@ -88,8 +90,8 @@ impl EmbeddedCommandSchema {
 static EMBEDDED_COMMAND_SCHEMAS: &[EmbeddedCommandSchema] =
     include!(concat!(env!("OUT_DIR"), "/embedded_command_schemas.rs"));
 
-fn shared_command_schemas() -> &'static [CommandSchema] {
-    static COMMAND_SCHEMAS: OnceLock<Vec<CommandSchema>> = OnceLock::new();
+fn shared_command_schemas() -> &'static [ValidatedCommandSchema] {
+    static COMMAND_SCHEMAS: OnceLock<Vec<ValidatedCommandSchema>> = OnceLock::new();
     COMMAND_SCHEMAS.get_or_init(|| {
         EMBEDDED_COMMAND_SCHEMAS
             .iter()
@@ -152,7 +154,7 @@ impl<R> CommandRegistry for OverlayRegistry<'_, R>
 where
     R: CommandRegistry + ?Sized,
 {
-    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
+    fn lookup(&self, name: &str) -> Option<&ValidatedCommandSchema> {
         self.primary
             .lookup(name)
             .or_else(|| self.fallback.lookup(name))

@@ -47,7 +47,7 @@ struct ProcContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedCommand<'a> {
-    schema: &'a CommandSchema,
+    schema: &'a ValidatedCommandSchema,
 }
 
 enum ResolvedInvokeTarget<'a> {

@@ -14,9 +14,10 @@ pub use command_norm::{
     CommandMode, NormalizedCommandInvoke, NormalizedCommandItem, NormalizedFlag, PositionalArg,
 };
 pub use command_schema::{
-    CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, PositionalSchema,
-    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ReturnBehavior, ValueShape,
+    CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSchemaValidationError,
+    CommandSourceKind, EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema,
+    PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema,
+    ReturnBehavior, StaticCommandRegistry, ValidatedCommandSchema, ValueShape,
 };
 
 use flow::FlowLintAnalyzer;

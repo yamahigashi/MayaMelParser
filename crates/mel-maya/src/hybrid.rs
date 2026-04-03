@@ -102,14 +102,7 @@ where
                 span: proc_def.span,
             }),
             LightItem::Command(command) => items.push(MayaTopLevelItem::Command(Box::new(
-                promote_or_synthesize_light_command(
-                    parse,
-                    command,
-                    &overlay,
-                    options,
-                    decider,
-                    PromotionErrorMode::Strict,
-                )?,
+                promote_or_synthesize_light_command(parse, command, &overlay, options, decider)?,
             ))),
             LightItem::Other { span } => items.push(MayaTopLevelItem::Other { span: *span }),
         }
@@ -188,15 +181,14 @@ where
                 span: proc_def.span,
             }),
             LightItem::Command(command) => {
-                let command = promote_or_synthesize_light_command(
+                let command = promote_or_synthesize_light_command_report(
                     parse,
                     command,
                     &overlay,
                     options,
                     decider,
-                    PromotionErrorMode::Report(&mut promotion_diagnostics),
-                )
-                .expect("report mode should never bubble promotion failure");
+                    &mut promotion_diagnostics,
+                );
                 validation_diagnostics.extend(validate_maya_command(parse.source_view(), &command));
                 facts
                     .items
@@ -282,19 +274,14 @@ where
             promote_policy_command_with_registry(parse, command, registry, options)
         }
         Some(MayaPromotionKind::FullParse | MayaPromotionKind::LightSynthesized) | None => {
-            build_nonopaque_top_level_command_with_registry(
+            Ok(build_nonopaque_top_level_command_with_registry(
                 parse,
                 command,
                 registry,
                 MayaPromotionKind::LightSynthesized,
-            )
+            ))
         }
     }
-}
-
-enum PromotionErrorMode<'a> {
-    Strict,
-    Report(&'a mut Vec<MayaPromotionDiagnostic>),
 }
 
 fn promote_or_synthesize_light_command<R, D>(
@@ -303,8 +290,42 @@ fn promote_or_synthesize_light_command<R, D>(
     registry: &R,
     options: &MayaPromotionOptions,
     decider: &D,
-    error_mode: PromotionErrorMode<'_>,
 ) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    let head = parse.source_slice(command.head_range).to_owned();
+    let canonical_name = registry.lookup(&head).map(|schema| schema.name.clone());
+    let attempted_kind = promotion_attempt_kind(
+        command,
+        canonical_name.as_deref(),
+        &head,
+        &options.policy,
+        decider,
+    );
+    let Some(_) = attempted_kind else {
+        return Ok(build_nonopaque_top_level_command_with_registry(
+            parse,
+            command,
+            registry,
+            MayaPromotionKind::LightSynthesized,
+        ));
+    };
+
+    promote_light_top_level_command_with_registry_and_decider(
+        parse, command, registry, options, decider,
+    )
+}
+
+fn promote_or_synthesize_light_command_report<R, D>(
+    parse: &LightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+    diagnostics: &mut Vec<MayaPromotionDiagnostic>,
+) -> MayaTopLevelCommand
 where
     R: CommandRegistry + ?Sized,
     D: MayaPromotionDecider + ?Sized,
@@ -330,24 +351,21 @@ where
     match promote_light_top_level_command_with_registry_and_decider(
         parse, command, registry, options, decider,
     ) {
-        Ok(command) => Ok(command),
-        Err(error) => match error_mode {
-            PromotionErrorMode::Strict => Err(error),
-            PromotionErrorMode::Report(diagnostics) => {
-                diagnostics.push(MayaPromotionDiagnostic {
-                    command_span: error.command_span,
-                    head: error.head.clone(),
-                    attempted_kind,
-                    message: error.message,
-                });
-                build_nonopaque_top_level_command_with_registry(
-                    parse,
-                    command,
-                    registry,
-                    MayaPromotionKind::LightSynthesized,
-                )
-            }
-        },
+        Ok(command) => command,
+        Err(error) => {
+            diagnostics.push(MayaPromotionDiagnostic {
+                command_span: error.command_span,
+                head: error.head.clone(),
+                attempted_kind,
+                message: error.message,
+            });
+            build_nonopaque_top_level_command_with_registry(
+                parse,
+                command,
+                registry,
+                MayaPromotionKind::LightSynthesized,
+            )
+        }
     }
 }
 
@@ -420,7 +438,7 @@ fn build_nonopaque_top_level_command_with_registry<R>(
     command: &LightCommandSurface,
     registry: &R,
     promotion_kind: MayaPromotionKind,
-) -> Result<MayaTopLevelCommand, MayaPromotionError>
+) -> MayaTopLevelCommand
 where
     R: CommandRegistry + ?Sized,
 {
@@ -449,7 +467,7 @@ where
         &raw_items,
     );
 
-    Ok(MayaTopLevelCommand {
+    MayaTopLevelCommand {
         head,
         captured: command.captured,
         raw_items,
@@ -457,7 +475,7 @@ where
         specialized,
         promotion_kind,
         span: promoted_span,
-    })
+    }
 }
 
 fn promote_opaque_command_with_registry<R>(

@@ -1,8 +1,9 @@
 use super::{
-    CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
-    DiagnosticFilter, DiagnosticSeverity, EmptyCommandRegistry, FlagArity, FlagArityByMode,
-    FlagSchema, IdentTarget, PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy,
-    PositionalTailSchema, ResolvedCallee, ReturnBehavior, ValueShape, VariableKind, analyze,
+    CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema,
+    CommandSchemaValidationError, CommandSourceKind, DiagnosticFilter, DiagnosticSeverity,
+    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, PositionalSchema,
+    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ResolvedCallee,
+    ReturnBehavior, StaticCommandRegistry, ValueShape, VariableKind, analyze,
     analyze_diagnostics_with_registry, analyze_diagnostics_with_registry_filtered,
     analyze_with_registry,
 };
@@ -43,14 +44,8 @@ fn boxed_expr(expr: Expr) -> Box<Expr> {
     Box::new(expr)
 }
 
-struct TestRegistry {
-    commands: Vec<CommandSchema>,
-}
-
-impl CommandRegistry for TestRegistry {
-    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
-        self.commands.iter().find(|info| info.name.as_ref() == name)
-    }
+fn test_registry(commands: Vec<CommandSchema>) -> StaticCommandRegistry {
+    StaticCommandRegistry::try_new(commands).expect("valid test registry")
 }
 
 fn command_schema(name: &str, kind: CommandKind) -> CommandSchema {
@@ -528,9 +523,7 @@ fn builtin_command_resolves_with_registry() {
         }))],
     };
 
-    let registry = TestRegistry {
-        commands: vec![command_schema("sphere", CommandKind::Builtin)],
-    };
+    let registry = test_registry(vec![command_schema("sphere", CommandKind::Builtin)]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -556,9 +549,7 @@ fn plugin_command_resolves_with_registry() {
         }))],
     };
 
-    let registry = TestRegistry {
-        commands: vec![command_schema("foo", CommandKind::Plugin)],
-    };
+    let registry = test_registry(vec![command_schema("foo", CommandKind::Plugin)]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -597,9 +588,7 @@ fn proc_resolution_takes_precedence_over_registry_command() {
         ],
     };
 
-    let registry = TestRegistry {
-        commands: vec![command_schema("helper", CommandKind::Builtin)],
-    };
+    let registry = test_registry(vec![command_schema("helper", CommandKind::Builtin)]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -776,9 +765,7 @@ fn shell_like_command_reports_unexpected_positional_arguments() {
         prefix: &[],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     let diagnostic = analysis
@@ -820,9 +807,7 @@ fn shell_like_command_reports_missing_required_positional_argument() {
         prefix: &[EXPLICIT_STRING_SLOT, EXPLICIT_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     let diagnostic = analysis
@@ -861,9 +846,7 @@ fn shell_like_command_allows_selection_fallback_positional_omission() {
         prefix: &[SELECTION_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -890,9 +873,7 @@ fn shell_like_delete_allows_selection_fallback_positional_omission() {
         prefix: &[SELECTION_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -919,9 +900,7 @@ fn shell_like_sets_allows_selection_fallback_positional_omission() {
         prefix: &[SELECTION_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -951,9 +930,7 @@ fn shell_like_poly_list_component_conversion_allows_selection_fallback_positiona
         }],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -983,9 +960,7 @@ fn shell_like_command_allows_explicit_positional_for_selection_fallback_slot() {
         prefix: &[SELECTION_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -1002,28 +977,14 @@ fn shell_like_command_allows_selection_fallback_only_as_trailing_suffix() {
         ],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
-    let source = SourceFile {
-        items: vec![Item::Stmt(Box::new(Stmt::Expr {
-            expr: invoke_expr(InvokeExpr {
-                surface: InvokeSurface::ShellLike {
-                    head_range: tr("badSelectionShape"),
-                    words: vec![ShellWord::QuotedString {
-                        text: text_range(18, 21),
-                        range: text_range(18, 21),
-                    }],
-                    captured: false,
-                },
-                range: text_range(0, 21),
-            }),
-            range: text_range(0, 22),
-        }))],
-    };
-
-    let panic = std::panic::catch_unwind(|| analyze_source_with_registry(&source, &registry));
-    assert!(panic.is_err());
+    let error = StaticCommandRegistry::try_new(vec![command]).expect_err("invalid schema");
+    assert_eq!(
+        error,
+        CommandSchemaValidationError::SelectionAwarePositionalNotTrailingSuffix {
+            command_name: "badSelectionShape".into(),
+            slot_index: 2,
+        }
+    );
 }
 
 #[test]
@@ -1056,9 +1017,7 @@ fn shell_like_command_reports_positional_shape_mismatch_for_known_literals() {
         prefix: &[EXPLICIT_STRING_SLOT, EXPLICIT_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     let diagnostic = analysis
@@ -1117,9 +1076,7 @@ fn shell_like_command_normalization_tracks_query_mode_and_invalid_flag_usage() {
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
     }]
     .into();
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert_eq!(
@@ -1158,9 +1115,7 @@ fn shell_like_command_unknown_flag_is_warning() {
         }))],
     };
 
-    let registry = TestRegistry {
-        commands: vec![command_schema("frameLayout", CommandKind::Builtin)],
-    };
+    let registry = test_registry(vec![command_schema("frameLayout", CommandKind::Builtin)]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.iter().any(|diagnostic| {
@@ -1200,9 +1155,7 @@ fn shell_like_command_normalization_reports_mode_conflict() {
         edit: true,
         query: true,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Unknown);
@@ -1253,9 +1206,7 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
     }]
     .into();
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -1314,9 +1265,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
     }]
     .into();
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -1371,9 +1320,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
     }]
     .into();
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.is_empty());
@@ -1418,9 +1365,7 @@ fn shell_like_command_range_arity_reports_missing_required_argument() {
         ..flag_schema("label", Some("l"), FlagArity::Exact(1))
     }]
     .into();
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert!(analysis.diagnostics.iter().any(|diagnostic| {
@@ -1454,9 +1399,7 @@ fn shell_like_command_without_mode_flag_reports_unavailable_create_mode() {
         edit: false,
         query: true,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let analysis = analyze_source_with_registry(&source, &registry);
     assert_eq!(analysis.normalized_invokes[0].mode, CommandMode::Create);
@@ -3385,54 +3328,52 @@ fn diagnostics_only_analysis_matches_full_diagnostics() {
             range: text_range(0, 26),
         }))],
     };
-    let registry = TestRegistry {
-        commands: vec![CommandSchema {
-            name: "frameLayout".into(),
-            kind: CommandKind::Builtin,
-            source_kind: CommandSourceKind::Command,
-            mode_mask: CommandModeMask {
-                create: true,
-                edit: false,
-                query: true,
-            },
-            return_behavior: ReturnBehavior::Unknown,
-            flags: vec![
-                FlagSchema {
-                    mode_mask: CommandModeMask {
-                        create: true,
-                        edit: false,
-                        query: true,
-                    },
-                    arity_by_mode: FlagArityByMode {
-                        create: FlagArity::None,
-                        edit: FlagArity::None,
-                        query: FlagArity::None,
-                    },
-                    value_shapes: Vec::new().into(),
-                    ..flag_schema("query", Some("q"), FlagArity::None)
+    let registry = test_registry(vec![CommandSchema {
+        name: "frameLayout".into(),
+        kind: CommandKind::Builtin,
+        source_kind: CommandSourceKind::Command,
+        mode_mask: CommandModeMask {
+            create: true,
+            edit: false,
+            query: true,
+        },
+        return_behavior: ReturnBehavior::Unknown,
+        flags: vec![
+            FlagSchema {
+                mode_mask: CommandModeMask {
+                    create: true,
+                    edit: false,
+                    query: true,
                 },
-                FlagSchema {
-                    mode_mask: CommandModeMask {
-                        create: true,
-                        edit: false,
-                        query: false,
-                    },
-                    arity_by_mode: FlagArityByMode {
-                        create: FlagArity::Exact(1),
-                        edit: FlagArity::None,
-                        query: FlagArity::None,
-                    },
-                    value_shapes: vec![ValueShape::String].into(),
-                    ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+                arity_by_mode: FlagArityByMode {
+                    create: FlagArity::None,
+                    edit: FlagArity::None,
+                    query: FlagArity::None,
                 },
-            ]
-            .into(),
-            positionals: PositionalSchema {
-                prefix: &[EXPLICIT_STRING_SLOT],
-                tail: PositionalTailSchema::None,
+                value_shapes: Vec::new().into(),
+                ..flag_schema("query", Some("q"), FlagArity::None)
             },
-        }],
-    };
+            FlagSchema {
+                mode_mask: CommandModeMask {
+                    create: true,
+                    edit: false,
+                    query: false,
+                },
+                arity_by_mode: FlagArityByMode {
+                    create: FlagArity::Exact(1),
+                    edit: FlagArity::None,
+                    query: FlagArity::None,
+                },
+                value_shapes: vec![ValueShape::String].into(),
+                ..flag_schema("label", Some("l"), FlagArity::Exact(1))
+            },
+        ]
+        .into(),
+        positionals: PositionalSchema {
+            prefix: &[EXPLICIT_STRING_SLOT],
+            tail: PositionalTailSchema::None,
+        },
+    }]);
     let source_text = take_test_source();
     let source_map = SourceMap::identity(source_text.len());
     let source_view = SourceView::new(&source_text, &source_map);
@@ -3496,9 +3437,7 @@ fn diagnostics_error_filter_still_reports_command_schema_errors() {
         prefix: &[EXPLICIT_STRING_SLOT],
         tail: PositionalTailSchema::None,
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let diagnostics = analyze_diagnostics_with_registry_filtered(
         &source,

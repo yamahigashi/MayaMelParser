@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::{
     CommandModeMask, CommandSchema, Diagnostic, DiagnosticSeverity, FlagArity, FlagArityByMode,
-    PositionalSchema, PositionalSourcePolicy, PositionalTailSchema, ScopeId, ValueShape,
-    command_schema::CommandKind,
+    PositionalSchema, PositionalSourcePolicy, PositionalTailSchema, ScopeId,
+    ValidatedCommandSchema, ValueShape, command_schema::CommandKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +137,7 @@ fn push_primary_diagnostic_filtered(
 }
 
 pub(crate) fn normalize_shell_like_invoke(
-    command: &CommandSchema,
+    command: &ValidatedCommandSchema,
     scope: ScopeId,
     head_range: TextRange,
     words: &[ShellWord],
@@ -846,7 +846,10 @@ fn required_prefix_len(prefix: &[crate::PositionalSlotSchema]) -> usize {
         } else if !seen_optional {
             required += 1;
         } else {
-            panic!("selection-aware positional slots must form a trailing suffix");
+            debug_assert!(
+                false,
+                "validated command schema invariant violated: selection-aware positional slots must form a trailing suffix"
+            );
         }
     }
     required

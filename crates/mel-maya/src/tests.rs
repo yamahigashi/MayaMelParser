@@ -10,17 +10,12 @@ use mel_parser::{
 use mel_sema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, PositionalSchema,
-    PositionalSourcePolicy, PositionalTailSchema, ReturnBehavior, ValueShape,
+    PositionalSourcePolicy, PositionalTailSchema, ReturnBehavior, StaticCommandRegistry,
+    ValueShape,
 };
 
-struct TestRegistry {
-    commands: Vec<CommandSchema>,
-}
-
-impl CommandRegistry for TestRegistry {
-    fn lookup(&self, name: &str) -> Option<&CommandSchema> {
-        self.commands.iter().find(|info| info.name.as_ref() == name)
-    }
+fn test_registry(commands: Vec<CommandSchema>) -> StaticCommandRegistry {
+    StaticCommandRegistry::try_new(commands).expect("valid test registry")
 }
 
 #[test]
@@ -38,9 +33,7 @@ fn overlay_registry_prefers_primary_then_embedded_fallback() {
         positionals: PositionalSchema::unconstrained(),
         flags: Vec::new().into(),
     };
-    let registry = TestRegistry {
-        commands: vec![primary_command],
-    };
+    let registry = test_registry(vec![primary_command]);
     let overlay = OverlayRegistry::new(&registry);
 
     let add_attr = overlay.lookup("addAttr").expect("primary command");
@@ -272,9 +265,7 @@ fn set_attr_data_reference_edits_is_specialized_losslessly() {
         },
         flags: flags.into(),
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let facts = collect_top_level_facts_with_registry(&parse, &registry);
     let MayaTopLevelItem::Command(command) = &facts.items[0] else {
@@ -781,9 +772,7 @@ fn hybrid_promotes_data_reference_edits_tail() {
         },
         flags: flags.into(),
     };
-    let registry = TestRegistry {
-        commands: vec![command],
-    };
+    let registry = test_registry(vec![command]);
 
     let hybrid = collect_top_level_facts_hybrid_with_registry(
         &parse,
