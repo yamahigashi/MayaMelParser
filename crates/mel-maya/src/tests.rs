@@ -5,7 +5,8 @@ use std::path::Path;
 
 use mel_parser::{
     LightParseOptions, ParseOptions, SourceEncoding, parse_bytes, parse_light_bytes_with_encoding,
-    parse_light_file, parse_light_source, parse_light_source_with_options, parse_source,
+    parse_light_file, parse_light_shared_source, parse_light_source,
+    parse_light_source_with_options, parse_shared_source, parse_source,
 };
 use mel_sema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
@@ -156,6 +157,14 @@ fn collects_top_level_command_proc_and_other_items() {
 }
 
 #[test]
+fn shared_full_parse_collects_same_top_level_facts() {
+    let parse = parse_shared_source("global proc foo() { }\nsetAttr \".tx\" 1;\n".into());
+    let facts = collect_top_level_facts_shared(&parse);
+    assert!(matches!(facts.items[0], MayaTopLevelItem::Proc { .. }));
+    assert!(matches!(facts.items[1], MayaTopLevelItem::Command(_)));
+}
+
+#[test]
 fn top_level_command_uses_its_own_normalized_invoke_when_capture_contains_command() {
     let parse = parse_source("print `setAttr \".tx\" 1`;\n");
     assert!(parse.errors.is_empty());
@@ -221,6 +230,20 @@ fn raw_items_preserve_exponent_numeric_literals() {
         command.raw_items[1].source_text(parse.source_view()),
         ".5e+2"
     );
+}
+
+#[test]
+fn shared_light_parse_collects_same_light_and_hybrid_facts() {
+    let parse =
+        parse_light_shared_source("createNode transform -n \"pCube1\" -p \"|group1\";\n".into());
+    let light = collect_top_level_facts_light_shared(&parse);
+    assert!(matches!(light.items[0], MayaLightTopLevelItem::Command(_)));
+
+    let hybrid = collect_top_level_facts_hybrid_shared(&parse).expect("hybrid facts");
+    let MayaTopLevelItem::Command(command) = &hybrid.items[0] else {
+        panic!("expected command");
+    };
+    assert_eq!(command.head, "createNode");
 }
 
 #[test]

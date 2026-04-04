@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn parse_shared_source_reuses_arc_text_and_matches_owned_parse() {
+    let source: Arc<str> = Arc::from("setAttr \".tx\" 1;\n");
+    let parse = parse_shared_source(Arc::clone(&source));
+    let owned = parse_source(source.as_ref());
+
+    assert!(Arc::ptr_eq(&parse.source_text, &source));
+    assert_eq!(parse.syntax, owned.syntax);
+    assert_eq!(parse.source_map, owned.source_map);
+    assert_eq!(parse.lex_errors, owned.lex_errors);
+    assert_eq!(parse.errors, owned.errors);
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { head_range, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    assert_eq!(parse.source_slice(*head_range), "setAttr");
+}
+
+#[test]
 fn parse_file_reuses_owned_utf8_bytes_without_decode_diagnostics() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -9,8 +9,7 @@ use crate::model::{
     MayaRenameCommand, MayaRequiresCommand, MayaSelectCommand, MayaSetAttrCommand,
     MayaSetAttrValueKind, MayaSpecializedCommand,
 };
-use crate::normalize::{normalized_flags, normalized_positionals};
-use mel_parser::LightParse;
+use crate::normalize::{LightParseLike, normalized_flags, normalized_positionals};
 use mel_sema::{CommandSchema, FlagArity, FlagSchema};
 use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 
@@ -103,7 +102,7 @@ pub(crate) fn specialize_command(
 }
 
 pub(crate) fn specialize_light_command(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     head: &str,
     span: TextRange,
     opaque_tail: Option<TextRange>,
@@ -246,7 +245,7 @@ fn specialize_set_attr(
 }
 
 fn specialize_light_set_attr(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     span: TextRange,
     opaque_tail: Option<TextRange>,
     flags: &[MayaLightFlag],
@@ -335,7 +334,7 @@ pub(crate) fn is_numeric_like(item: &MayaRawShellItem) -> bool {
 }
 
 fn normalize_light_items(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     schema: &CommandSchema,
     items: &[MayaRawShellItem],
 ) -> (Vec<MayaLightFlag>, Vec<MayaRawShellItem>) {
@@ -388,7 +387,7 @@ fn normalize_light_items(
 }
 
 fn detect_light_mode(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     schema: &CommandSchema,
     items: &[MayaRawShellItem],
 ) -> mel_sema::CommandMode {

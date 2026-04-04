@@ -21,6 +21,22 @@ fn light_parse_keeps_proc_body_as_single_item() {
 }
 
 #[test]
+fn shared_light_parse_reuses_arc_text_and_matches_owned_parse() {
+    let source: Arc<str> = Arc::from("global proc foo() { }\nsetAttr \".tx\" 1;\n");
+    let parse = parse_light_shared_source(Arc::clone(&source));
+    let owned = parse_light_source(source.as_ref());
+
+    assert!(Arc::ptr_eq(&parse.source_text, &source));
+    assert_eq!(parse.source, owned.source);
+    assert_eq!(parse.source_map, owned.source_map);
+    assert_eq!(parse.errors, owned.errors);
+    let LightItem::Command(command) = &parse.source.items[1] else {
+        panic!("expected command item");
+    };
+    assert_eq!(parse.source_slice(command.head_range), "setAttr");
+}
+
+#[test]
 fn streaming_light_scan_matches_materialized_items() {
     let source = "global proc foo() { }\nsetAttr \".tx\" 1;\n";
     let materialized = parse_light_source(source);
@@ -31,6 +47,22 @@ fn streaming_light_scan_matches_materialized_items() {
         &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
     );
 
+    assert_eq!(streamed, materialized.source.items);
+    assert_eq!(report.errors, materialized.errors);
+}
+
+#[test]
+fn streaming_shared_light_scan_matches_materialized_items() {
+    let source: Arc<str> = Arc::from("global proc foo() { }\nsetAttr \".tx\" 1;\n");
+    let materialized = parse_light_shared_source(Arc::clone(&source));
+    let mut streamed = Vec::new();
+    let report = scan_light_shared_source_with_options_and_sink(
+        Arc::clone(&source),
+        LightParseOptions::default(),
+        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+    );
+
+    assert!(Arc::ptr_eq(&report.source_text, &source));
     assert_eq!(streamed, materialized.source.items);
     assert_eq!(report.errors, materialized.errors);
 }

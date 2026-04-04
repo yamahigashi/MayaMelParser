@@ -14,6 +14,7 @@ mod remap;
 mod tests;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::{fs, io, ops::Range, path::Path};
 
 use decode::{
@@ -22,14 +23,16 @@ use decode::{
 };
 pub use light::{
     LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightProcSurface,
-    LightScanReport, LightWord, parse_light_bytes, parse_light_bytes_with_encoding,
-    parse_light_file, parse_light_file_with_encoding, parse_light_source,
-    parse_light_source_with_options, scan_light_bytes_with_encoding_and_options_and_sink,
-    scan_light_bytes_with_encoding_and_sink, scan_light_bytes_with_options_and_sink,
-    scan_light_bytes_with_sink, scan_light_file_with_encoding_and_options_and_sink,
-    scan_light_file_with_encoding_and_sink, scan_light_file_with_options_and_sink,
-    scan_light_file_with_sink, scan_light_source_with_options_and_sink,
-    scan_light_source_with_sink,
+    LightScanReport, LightSourceFile, LightWord, SharedLightParse, SharedLightScanReport,
+    parse_light_bytes, parse_light_bytes_with_encoding, parse_light_file,
+    parse_light_file_with_encoding, parse_light_shared_source,
+    parse_light_shared_source_with_options, parse_light_source, parse_light_source_with_options,
+    scan_light_bytes_with_encoding_and_options_and_sink, scan_light_bytes_with_encoding_and_sink,
+    scan_light_bytes_with_options_and_sink, scan_light_bytes_with_sink,
+    scan_light_file_with_encoding_and_options_and_sink, scan_light_file_with_encoding_and_sink,
+    scan_light_file_with_options_and_sink, scan_light_file_with_sink,
+    scan_light_shared_source_with_options_and_sink, scan_light_shared_source_with_sink,
+    scan_light_source_with_options_and_sink, scan_light_source_with_sink,
 };
 use parser::Parser;
 use remap::{RangeMapper, remap_parse_ranges_with_mapper, remap_source_file_ranges};
@@ -71,6 +74,17 @@ pub struct ParseOptions {
 pub struct Parse {
     pub syntax: mel_ast::SourceFile,
     pub source_text: String,
+    pub source_map: SourceMap,
+    pub source_encoding: SourceEncoding,
+    pub decode_errors: Vec<DecodeDiagnostic>,
+    pub lex_errors: Vec<LexDiagnostic>,
+    pub errors: Vec<ParseError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedParse {
+    pub syntax: mel_ast::SourceFile,
+    pub source_text: Arc<str>,
     pub source_map: SourceMap,
     pub source_encoding: SourceEncoding,
     pub decode_errors: Vec<DecodeDiagnostic>,
@@ -127,6 +141,49 @@ impl Parse {
     }
 }
 
+impl SharedParse {
+    #[must_use]
+    pub fn source_view(&self) -> SourceView<'_> {
+        SourceView::new(&self.source_text, &self.source_map)
+    }
+
+    #[must_use]
+    pub fn source_range(&self, range: TextRange) -> Range<usize> {
+        self.source_view().display_range(range)
+    }
+
+    #[must_use]
+    pub fn source_slice(&self, range: TextRange) -> &str {
+        self.source_view().slice(range)
+    }
+
+    #[must_use]
+    pub fn display_slice(&self, range: TextRange) -> &str {
+        self.source_view().display_slice(range)
+    }
+
+    #[must_use]
+    pub fn string_literal_contents(&self, range: TextRange) -> Option<&str> {
+        self.source_slice(range)
+            .strip_prefix('"')?
+            .strip_suffix('"')
+    }
+}
+
+impl From<SharedParse> for Parse {
+    fn from(value: SharedParse) -> Self {
+        Self {
+            syntax: value.syntax,
+            source_text: value.source_text.as_ref().to_owned(),
+            source_map: value.source_map,
+            source_encoding: value.source_encoding,
+            decode_errors: value.decode_errors,
+            lex_errors: value.lex_errors,
+            errors: value.errors,
+        }
+    }
+}
+
 #[must_use]
 pub fn parse_source(input: &str) -> Parse {
     parse_source_with_options(input, ParseOptions::default())
@@ -137,6 +194,23 @@ pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
     parse_owned_source(
         input.to_owned(),
         SourceMap::identity(input.len()),
+        SourceEncoding::Utf8,
+        Vec::new(),
+        options,
+    )
+}
+
+#[must_use]
+pub fn parse_shared_source(input: Arc<str>) -> SharedParse {
+    parse_shared_source_with_options(input, ParseOptions::default())
+}
+
+#[must_use]
+pub fn parse_shared_source_with_options(input: Arc<str>, options: ParseOptions) -> SharedParse {
+    let len = input.len();
+    parse_shared_source_text(
+        input,
+        SourceMap::identity(len),
         SourceEncoding::Utf8,
         Vec::new(),
         options,
@@ -156,7 +230,13 @@ pub fn parse_source_view_range_with_options(
 ) -> ParseSlice<'_> {
     let display_range = source.display_range(range);
     let input = &source.text()[display_range.clone()];
-    let mut parse = parse_source_with_options(input, options);
+    let mut parse = parse_borrowed_source(
+        input,
+        SourceMap::identity(input.len()),
+        SourceEncoding::Utf8,
+        Vec::new(),
+        options,
+    );
     let mapper = SourceViewRangeMapper {
         source,
         display_start: display_range.start,
@@ -238,8 +318,44 @@ fn parse_owned_source(
     decode_errors: Vec<DecodeDiagnostic>,
     options: ParseOptions,
 ) -> Parse {
-    let mut parse = Parser::new(&source_text, options).parse();
+    let mut parse = parse_borrowed_source(
+        &source_text,
+        source_map,
+        source_encoding,
+        decode_errors,
+        options,
+    );
     parse.source_text = source_text;
+    parse
+}
+
+fn parse_shared_source_text(
+    source_text: Arc<str>,
+    source_map: SourceMap,
+    source_encoding: SourceEncoding,
+    decode_errors: Vec<DecodeDiagnostic>,
+    options: ParseOptions,
+) -> SharedParse {
+    let parse = Parser::new(&source_text, options).parse();
+    SharedParse {
+        syntax: parse.syntax,
+        source_text,
+        source_map,
+        source_encoding,
+        decode_errors,
+        lex_errors: parse.lex_errors,
+        errors: parse.errors,
+    }
+}
+
+fn parse_borrowed_source(
+    input: &str,
+    source_map: SourceMap,
+    source_encoding: SourceEncoding,
+    decode_errors: Vec<DecodeDiagnostic>,
+    options: ParseOptions,
+) -> Parse {
+    let mut parse = Parser::new(input, options).parse();
     parse.source_map = source_map;
     parse.source_encoding = source_encoding;
     parse.decode_errors = decode_errors;

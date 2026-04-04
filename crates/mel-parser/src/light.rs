@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::{fs, io, ops::Range, path::Path};
 
 use mel_syntax::{SourceMap, SourceView, TextRange, text_range};
@@ -105,7 +106,45 @@ pub struct LightScanReport {
     pub errors: Vec<ParseError>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedLightScanReport {
+    pub source_text: Arc<str>,
+    pub source_map: SourceMap,
+    pub source_encoding: SourceEncoding,
+    pub decode_errors: Vec<DecodeDiagnostic>,
+    pub errors: Vec<ParseError>,
+}
+
 impl LightScanReport {
+    #[must_use]
+    pub fn source_view(&self) -> SourceView<'_> {
+        SourceView::new(&self.source_text, &self.source_map)
+    }
+
+    #[must_use]
+    pub fn source_range(&self, range: TextRange) -> Range<usize> {
+        self.source_view().display_range(range)
+    }
+
+    #[must_use]
+    pub fn source_slice(&self, range: TextRange) -> &str {
+        self.source_view().slice(range)
+    }
+
+    #[must_use]
+    pub fn display_slice(&self, range: TextRange) -> &str {
+        self.source_view().display_slice(range)
+    }
+
+    #[must_use]
+    pub fn string_literal_contents(&self, range: TextRange) -> Option<&str> {
+        self.source_slice(range)
+            .strip_prefix('"')?
+            .strip_suffix('"')
+    }
+}
+
+impl SharedLightScanReport {
     #[must_use]
     pub fn source_view(&self) -> SourceView<'_> {
         SourceView::new(&self.source_text, &self.source_map)
@@ -144,7 +183,46 @@ pub struct LightParse {
     pub errors: Vec<ParseError>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedLightParse {
+    pub source: LightSourceFile,
+    pub source_text: Arc<str>,
+    pub source_map: SourceMap,
+    pub source_encoding: SourceEncoding,
+    pub decode_errors: Vec<DecodeDiagnostic>,
+    pub errors: Vec<ParseError>,
+}
+
 impl LightParse {
+    #[must_use]
+    pub fn source_view(&self) -> SourceView<'_> {
+        SourceView::new(&self.source_text, &self.source_map)
+    }
+
+    #[must_use]
+    pub fn source_range(&self, range: TextRange) -> Range<usize> {
+        self.source_view().display_range(range)
+    }
+
+    #[must_use]
+    pub fn source_slice(&self, range: TextRange) -> &str {
+        self.source_view().slice(range)
+    }
+
+    #[must_use]
+    pub fn display_slice(&self, range: TextRange) -> &str {
+        self.source_view().display_slice(range)
+    }
+
+    #[must_use]
+    pub fn string_literal_contents(&self, range: TextRange) -> Option<&str> {
+        self.source_slice(range)
+            .strip_prefix('"')?
+            .strip_suffix('"')
+    }
+}
+
+impl SharedLightParse {
     #[must_use]
     pub fn source_view(&self) -> SourceView<'_> {
         SourceView::new(&self.source_text, &self.source_map)
@@ -186,6 +264,44 @@ impl From<(LightSourceFile, LightScanReport)> for LightParse {
     }
 }
 
+impl From<(LightSourceFile, SharedLightScanReport)> for SharedLightParse {
+    fn from((source, report): (LightSourceFile, SharedLightScanReport)) -> Self {
+        Self {
+            source,
+            source_text: report.source_text,
+            source_map: report.source_map,
+            source_encoding: report.source_encoding,
+            decode_errors: report.decode_errors,
+            errors: report.errors,
+        }
+    }
+}
+
+impl From<SharedLightScanReport> for LightScanReport {
+    fn from(value: SharedLightScanReport) -> Self {
+        Self {
+            source_text: value.source_text.as_ref().to_owned(),
+            source_map: value.source_map,
+            source_encoding: value.source_encoding,
+            decode_errors: value.decode_errors,
+            errors: value.errors,
+        }
+    }
+}
+
+impl From<SharedLightParse> for LightParse {
+    fn from(value: SharedLightParse) -> Self {
+        Self {
+            source: value.source,
+            source_text: value.source_text.as_ref().to_owned(),
+            source_map: value.source_map,
+            source_encoding: value.source_encoding,
+            decode_errors: value.decode_errors,
+            errors: value.errors,
+        }
+    }
+}
+
 #[must_use]
 pub fn parse_light_source(input: &str) -> LightParse {
     parse_light_source_with_options(input, LightParseOptions::default())
@@ -198,8 +314,50 @@ pub fn parse_light_source_with_options(input: &str, options: LightParseOptions) 
     LightParse::from((sink.finish(), report))
 }
 
+#[must_use]
+pub fn parse_light_shared_source(input: Arc<str>) -> SharedLightParse {
+    parse_light_shared_source_with_options(input, LightParseOptions::default())
+}
+
+#[must_use]
+pub fn parse_light_shared_source_with_options(
+    input: Arc<str>,
+    options: LightParseOptions,
+) -> SharedLightParse {
+    let mut sink = CollectLightItems::default();
+    let report =
+        scan_light_shared_source_with_options_and_sink(Arc::clone(&input), options, &mut sink);
+    SharedLightParse::from((sink.finish(), report))
+}
+
 pub fn scan_light_source_with_sink(input: &str, sink: &mut impl LightItemSink) -> LightScanReport {
     scan_light_source_with_options_and_sink(input, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_shared_source_with_sink(
+    input: Arc<str>,
+    sink: &mut impl LightItemSink,
+) -> SharedLightScanReport {
+    scan_light_shared_source_with_options_and_sink(input, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_shared_source_with_options_and_sink(
+    input: Arc<str>,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> SharedLightScanReport {
+    let source_map = SourceMap::identity(input.len());
+    let source_view = SourceView::new(&input, &source_map);
+    let mut scanner = LightScanner::new(&input, options);
+    scanner.scan_with_sink(source_view, sink, None);
+    let errors = scanner.errors;
+    SharedLightScanReport {
+        source_text: input,
+        source_map,
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        errors,
+    }
 }
 
 pub fn scan_light_source_with_options_and_sink(

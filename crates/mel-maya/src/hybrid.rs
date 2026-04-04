@@ -5,22 +5,35 @@ use crate::model::{
     NoopPromotionDecider,
 };
 use crate::normalize::{
-    command_payload_span, normalize_light_command, normalized_invoke_lookup_from_source,
-    raw_item_from_light_word, raw_item_from_shell_word_with_source, take_matching_normalized,
+    LightParseLike, command_payload_span, normalize_light_command,
+    normalized_invoke_lookup_from_source, raw_item_from_light_word,
+    raw_item_from_shell_word_with_source, take_matching_normalized,
 };
 use crate::registry::OverlayRegistry;
 use crate::specialize::specialize_command;
 use crate::validate::validate_maya_command;
 use mel_ast::{Expr, InvokeSurface, Item, Stmt};
 use mel_parser::{
-    LightCommandSurface, LightItem, LightParse, parse_source_view_range_with_options,
+    LightCommandSurface, LightItem, LightParse, SharedLightParse,
+    parse_source_view_range_with_options,
 };
 use mel_sema::{CommandRegistry, EmptyCommandRegistry};
 
 pub fn collect_top_level_facts_hybrid(
     parse: &LightParse,
 ) -> Result<MayaTopLevelFacts, MayaPromotionError> {
-    collect_top_level_facts_hybrid_with_registry_and_decider(
+    collect_top_level_facts_hybrid_with_registry_and_decider_impl(
+        parse,
+        &EmptyCommandRegistry,
+        &MayaPromotionOptions::default(),
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_shared(
+    parse: &SharedLightParse,
+) -> Result<MayaTopLevelFacts, MayaPromotionError> {
+    collect_top_level_facts_hybrid_with_registry_and_decider_impl(
         parse,
         &EmptyCommandRegistry,
         &MayaPromotionOptions::default(),
@@ -37,6 +50,22 @@ where
     D: MayaPromotionDecider + ?Sized,
 {
     collect_top_level_facts_hybrid_with_registry_and_decider(
+        parse,
+        &EmptyCommandRegistry,
+        options,
+        decider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_shared_with_decider<D>(
+    parse: &SharedLightParse,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    D: MayaPromotionDecider + ?Sized,
+{
+    collect_top_level_facts_hybrid_with_registry_and_decider_impl(
         parse,
         &EmptyCommandRegistry,
         options,
@@ -62,6 +91,24 @@ where
     )
 }
 
+pub fn collect_top_level_facts_hybrid_shared_with_registry<R>(
+    parse: &SharedLightParse,
+    registry: &R,
+    policy: MayaPromotionPolicy,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_hybrid_shared_with_registry_and_options(
+        parse,
+        registry,
+        &MayaPromotionOptions {
+            policy,
+            ..MayaPromotionOptions::default()
+        },
+    )
+}
+
 pub fn collect_top_level_facts_hybrid_with_registry_and_options<R>(
     parse: &LightParse,
     registry: &R,
@@ -71,6 +118,22 @@ where
     R: CommandRegistry + ?Sized,
 {
     collect_top_level_facts_hybrid_with_registry_and_decider(
+        parse,
+        registry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_shared_with_registry_and_options<R>(
+    parse: &SharedLightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_hybrid_with_registry_and_decider_impl(
         parse,
         registry,
         options,
@@ -88,10 +151,37 @@ where
     R: CommandRegistry + ?Sized,
     D: MayaPromotionDecider + ?Sized,
 {
+    collect_top_level_facts_hybrid_with_registry_and_decider_impl(parse, registry, options, decider)
+}
+
+pub fn collect_top_level_facts_hybrid_shared_with_registry_and_decider<R, D>(
+    parse: &SharedLightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    collect_top_level_facts_hybrid_with_registry_and_decider_impl(parse, registry, options, decider)
+}
+
+fn collect_top_level_facts_hybrid_with_registry_and_decider_impl<R, D, P>(
+    parse: &P,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelFacts, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+    P: LightParseLike,
+{
     let overlay = OverlayRegistry::new(registry);
     let mut items = Vec::new();
 
-    for item in &parse.source.items {
+    for item in &parse.light_source().items {
         match item {
             LightItem::Proc(proc_def) => items.push(MayaTopLevelItem::Proc {
                 name: proc_def
@@ -115,7 +205,19 @@ pub fn collect_top_level_facts_hybrid_report(
     parse: &LightParse,
     options: &MayaPromotionOptions,
 ) -> MayaHybridTopLevelReport {
-    collect_top_level_facts_hybrid_report_with_registry_and_decider(
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
+        parse,
+        &EmptyCommandRegistry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_shared(
+    parse: &SharedLightParse,
+    options: &MayaPromotionOptions,
+) -> MayaHybridTopLevelReport {
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
         parse,
         &EmptyCommandRegistry,
         options,
@@ -131,7 +233,23 @@ pub fn collect_top_level_facts_hybrid_report_with_decider<D>(
 where
     D: MayaPromotionDecider + ?Sized,
 {
-    collect_top_level_facts_hybrid_report_with_registry_and_decider(
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
+        parse,
+        &EmptyCommandRegistry,
+        options,
+        decider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_shared_with_decider<D>(
+    parse: &SharedLightParse,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> MayaHybridTopLevelReport
+where
+    D: MayaPromotionDecider + ?Sized,
+{
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
         parse,
         &EmptyCommandRegistry,
         options,
@@ -147,7 +265,23 @@ pub fn collect_top_level_facts_hybrid_report_with_registry<R>(
 where
     R: CommandRegistry + ?Sized,
 {
-    collect_top_level_facts_hybrid_report_with_registry_and_decider(
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
+        parse,
+        registry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_shared_with_registry<R>(
+    parse: &SharedLightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> MayaHybridTopLevelReport
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
         parse,
         registry,
         options,
@@ -165,12 +299,43 @@ where
     R: CommandRegistry + ?Sized,
     D: MayaPromotionDecider + ?Sized,
 {
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
+        parse, registry, options, decider,
+    )
+}
+
+pub fn collect_top_level_facts_hybrid_report_shared_with_registry_and_decider<R, D>(
+    parse: &SharedLightParse,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> MayaHybridTopLevelReport
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    collect_top_level_facts_hybrid_report_with_registry_and_decider_impl(
+        parse, registry, options, decider,
+    )
+}
+
+fn collect_top_level_facts_hybrid_report_with_registry_and_decider_impl<R, D, P>(
+    parse: &P,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> MayaHybridTopLevelReport
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+    P: LightParseLike,
+{
     let overlay = OverlayRegistry::new(registry);
     let mut facts = MayaTopLevelFacts::default();
     let mut promotion_diagnostics = Vec::new();
     let mut validation_diagnostics = Vec::new();
 
-    for item in &parse.source.items {
+    for item in &parse.light_source().items {
         match item {
             LightItem::Proc(proc_def) => facts.items.push(MayaTopLevelItem::Proc {
                 name: proc_def
@@ -225,6 +390,26 @@ where
     )
 }
 
+pub fn promote_light_top_level_command_shared_with_registry<R>(
+    parse: &SharedLightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    policy: MayaPromotionPolicy,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    promote_light_top_level_command_shared_with_registry_and_options(
+        parse,
+        command,
+        registry,
+        &MayaPromotionOptions {
+            policy,
+            ..MayaPromotionOptions::default()
+        },
+    )
+}
+
 pub fn promote_light_top_level_command_with_registry_and_options<R>(
     parse: &LightParse,
     command: &LightCommandSurface,
@@ -243,6 +428,24 @@ where
     )
 }
 
+pub fn promote_light_top_level_command_shared_with_registry_and_options<R>(
+    parse: &SharedLightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+{
+    promote_light_top_level_command_with_registry_and_decider_impl(
+        parse,
+        command,
+        registry,
+        options,
+        &NoopPromotionDecider,
+    )
+}
+
 pub fn promote_light_top_level_command_with_registry_and_decider<R, D>(
     parse: &LightParse,
     command: &LightCommandSurface,
@@ -253,6 +456,39 @@ pub fn promote_light_top_level_command_with_registry_and_decider<R, D>(
 where
     R: CommandRegistry + ?Sized,
     D: MayaPromotionDecider + ?Sized,
+{
+    promote_light_top_level_command_with_registry_and_decider_impl(
+        parse, command, registry, options, decider,
+    )
+}
+
+pub fn promote_light_top_level_command_shared_with_registry_and_decider<R, D>(
+    parse: &SharedLightParse,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+{
+    promote_light_top_level_command_with_registry_and_decider_impl(
+        parse, command, registry, options, decider,
+    )
+}
+
+fn promote_light_top_level_command_with_registry_and_decider_impl<R, D, P>(
+    parse: &P,
+    command: &LightCommandSurface,
+    registry: &R,
+    options: &MayaPromotionOptions,
+    decider: &D,
+) -> Result<MayaTopLevelCommand, MayaPromotionError>
+where
+    R: CommandRegistry + ?Sized,
+    D: MayaPromotionDecider + ?Sized,
+    P: LightParseLike,
 {
     let head = parse.source_slice(command.head_range).to_owned();
     let canonical_name = registry.lookup(&head).map(|schema| schema.name.clone());
@@ -285,7 +521,7 @@ where
 }
 
 fn promote_or_synthesize_light_command<R, D>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     options: &MayaPromotionOptions,
@@ -313,13 +549,13 @@ where
         ));
     };
 
-    promote_light_top_level_command_with_registry_and_decider(
+    promote_light_top_level_command_with_registry_and_decider_impl(
         parse, command, registry, options, decider,
     )
 }
 
 fn promote_or_synthesize_light_command_report<R, D>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     options: &MayaPromotionOptions,
@@ -348,7 +584,7 @@ where
         );
     };
 
-    match promote_light_top_level_command_with_registry_and_decider(
+    match promote_light_top_level_command_with_registry_and_decider_impl(
         parse, command, registry, options, decider,
     ) {
         Ok(command) => command,
@@ -416,7 +652,7 @@ where
 }
 
 fn promote_custom_decider_command_with_registry<R>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     options: &MayaPromotionOptions,
@@ -434,7 +670,7 @@ where
 }
 
 fn build_nonopaque_top_level_command_with_registry<R>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     promotion_kind: MayaPromotionKind,
@@ -479,7 +715,7 @@ where
 }
 
 fn promote_opaque_command_with_registry<R>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     options: &MayaPromotionOptions,
@@ -492,7 +728,7 @@ where
 }
 
 fn promote_policy_command_with_registry<R>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     options: &MayaPromotionOptions,
@@ -510,7 +746,7 @@ where
 }
 
 fn promote_parsed_command_with_registry<R>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &LightCommandSurface,
     registry: &R,
     options: &MayaPromotionOptions,

@@ -1,8 +1,10 @@
 use super::{
     LightItem, LightParseOptions, LightWord, ParseMode, ParseOptions, SourceEncoding, parse_bytes,
     parse_bytes_with_encoding, parse_file, parse_file_with_encoding, parse_light_bytes,
-    parse_light_source, parse_light_source_with_options, parse_source, parse_source_view_range,
-    parse_source_with_options, scan_light_bytes_with_sink, scan_light_source_with_options_and_sink,
+    parse_light_shared_source, parse_light_source, parse_light_source_with_options,
+    parse_shared_source, parse_source, parse_source_view_range, parse_source_with_options,
+    scan_light_bytes_with_sink, scan_light_shared_source_with_options_and_sink,
+    scan_light_source_with_options_and_sink,
 };
 use encoding_rs::{GBK, SHIFT_JIS};
 use mel_ast::{
@@ -12,6 +14,7 @@ use mel_ast::{
 use mel_syntax::text_range;
 use std::{
     fs,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 

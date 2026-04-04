@@ -2,14 +2,82 @@ use crate::model::{
     MayaNormalizedCommand, MayaNormalizedCommandItem, MayaNormalizedFlag, MayaPositionalArg,
     MayaRawShellItem, MayaRawShellItemKind, MayaTopLevelItem,
 };
-use mel_ast::{ProcDef, ShellWord, Stmt};
-use mel_parser::{LightParse, LightWord, Parse};
+use mel_ast::{ProcDef, ShellWord, SourceFile, Stmt};
+use mel_parser::{LightParse, LightSourceFile, LightWord, Parse, SharedLightParse, SharedParse};
 use mel_sema::{
     CommandMode, CommandSchema, FlagArity, FlagSchema, NormalizedCommandItem, NormalizedFlag,
     PositionalArg,
 };
 use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 use std::collections::HashMap;
+
+pub(crate) trait FullParseLike {
+    fn syntax(&self) -> &SourceFile;
+    fn source_view(&self) -> SourceView<'_>;
+    fn source_slice(&self, range: TextRange) -> &str;
+}
+
+impl FullParseLike for Parse {
+    fn syntax(&self) -> &SourceFile {
+        &self.syntax
+    }
+
+    fn source_view(&self) -> SourceView<'_> {
+        Parse::source_view(self)
+    }
+
+    fn source_slice(&self, range: TextRange) -> &str {
+        Parse::source_slice(self, range)
+    }
+}
+
+impl FullParseLike for SharedParse {
+    fn syntax(&self) -> &SourceFile {
+        &self.syntax
+    }
+
+    fn source_view(&self) -> SourceView<'_> {
+        SharedParse::source_view(self)
+    }
+
+    fn source_slice(&self, range: TextRange) -> &str {
+        SharedParse::source_slice(self, range)
+    }
+}
+
+pub(crate) trait LightParseLike {
+    fn light_source(&self) -> &LightSourceFile;
+    fn source_view(&self) -> SourceView<'_>;
+    fn source_slice(&self, range: TextRange) -> &str;
+}
+
+impl LightParseLike for LightParse {
+    fn light_source(&self) -> &LightSourceFile {
+        &self.source
+    }
+
+    fn source_view(&self) -> SourceView<'_> {
+        LightParse::source_view(self)
+    }
+
+    fn source_slice(&self, range: TextRange) -> &str {
+        LightParse::source_slice(self, range)
+    }
+}
+
+impl LightParseLike for SharedLightParse {
+    fn light_source(&self) -> &LightSourceFile {
+        &self.source
+    }
+
+    fn source_view(&self) -> SourceView<'_> {
+        SharedLightParse::source_view(self)
+    }
+
+    fn source_slice(&self, range: TextRange) -> &str {
+        SharedLightParse::source_slice(self, range)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct NormalizedInvokeKey {
@@ -24,7 +92,7 @@ impl NormalizedInvokeKey {
 }
 
 pub(crate) fn normalized_invoke_lookup_from_parse(
-    parse: &Parse,
+    parse: &impl FullParseLike,
     invokes: Vec<mel_sema::NormalizedCommandInvoke>,
 ) -> HashMap<NormalizedInvokeKey, MayaNormalizedCommand> {
     normalized_invoke_lookup_from_source(parse.source_view(), invokes)
@@ -74,7 +142,7 @@ pub(crate) fn stmt_range(stmt: &Stmt) -> TextRange {
     }
 }
 
-pub(crate) fn proc_item(parse: &Parse, proc_def: &ProcDef) -> MayaTopLevelItem {
+pub(crate) fn proc_item(parse: &impl FullParseLike, proc_def: &ProcDef) -> MayaTopLevelItem {
     MayaTopLevelItem::Proc {
         name: parse.source_slice(proc_def.name_range).to_owned(),
         is_global: proc_def.is_global,
@@ -104,7 +172,10 @@ pub(crate) fn normalized_positionals(command: &MayaNormalizedCommand) -> Vec<May
         .collect()
 }
 
-pub(crate) fn raw_item_from_shell_word(parse: &Parse, word: &ShellWord) -> MayaRawShellItem {
+pub(crate) fn raw_item_from_shell_word(
+    parse: &impl FullParseLike,
+    word: &ShellWord,
+) -> MayaRawShellItem {
     raw_item_from_shell_word_with_source(parse.source_view(), word)
 }
 
@@ -131,7 +202,10 @@ pub(crate) fn raw_item_from_shell_word_with_source(
     }
 }
 
-pub(crate) fn raw_item_from_light_word(parse: &LightParse, word: &LightWord) -> MayaRawShellItem {
+pub(crate) fn raw_item_from_light_word(
+    parse: &impl LightParseLike,
+    word: &LightWord,
+) -> MayaRawShellItem {
     let span = word.range();
     let _ = parse;
     let kind = match word {
@@ -236,7 +310,7 @@ pub(crate) fn command_payload_span(
 }
 
 pub(crate) fn normalize_light_command(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     head: &str,
     head_range: TextRange,
     span: TextRange,
@@ -309,7 +383,7 @@ pub(crate) fn normalize_light_command(
 }
 
 fn detect_light_mode(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     schema: &CommandSchema,
     items: &[MayaRawShellItem],
 ) -> CommandMode {

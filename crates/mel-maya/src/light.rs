@@ -1,13 +1,18 @@
 use crate::model::{MayaLightTopLevelCommand, MayaLightTopLevelFacts, MayaLightTopLevelItem};
-use crate::normalize::raw_item_from_light_word;
+use crate::normalize::{LightParseLike, raw_item_from_light_word};
 use crate::registry::OverlayRegistry;
 use crate::specialize::specialize_light_command;
-use mel_parser::{LightItem, LightParse};
+use mel_parser::{LightItem, LightParse, SharedLightParse};
 use mel_sema::{CommandRegistry, EmptyCommandRegistry};
 
 #[must_use]
 pub fn collect_top_level_facts_light(parse: &LightParse) -> MayaLightTopLevelFacts {
     collect_top_level_facts_light_with_registry(parse, &EmptyCommandRegistry)
+}
+
+#[must_use]
+pub fn collect_top_level_facts_light_shared(parse: &SharedLightParse) -> MayaLightTopLevelFacts {
+    collect_top_level_facts_light_shared_with_registry(parse, &EmptyCommandRegistry)
 }
 
 #[must_use]
@@ -18,10 +23,29 @@ pub fn collect_top_level_facts_light_with_registry<R>(
 where
     R: CommandRegistry + ?Sized,
 {
+    collect_top_level_facts_light_impl(parse, registry)
+}
+
+#[must_use]
+pub fn collect_top_level_facts_light_shared_with_registry<R>(
+    parse: &SharedLightParse,
+    registry: &R,
+) -> MayaLightTopLevelFacts
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_light_impl(parse, registry)
+}
+
+fn collect_top_level_facts_light_impl<R, P>(parse: &P, registry: &R) -> MayaLightTopLevelFacts
+where
+    R: CommandRegistry + ?Sized,
+    P: LightParseLike,
+{
     let overlay = OverlayRegistry::new(registry);
     let mut items = Vec::new();
 
-    for item in &parse.source.items {
+    for item in &parse.light_source().items {
         match item {
             LightItem::Proc(proc_def) => items.push(MayaLightTopLevelItem::Proc {
                 name: proc_def
@@ -41,7 +65,7 @@ where
 }
 
 pub(crate) fn maya_light_command_from_parse<R>(
-    parse: &LightParse,
+    parse: &impl LightParseLike,
     command: &mel_parser::LightCommandSurface,
     registry: &R,
 ) -> MayaLightTopLevelCommand

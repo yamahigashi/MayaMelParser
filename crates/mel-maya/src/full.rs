@@ -1,12 +1,12 @@
 use crate::model::{MayaPromotionKind, MayaTopLevelCommand, MayaTopLevelFacts, MayaTopLevelItem};
 use crate::normalize::{
-    normalized_invoke_lookup_from_parse, proc_item, raw_item_from_shell_word, stmt_range,
-    take_matching_normalized,
+    FullParseLike, normalized_invoke_lookup_from_parse, proc_item, raw_item_from_shell_word,
+    stmt_range, take_matching_normalized,
 };
 use crate::registry::OverlayRegistry;
 use crate::specialize::specialize_command;
 use mel_ast::{Expr, InvokeSurface, Item, Stmt};
-use mel_parser::Parse;
+use mel_parser::{Parse, SharedParse};
 use mel_sema::{CommandRegistry, EmptyCommandRegistry};
 
 #[must_use]
@@ -15,17 +15,41 @@ pub fn collect_top_level_facts(parse: &Parse) -> MayaTopLevelFacts {
 }
 
 #[must_use]
+pub fn collect_top_level_facts_shared(parse: &SharedParse) -> MayaTopLevelFacts {
+    collect_top_level_facts_shared_with_registry(parse, &EmptyCommandRegistry)
+}
+
+#[must_use]
 pub fn collect_top_level_facts_with_registry<R>(parse: &Parse, registry: &R) -> MayaTopLevelFacts
 where
     R: CommandRegistry + ?Sized,
 {
+    collect_top_level_facts_impl(parse, registry)
+}
+
+#[must_use]
+pub fn collect_top_level_facts_shared_with_registry<R>(
+    parse: &SharedParse,
+    registry: &R,
+) -> MayaTopLevelFacts
+where
+    R: CommandRegistry + ?Sized,
+{
+    collect_top_level_facts_impl(parse, registry)
+}
+
+fn collect_top_level_facts_impl<R, P>(parse: &P, registry: &R) -> MayaTopLevelFacts
+where
+    R: CommandRegistry + ?Sized,
+    P: FullParseLike,
+{
     let overlay = OverlayRegistry::new(registry);
-    let analysis = mel_sema::analyze_with_registry(&parse.syntax, parse.source_view(), &overlay);
+    let analysis = mel_sema::analyze_with_registry(parse.syntax(), parse.source_view(), &overlay);
     let mut remaining_normalized =
         normalized_invoke_lookup_from_parse(parse, analysis.normalized_invokes);
     let mut items = Vec::new();
 
-    for item in &parse.syntax.items {
+    for item in &parse.syntax().items {
         match item {
             Item::Proc(proc_def) => items.push(proc_item(parse, proc_def)),
             Item::Stmt(stmt) => match &**stmt {
