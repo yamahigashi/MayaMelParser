@@ -330,6 +330,24 @@ impl MayaRawShellItem {
             | MayaRawShellItemKind::Capture => None,
         }
     }
+
+    /// Returns the preferred consumer-facing text for this shell item.
+    ///
+    /// Literal-like words use [`Self::value_text`] so downstream consumers can read decoded
+    /// values without stripping quotes manually. Other shell surfaces fall back to full
+    /// source-preserving text.
+    #[must_use]
+    pub fn preferred_text<'a>(&self, source: SourceView<'a>) -> &'a str {
+        self.value_text(source)
+            .unwrap_or_else(|| self.source_text(source))
+    }
+}
+
+impl MayaPositionalArg {
+    #[must_use]
+    pub fn preferred_text<'a>(&self, source: SourceView<'a>) -> &'a str {
+        self.item.preferred_text(source)
+    }
 }
 
 impl MayaNormalizedFlag {
@@ -337,12 +355,40 @@ impl MayaNormalizedFlag {
     pub fn source_text<'a>(&self, source: SourceView<'a>) -> &'a str {
         source.display_slice(self.source_range)
     }
+
+    #[must_use]
+    pub fn preferred_name<'a>(&'a self, source: SourceView<'a>) -> &'a str {
+        self.canonical_name
+            .as_deref()
+            .unwrap_or_else(|| self.source_text(source))
+    }
+
+    #[must_use]
+    pub fn matches_name(&self, source: SourceView<'_>, canonical: &str, short: &str) -> bool {
+        self.canonical_name.as_deref() == Some(canonical)
+            || self.source_text(source) == short
+            || self.source_text(source).trim_start_matches('-') == short.trim_start_matches('-')
+    }
 }
 
 impl MayaLightFlag {
     #[must_use]
     pub fn source_text<'a>(&self, source: SourceView<'a>) -> &'a str {
         source.display_slice(self.source_range)
+    }
+
+    #[must_use]
+    pub fn preferred_name<'a>(&'a self, source: SourceView<'a>) -> &'a str {
+        self.canonical_name
+            .as_deref()
+            .unwrap_or_else(|| self.source_text(source))
+    }
+
+    #[must_use]
+    pub fn matches_name(&self, source: SourceView<'_>, canonical: &str, short: &str) -> bool {
+        self.canonical_name.as_deref() == Some(canonical)
+            || self.source_text(source) == short
+            || self.source_text(source).trim_start_matches('-') == short.trim_start_matches('-')
     }
 }
 
@@ -372,7 +418,7 @@ pub enum MayaSpecializedCommand {
     Rename(MayaRenameCommand),
     Select(MayaSelectCommand),
     SetAttr(MayaSetAttrCommand),
-    AddAttr(MayaAddAttrCommand),
+    AddAttr(Box<MayaAddAttrCommand>),
     ConnectAttr(MayaConnectAttrCommand),
     Relationship(MayaRelationshipCommand),
     File(MayaFileCommand),
@@ -387,7 +433,7 @@ pub enum MayaLightSpecializedCommand {
     Rename(MayaLightRenameCommand),
     Select(MayaLightSelectCommand),
     SetAttr(MayaLightSetAttrCommand),
-    AddAttr(MayaLightAddAttrCommand),
+    AddAttr(Box<MayaLightAddAttrCommand>),
     ConnectAttr(MayaLightConnectAttrCommand),
     Relationship(MayaLightRelationshipCommand),
     File(MayaLightFileCommand),
@@ -395,6 +441,9 @@ pub enum MayaLightSpecializedCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRequiresCommand {
+    pub plugin_name: Option<MayaRawShellItem>,
+    pub plugin_version: Option<MayaRawShellItem>,
+    pub option_items: Vec<MayaRawShellItem>,
     pub requirements: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
     pub span: TextRange,
@@ -402,6 +451,9 @@ pub struct MayaRequiresCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightRequiresCommand {
+    pub plugin_name: Option<MayaRawShellItem>,
+    pub plugin_version: Option<MayaRawShellItem>,
+    pub option_items: Vec<MayaRawShellItem>,
     pub requirements: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaLightFlag>,
     pub opaque_tail: Option<TextRange>,
@@ -410,12 +462,18 @@ pub struct MayaLightRequiresCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaCurrentUnitCommand {
+    pub linear: Option<MayaRawShellItem>,
+    pub angle: Option<MayaRawShellItem>,
+    pub time: Option<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
     pub span: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightCurrentUnitCommand {
+    pub linear: Option<MayaRawShellItem>,
+    pub angle: Option<MayaRawShellItem>,
+    pub time: Option<MayaRawShellItem>,
     pub flags: Vec<MayaLightFlag>,
     pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
@@ -443,6 +501,7 @@ pub struct MayaCreateNodeCommand {
     pub node_type: Option<MayaRawShellItem>,
     pub name: Option<MayaRawShellItem>,
     pub parent: Option<MayaRawShellItem>,
+    pub shared: bool,
     pub flags: Vec<MayaNormalizedFlag>,
     pub span: TextRange,
 }
@@ -452,6 +511,7 @@ pub struct MayaLightCreateNodeCommand {
     pub node_type: Option<MayaRawShellItem>,
     pub name: Option<MayaRawShellItem>,
     pub parent: Option<MayaRawShellItem>,
+    pub shared: bool,
     pub flags: Vec<MayaLightFlag>,
     pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
@@ -459,6 +519,7 @@ pub struct MayaLightCreateNodeCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaRenameCommand {
+    pub uuid: Option<MayaRawShellItem>,
     pub source: Option<MayaRawShellItem>,
     pub target: Option<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
@@ -467,6 +528,7 @@ pub struct MayaRenameCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightRenameCommand {
+    pub uuid: Option<MayaRawShellItem>,
     pub source: Option<MayaRawShellItem>,
     pub target: Option<MayaRawShellItem>,
     pub flags: Vec<MayaLightFlag>,
@@ -476,6 +538,7 @@ pub struct MayaLightRenameCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaSelectCommand {
+    pub no_expand: bool,
     pub targets: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
     pub span: TextRange,
@@ -483,6 +546,7 @@ pub struct MayaSelectCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightSelectCommand {
+    pub no_expand: bool,
     pub targets: Vec<MayaRawShellItem>,
     pub flags: Vec<MayaLightFlag>,
     pub opaque_tail: Option<TextRange>,
@@ -525,6 +589,19 @@ pub enum MayaSetAttrValueKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaAddAttrCommand {
+    pub short_name: Option<MayaRawShellItem>,
+    pub long_name: Option<MayaRawShellItem>,
+    pub parent: Option<MayaRawShellItem>,
+    pub number_of_children: Option<MayaRawShellItem>,
+    pub nice_name: Option<MayaRawShellItem>,
+    pub default_value: Option<MayaRawShellItem>,
+    pub min_value: Option<MayaRawShellItem>,
+    pub max_value: Option<MayaRawShellItem>,
+    pub soft_min_value: Option<MayaRawShellItem>,
+    pub soft_max_value: Option<MayaRawShellItem>,
+    pub enum_name: Option<MayaRawShellItem>,
+    pub attribute_type: Option<MayaRawShellItem>,
+    pub data_type: Option<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
     pub tail: Vec<MayaRawShellItem>,
     pub tail_kind: MayaAddAttrTailKind,
@@ -533,6 +610,19 @@ pub struct MayaAddAttrCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightAddAttrCommand {
+    pub short_name: Option<MayaRawShellItem>,
+    pub long_name: Option<MayaRawShellItem>,
+    pub parent: Option<MayaRawShellItem>,
+    pub number_of_children: Option<MayaRawShellItem>,
+    pub nice_name: Option<MayaRawShellItem>,
+    pub default_value: Option<MayaRawShellItem>,
+    pub min_value: Option<MayaRawShellItem>,
+    pub max_value: Option<MayaRawShellItem>,
+    pub soft_min_value: Option<MayaRawShellItem>,
+    pub soft_max_value: Option<MayaRawShellItem>,
+    pub enum_name: Option<MayaRawShellItem>,
+    pub attribute_type: Option<MayaRawShellItem>,
+    pub data_type: Option<MayaRawShellItem>,
     pub flags: Vec<MayaLightFlag>,
     pub tail: Vec<MayaRawShellItem>,
     pub tail_kind: MayaAddAttrTailKind,
@@ -552,6 +642,8 @@ pub enum MayaAddAttrTailKind {
 pub struct MayaConnectAttrCommand {
     pub source_attr: Option<MayaRawShellItem>,
     pub target_attr: Option<MayaRawShellItem>,
+    pub next_available: bool,
+    pub lock_arg: Option<MayaRawShellItem>,
     pub flags: Vec<MayaNormalizedFlag>,
     pub span: TextRange,
 }
@@ -560,6 +652,8 @@ pub struct MayaConnectAttrCommand {
 pub struct MayaLightConnectAttrCommand {
     pub source_attr: Option<MayaRawShellItem>,
     pub target_attr: Option<MayaRawShellItem>,
+    pub next_available: bool,
+    pub lock_arg: Option<MayaRawShellItem>,
     pub flags: Vec<MayaLightFlag>,
     pub opaque_tail: Option<TextRange>,
     pub span: TextRange,
@@ -585,6 +679,11 @@ pub struct MayaLightRelationshipCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaFileCommand {
     pub path: Option<MayaRawShellItem>,
+    pub namespace: Option<MayaRawShellItem>,
+    pub reference_node: Option<MayaRawShellItem>,
+    pub file_type: Option<MayaRawShellItem>,
+    pub options: Option<MayaRawShellItem>,
+    pub is_reference: bool,
     pub flags: Vec<MayaNormalizedFlag>,
     pub span: TextRange,
 }
@@ -592,6 +691,11 @@ pub struct MayaFileCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MayaLightFileCommand {
     pub path: Option<MayaRawShellItem>,
+    pub namespace: Option<MayaRawShellItem>,
+    pub reference_node: Option<MayaRawShellItem>,
+    pub file_type: Option<MayaRawShellItem>,
+    pub options: Option<MayaRawShellItem>,
+    pub is_reference: bool,
     pub flags: Vec<MayaLightFlag>,
     pub opaque_tail: Option<TextRange>,
     pub span: TextRange,

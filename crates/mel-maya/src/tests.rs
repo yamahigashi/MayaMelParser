@@ -340,6 +340,255 @@ fn create_node_specialization_extracts_parent_and_name() {
             .and_then(|item| item.value_text(parse.source_view())),
         Some("|group1")
     );
+    assert!(!create_node.shared);
+}
+
+#[test]
+fn create_node_specialization_extracts_shared_flag() {
+    let parse = parse_source("createNode transform -s -n \"pCube1\";\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::CreateNode(create_node)) = command.specialized.as_ref() else {
+        panic!("expected createNode specialization");
+    };
+    assert!(create_node.shared);
+}
+
+#[test]
+fn rename_specialization_extracts_uuid_slot_without_positional_ambiguity() {
+    let parse = parse_source("rename -uid \"12345678-1234-1234-1234-123456789abc\";\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::Rename(rename)) = command.specialized.as_ref() else {
+        panic!("expected rename specialization");
+    };
+    assert_eq!(
+        rename
+            .uuid
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("12345678-1234-1234-1234-123456789abc")
+    );
+    assert!(rename.source.is_none());
+    assert!(rename.target.is_none());
+}
+
+#[test]
+fn add_attr_specialization_extracts_common_fields_and_preserves_bool_shorthand() {
+    let parse = parse_source("addAttr -ln \"foo\" -sn \"f\" -at \"double\" -k -h off -dv 1.5;\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::AddAttr(add_attr)) = command.specialized.as_ref() else {
+        panic!("expected addAttr specialization");
+    };
+    assert_eq!(
+        add_attr
+            .long_name
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("foo")
+    );
+    assert_eq!(
+        add_attr
+            .short_name
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("f")
+    );
+    assert_eq!(
+        add_attr
+            .attribute_type
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("double")
+    );
+    assert_eq!(
+        add_attr
+            .default_value
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("1.5")
+    );
+    let keyable = add_attr
+        .flags
+        .iter()
+        .find(|flag| flag.canonical_name.as_deref() == Some("keyable"))
+        .expect("keyable flag");
+    assert!(keyable.args.is_empty());
+    let hidden = add_attr
+        .flags
+        .iter()
+        .find(|flag| flag.canonical_name.as_deref() == Some("hidden"))
+        .expect("hidden flag");
+    assert_eq!(
+        hidden
+            .args
+            .first()
+            .map(|arg| arg.preferred_text(parse.source_view())),
+        Some("off")
+    );
+}
+
+#[test]
+fn current_unit_specialization_extracts_named_unit_slots() {
+    let parse = parse_source("currentUnit -l cm -a deg -t ntsc;\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::CurrentUnit(current_unit)) = command.specialized.as_ref()
+    else {
+        panic!("expected currentUnit specialization");
+    };
+    assert_eq!(
+        current_unit
+            .linear
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("cm")
+    );
+    assert_eq!(
+        current_unit
+            .angle
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("deg")
+    );
+    assert_eq!(
+        current_unit
+            .time
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("ntsc")
+    );
+}
+
+#[test]
+fn requires_specialization_preserves_option_item_order() {
+    let parse =
+        parse_source("requires -nodeType \"camera\" -dataType \"foo\" \"plugin\" \"1.0\";\n");
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::Requires(requires)) = command.specialized.as_ref() else {
+        panic!("expected requires specialization");
+    };
+    let actual = requires
+        .option_items
+        .iter()
+        .map(|item| item.preferred_text(parse.source_view()))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, vec!["-nodeType", "camera", "-dataType", "foo"]);
+    assert_eq!(
+        requires
+            .plugin_name
+            .as_ref()
+            .map(|item| item.preferred_text(parse.source_view())),
+        Some("plugin")
+    );
+    assert_eq!(
+        requires
+            .plugin_version
+            .as_ref()
+            .map(|item| item.preferred_text(parse.source_view())),
+        Some("1.0")
+    );
+}
+
+#[test]
+fn file_specialization_extracts_reference_fields() {
+    let parse = parse_source(
+        "file -r -ns \"foo\" -rfn \"fooRN\" -typ \"mayaAscii\" -op \"v=0;\" \"C:/scene.ma\";\n",
+    );
+    assert!(parse.errors.is_empty());
+    let facts = collect_top_level_facts(&parse);
+    let MayaTopLevelItem::Command(command) = &facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::File(file)) = command.specialized.as_ref() else {
+        panic!("expected file specialization");
+    };
+    assert!(file.is_reference);
+    assert_eq!(
+        file.namespace
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("foo")
+    );
+    assert_eq!(
+        file.reference_node
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("fooRN")
+    );
+    assert_eq!(
+        file.file_type
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("mayaAscii")
+    );
+    assert_eq!(
+        file.options
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("v=0;")
+    );
+    assert_eq!(
+        file.path
+            .as_ref()
+            .and_then(|item| item.value_text(parse.source_view())),
+        Some("C:/scene.ma")
+    );
+}
+
+#[test]
+fn select_and_connect_attr_specializations_expose_named_flags() {
+    let select_parse = parse_source("select -ne \"foo\";\n");
+    assert!(select_parse.errors.is_empty());
+    let select_facts = collect_top_level_facts(&select_parse);
+    let MayaTopLevelItem::Command(select_command) = &select_facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::Select(select)) = select_command.specialized.as_ref() else {
+        panic!("expected select specialization");
+    };
+    assert!(select.no_expand);
+    assert_eq!(
+        select.targets[0].preferred_text(select_parse.source_view()),
+        "foo"
+    );
+
+    let connect_parse = parse_source("connectAttr -na -l on \"a.tx\" \"b.tx\";\n");
+    assert!(connect_parse.errors.is_empty());
+    let connect_facts = collect_top_level_facts(&connect_parse);
+    let MayaTopLevelItem::Command(connect_command) = &connect_facts.items[0] else {
+        panic!("expected command");
+    };
+    let Some(MayaSpecializedCommand::ConnectAttr(connect_attr)) =
+        connect_command.specialized.as_ref()
+    else {
+        panic!("expected connectAttr specialization");
+    };
+    assert!(connect_attr.next_available);
+    assert_eq!(
+        connect_attr
+            .lock_arg
+            .as_ref()
+            .map(|item| item.preferred_text(connect_parse.source_view())),
+        Some("on")
+    );
 }
 
 #[test]

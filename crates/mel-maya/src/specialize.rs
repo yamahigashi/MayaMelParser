@@ -26,12 +26,21 @@ pub(crate) fn specialize_command(
 
     match normalized.schema_name.as_str() {
         "requires" => Some(MayaSpecializedCommand::Requires(MayaRequiresCommand {
+            plugin_name: positionals.first().cloned(),
+            plugin_version: positionals.get(1).cloned(),
+            option_items: flatten_flag_items(&flags),
             requirements: positionals,
             flags,
             span,
         })),
         "currentUnit" => Some(MayaSpecializedCommand::CurrentUnit(
-            MayaCurrentUnitCommand { flags, span },
+            MayaCurrentUnitCommand {
+                linear: first_flag_arg(&flags, "linear"),
+                angle: first_flag_arg(&flags, "angle"),
+                time: first_flag_arg(&flags, "time"),
+                flags,
+                span,
+            },
         )),
         "fileInfo" => Some(MayaSpecializedCommand::FileInfo(MayaFileInfoCommand {
             key: positionals.first().cloned(),
@@ -43,16 +52,26 @@ pub(crate) fn specialize_command(
             node_type: positionals.first().cloned(),
             name: first_flag_arg(&flags, "name"),
             parent: first_flag_arg(&flags, "parent"),
+            shared: has_flag(&flags, "shared"),
             flags,
             span,
         })),
-        "rename" => Some(MayaSpecializedCommand::Rename(MayaRenameCommand {
-            source: positionals.first().cloned(),
-            target: positionals.get(1).cloned(),
-            flags,
-            span,
-        })),
+        "rename" => {
+            let has_uuid = has_flag(&flags, "uuid");
+            Some(MayaSpecializedCommand::Rename(MayaRenameCommand {
+                uuid: if has_uuid {
+                    positionals.first().cloned()
+                } else {
+                    None
+                },
+                source: positionals.get(usize::from(has_uuid)).cloned(),
+                target: positionals.get(usize::from(has_uuid) + 1).cloned(),
+                flags,
+                span,
+            }))
+        }
         "select" => Some(MayaSpecializedCommand::Select(MayaSelectCommand {
+            no_expand: has_flag(&flags, "noExpand"),
             targets: positionals,
             flags,
             span,
@@ -63,16 +82,15 @@ pub(crate) fn specialize_command(
             &flags,
             &positionals,
         ))),
-        "addAttr" => Some(MayaSpecializedCommand::AddAttr(MayaAddAttrCommand {
-            tail_kind: classify_add_attr_tail(&positionals),
-            tail: positionals,
-            flags,
-            span,
-        })),
+        "addAttr" => Some(MayaSpecializedCommand::AddAttr(Box::new(
+            specialize_add_attr(span, &flags, &positionals),
+        ))),
         "connectAttr" => Some(MayaSpecializedCommand::ConnectAttr(
             MayaConnectAttrCommand {
                 source_attr: positionals.first().cloned(),
                 target_attr: positionals.get(1).cloned(),
+                next_available: has_flag(&flags, "nextAvailable"),
+                lock_arg: first_flag_arg(&flags, "lock"),
                 flags,
                 span,
             },
@@ -90,6 +108,11 @@ pub(crate) fn specialize_command(
                 .last()
                 .cloned()
                 .or_else(|| raw_items.last().cloned()),
+            namespace: first_flag_arg(&flags, "namespace"),
+            reference_node: first_flag_arg(&flags, "referenceNode"),
+            file_type: first_flag_arg(&flags, "type"),
+            options: first_flag_arg(&flags, "options"),
+            is_reference: has_flag(&flags, "reference") || has_flag(&flags, "referenceDepthInfo"),
             flags,
             span,
         })),
@@ -113,6 +136,9 @@ pub(crate) fn specialize_light_command(
     match schema.name.as_ref() {
         "requires" => Some(MayaLightSpecializedCommand::Requires(
             MayaLightRequiresCommand {
+                plugin_name: positionals.first().cloned(),
+                plugin_version: positionals.get(1).cloned(),
+                option_items: flatten_light_flag_items(&flags),
                 requirements: positionals,
                 flags,
                 opaque_tail,
@@ -121,6 +147,9 @@ pub(crate) fn specialize_light_command(
         )),
         "currentUnit" => Some(MayaLightSpecializedCommand::CurrentUnit(
             MayaLightCurrentUnitCommand {
+                linear: first_light_flag_arg(&flags, "linear"),
+                angle: first_light_flag_arg(&flags, "angle"),
+                time: first_light_flag_arg(&flags, "time"),
                 flags,
                 opaque_tail,
                 span,
@@ -140,22 +169,32 @@ pub(crate) fn specialize_light_command(
                 node_type: positionals.first().cloned(),
                 name: first_light_flag_arg(&flags, "name"),
                 parent: first_light_flag_arg(&flags, "parent"),
+                shared: has_light_flag(&flags, "shared"),
                 flags,
                 opaque_tail,
                 span,
             },
         )),
-        "rename" => Some(MayaLightSpecializedCommand::Rename(
-            MayaLightRenameCommand {
-                source: positionals.first().cloned(),
-                target: positionals.get(1).cloned(),
-                flags,
-                opaque_tail,
-                span,
-            },
-        )),
+        "rename" => {
+            let has_uuid = has_light_flag(&flags, "uuid");
+            Some(MayaLightSpecializedCommand::Rename(
+                MayaLightRenameCommand {
+                    uuid: if has_uuid {
+                        positionals.first().cloned()
+                    } else {
+                        None
+                    },
+                    source: positionals.get(usize::from(has_uuid)).cloned(),
+                    target: positionals.get(usize::from(has_uuid) + 1).cloned(),
+                    flags,
+                    opaque_tail,
+                    span,
+                },
+            ))
+        }
         "select" => Some(MayaLightSpecializedCommand::Select(
             MayaLightSelectCommand {
+                no_expand: has_light_flag(&flags, "noExpand"),
                 targets: positionals,
                 flags,
                 opaque_tail,
@@ -165,19 +204,15 @@ pub(crate) fn specialize_light_command(
         "setAttr" => Some(MayaLightSpecializedCommand::SetAttr(
             specialize_light_set_attr(parse, span, opaque_tail, &flags, &positionals),
         )),
-        "addAttr" => Some(MayaLightSpecializedCommand::AddAttr(
-            MayaLightAddAttrCommand {
-                tail_kind: classify_add_attr_tail(&positionals),
-                tail: positionals,
-                flags,
-                opaque_tail,
-                span,
-            },
-        )),
+        "addAttr" => Some(MayaLightSpecializedCommand::AddAttr(Box::new(
+            specialize_light_add_attr(span, opaque_tail, &flags, &positionals),
+        ))),
         "connectAttr" => Some(MayaLightSpecializedCommand::ConnectAttr(
             MayaLightConnectAttrCommand {
                 source_attr: positionals.first().cloned(),
                 target_attr: positionals.get(1).cloned(),
+                next_available: has_light_flag(&flags, "nextAvailable"),
+                lock_arg: first_light_flag_arg(&flags, "lock"),
                 flags,
                 opaque_tail,
                 span,
@@ -194,6 +229,12 @@ pub(crate) fn specialize_light_command(
         )),
         "file" => Some(MayaLightSpecializedCommand::File(MayaLightFileCommand {
             path: positionals.last().cloned(),
+            namespace: first_light_flag_arg(&flags, "namespace"),
+            reference_node: first_light_flag_arg(&flags, "referenceNode"),
+            file_type: first_light_flag_arg(&flags, "type"),
+            options: first_light_flag_arg(&flags, "options"),
+            is_reference: has_light_flag(&flags, "reference")
+                || has_light_flag(&flags, "referenceDepthInfo"),
             flags,
             opaque_tail,
             span,
@@ -291,6 +332,60 @@ fn specialize_light_set_attr(
     }
 }
 
+fn specialize_add_attr(
+    span: TextRange,
+    flags: &[MayaNormalizedFlag],
+    positionals: &[MayaRawShellItem],
+) -> MayaAddAttrCommand {
+    MayaAddAttrCommand {
+        short_name: first_flag_arg(flags, "shortName"),
+        long_name: first_flag_arg(flags, "longName"),
+        parent: first_flag_arg(flags, "parent"),
+        number_of_children: first_flag_arg(flags, "numberOfChildren"),
+        nice_name: first_flag_arg(flags, "niceName"),
+        default_value: first_flag_arg(flags, "defaultValue"),
+        min_value: first_flag_arg(flags, "minValue"),
+        max_value: first_flag_arg(flags, "maxValue"),
+        soft_min_value: first_flag_arg(flags, "softMinValue"),
+        soft_max_value: first_flag_arg(flags, "softMaxValue"),
+        enum_name: first_flag_arg(flags, "enumName"),
+        attribute_type: first_flag_arg(flags, "attributeType"),
+        data_type: first_flag_arg(flags, "dataType"),
+        flags: flags.to_vec(),
+        tail: positionals.to_vec(),
+        tail_kind: classify_add_attr_tail(positionals),
+        span,
+    }
+}
+
+fn specialize_light_add_attr(
+    span: TextRange,
+    opaque_tail: Option<TextRange>,
+    flags: &[MayaLightFlag],
+    positionals: &[MayaRawShellItem],
+) -> MayaLightAddAttrCommand {
+    MayaLightAddAttrCommand {
+        short_name: first_light_flag_arg(flags, "shortName"),
+        long_name: first_light_flag_arg(flags, "longName"),
+        parent: first_light_flag_arg(flags, "parent"),
+        number_of_children: first_light_flag_arg(flags, "numberOfChildren"),
+        nice_name: first_light_flag_arg(flags, "niceName"),
+        default_value: first_light_flag_arg(flags, "defaultValue"),
+        min_value: first_light_flag_arg(flags, "minValue"),
+        max_value: first_light_flag_arg(flags, "maxValue"),
+        soft_min_value: first_light_flag_arg(flags, "softMinValue"),
+        soft_max_value: first_light_flag_arg(flags, "softMaxValue"),
+        enum_name: first_light_flag_arg(flags, "enumName"),
+        attribute_type: first_light_flag_arg(flags, "attributeType"),
+        data_type: first_light_flag_arg(flags, "dataType"),
+        flags: flags.to_vec(),
+        tail: positionals.to_vec(),
+        tail_kind: classify_add_attr_tail(positionals),
+        opaque_tail,
+        span,
+    }
+}
+
 pub(crate) fn classify_add_attr_tail(positionals: &[MayaRawShellItem]) -> MayaAddAttrTailKind {
     if positionals.is_empty() {
         return MayaAddAttrTailKind::None;
@@ -318,6 +413,12 @@ pub(crate) fn first_flag_arg(
         .map(|arg| arg.item.clone())
 }
 
+pub(crate) fn has_flag(flags: &[MayaNormalizedFlag], canonical_name: &str) -> bool {
+    flags
+        .iter()
+        .any(|flag| flag.canonical_name.as_deref() == Some(canonical_name))
+}
+
 pub(crate) fn first_light_flag_arg(
     flags: &[MayaLightFlag],
     canonical_name: &str,
@@ -327,6 +428,38 @@ pub(crate) fn first_light_flag_arg(
         .find(|flag| flag.canonical_name.as_deref() == Some(canonical_name))
         .and_then(|flag| flag.args.first())
         .map(|arg| arg.item.clone())
+}
+
+pub(crate) fn has_light_flag(flags: &[MayaLightFlag], canonical_name: &str) -> bool {
+    flags
+        .iter()
+        .any(|flag| flag.canonical_name.as_deref() == Some(canonical_name))
+}
+
+fn flatten_flag_items(flags: &[MayaNormalizedFlag]) -> Vec<MayaRawShellItem> {
+    let mut items = Vec::new();
+    for flag in flags {
+        items.push(flag_item(flag.source_range));
+        items.extend(flag.args.iter().map(|arg| arg.item.clone()));
+    }
+    items
+}
+
+fn flatten_light_flag_items(flags: &[MayaLightFlag]) -> Vec<MayaRawShellItem> {
+    let mut items = Vec::new();
+    for flag in flags {
+        items.push(flag_item(flag.source_range));
+        items.extend(flag.args.iter().map(|arg| arg.item.clone()));
+    }
+    items
+}
+
+fn flag_item(source_range: TextRange) -> MayaRawShellItem {
+    MayaRawShellItem {
+        kind: MayaRawShellItemKind::Flag,
+        span: source_range,
+        text_range: Some(source_range),
+    }
 }
 
 pub(crate) fn is_numeric_like(item: &MayaRawShellItem) -> bool {
