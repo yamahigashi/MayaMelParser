@@ -3,13 +3,28 @@ use mel_ast::{
 };
 use mel_syntax::TextRange;
 
-use crate::Parse;
+use crate::{Parse, SharedParse};
 
 pub(crate) trait RangeMapper {
     fn map_range(&self, range: TextRange) -> TextRange;
 }
 
 pub(crate) fn remap_parse_ranges_with_mapper(parse: &mut Parse, mapper: &impl RangeMapper) {
+    remap_source_file_ranges(&mut parse.syntax, mapper);
+
+    for diagnostic in &mut parse.lex_errors {
+        diagnostic.range = mapper.map_range(diagnostic.range);
+    }
+
+    for error in &mut parse.errors {
+        error.range = mapper.map_range(error.range);
+    }
+}
+
+pub(crate) fn remap_shared_parse_ranges_with_mapper(
+    parse: &mut SharedParse,
+    mapper: &impl RangeMapper,
+) {
     remap_source_file_ranges(&mut parse.syntax, mapper);
 
     for diagnostic in &mut parse.lex_errors {

@@ -28,6 +28,53 @@ fn parse_shared_source_reuses_arc_text_and_matches_owned_parse() {
 }
 
 #[test]
+fn parse_shared_bytes_matches_owned_utf8_bytes_path() {
+    let input = b"setAttr \".tx\" 1;\n";
+    let parse = parse_shared_bytes(input);
+    let owned = parse_bytes(input);
+
+    assert_eq!(parse.syntax, owned.syntax);
+    assert_eq!(parse.source_map, owned.source_map);
+    assert_eq!(parse.source_encoding, owned.source_encoding);
+    assert_eq!(parse.decode_errors, owned.decode_errors);
+    assert_eq!(parse.lex_errors, owned.lex_errors);
+    assert_eq!(parse.errors, owned.errors);
+    assert_eq!(parse.source_text.as_ref(), owned.source_text);
+}
+
+#[test]
+fn parse_shared_bytes_with_encoding_matches_owned_cp932_path() {
+    let (bytes, _, _) = SHIFT_JIS.encode("setAttr \".名\" -type \"string\" \"値\";\n");
+    let parse = parse_shared_bytes_with_encoding(bytes.as_ref(), SourceEncoding::Cp932);
+    let owned = parse_bytes_with_encoding(bytes.as_ref(), SourceEncoding::Cp932);
+
+    assert_eq!(parse.syntax, owned.syntax);
+    assert_eq!(parse.source_map, owned.source_map);
+    assert_eq!(parse.source_encoding, owned.source_encoding);
+    assert_eq!(parse.decode_errors, owned.decode_errors);
+    assert_eq!(parse.lex_errors, owned.lex_errors);
+    assert_eq!(parse.errors, owned.errors);
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement item");
+    };
+    let Stmt::Expr {
+        expr: Expr::Invoke(invoke),
+        ..
+    } = &**stmt
+    else {
+        panic!("expected invoke statement");
+    };
+    let InvokeSurface::ShellLike { words, .. } = &invoke.surface else {
+        panic!("expected shell-like invoke");
+    };
+    let ShellWord::QuotedString { text, .. } = &words[0] else {
+        panic!("expected quoted attr path");
+    };
+    assert_eq!(parse.source_slice(*text), "\".名\"");
+}
+
+#[test]
 fn parse_file_reuses_owned_utf8_bytes_without_decode_diagnostics() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -65,6 +112,29 @@ fn parse_file_reuses_owned_utf8_bytes_without_decode_diagnostics() {
 }
 
 #[test]
+fn parse_shared_file_matches_owned_utf8_file_path() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-shared-utf8-{unique}.mel"));
+    fs::write(&path, "print \"hello\";\n").expect("temp fixture should be writable");
+
+    let parse = parse_shared_file(&path).expect("shared utf8 parse should succeed");
+    let owned = parse_file(&path).expect("owned utf8 parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert_eq!(parse.syntax, owned.syntax);
+    assert_eq!(parse.source_map, owned.source_map);
+    assert_eq!(parse.source_encoding, owned.source_encoding);
+    assert_eq!(parse.decode_errors, owned.decode_errors);
+    assert_eq!(parse.lex_errors, owned.lex_errors);
+    assert_eq!(parse.errors, owned.errors);
+    assert_eq!(parse.source_text.as_ref(), owned.source_text);
+}
+
+#[test]
 fn parse_file_with_explicit_cp932_ascii_keeps_identity_offsets() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -98,6 +168,33 @@ fn parse_file_with_explicit_cp932_ascii_keeps_identity_offsets() {
         panic!("expected shell-like invoke");
     };
     assert_eq!(parse.source_slice(*head_range), "setAttr");
+}
+
+#[test]
+fn parse_shared_file_with_encoding_matches_owned_cp932_file_path() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-shared-cp932-{unique}.mel"));
+    let (bytes, _, had_errors) = SHIFT_JIS.encode("print \"設定\";\n");
+    assert!(!had_errors);
+    fs::write(&path, bytes.as_ref()).expect("temp fixture should be writable");
+
+    let parse = parse_shared_file_with_encoding(&path, SourceEncoding::Cp932)
+        .expect("shared cp932 parse should succeed");
+    let owned = parse_file_with_encoding(&path, SourceEncoding::Cp932)
+        .expect("owned cp932 parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert_eq!(parse.syntax, owned.syntax);
+    assert_eq!(parse.source_map, owned.source_map);
+    assert_eq!(parse.source_encoding, owned.source_encoding);
+    assert_eq!(parse.decode_errors, owned.decode_errors);
+    assert_eq!(parse.lex_errors, owned.lex_errors);
+    assert_eq!(parse.errors, owned.errors);
+    assert_eq!(parse.source_text.as_ref(), owned.source_text);
 }
 
 #[test]

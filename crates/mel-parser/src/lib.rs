@@ -25,17 +25,26 @@ pub use light::{
     LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightProcSurface,
     LightScanReport, LightSourceFile, LightWord, SharedLightParse, SharedLightScanReport,
     parse_light_bytes, parse_light_bytes_with_encoding, parse_light_file,
-    parse_light_file_with_encoding, parse_light_shared_source,
+    parse_light_file_with_encoding, parse_light_shared_bytes,
+    parse_light_shared_bytes_with_encoding, parse_light_shared_file,
+    parse_light_shared_file_with_encoding, parse_light_shared_source,
     parse_light_shared_source_with_options, parse_light_source, parse_light_source_with_options,
     scan_light_bytes_with_encoding_and_options_and_sink, scan_light_bytes_with_encoding_and_sink,
     scan_light_bytes_with_options_and_sink, scan_light_bytes_with_sink,
     scan_light_file_with_encoding_and_options_and_sink, scan_light_file_with_encoding_and_sink,
     scan_light_file_with_options_and_sink, scan_light_file_with_sink,
-    scan_light_shared_source_with_options_and_sink, scan_light_shared_source_with_sink,
-    scan_light_source_with_options_and_sink, scan_light_source_with_sink,
+    scan_light_shared_bytes_with_encoding_and_options_and_sink,
+    scan_light_shared_bytes_with_options_and_sink,
+    scan_light_shared_file_with_encoding_and_options_and_sink,
+    scan_light_shared_file_with_options_and_sink, scan_light_shared_source_with_options_and_sink,
+    scan_light_shared_source_with_sink, scan_light_source_with_options_and_sink,
+    scan_light_source_with_sink,
 };
 use parser::Parser;
-use remap::{RangeMapper, remap_parse_ranges_with_mapper, remap_source_file_ranges};
+use remap::{
+    RangeMapper, remap_parse_ranges_with_mapper, remap_shared_parse_ranges_with_mapper,
+    remap_source_file_ranges,
+};
 
 use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
 
@@ -263,11 +272,37 @@ pub fn parse_bytes(input: &[u8]) -> Parse {
 }
 
 #[must_use]
+pub fn parse_shared_bytes(input: &[u8]) -> SharedParse {
+    parse_shared_decoded_source(decode_source_auto(input), ParseOptions::default())
+}
+
+#[must_use]
 pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Parse {
     parse_decoded_source(
         decode_source_with_encoding(input, encoding),
         ParseOptions::default(),
     )
+}
+
+#[must_use]
+pub fn parse_shared_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> SharedParse {
+    parse_shared_decoded_source(
+        decode_source_with_encoding(input, encoding),
+        ParseOptions::default(),
+    )
+}
+
+pub fn parse_shared_file(path: impl AsRef<Path>) -> io::Result<SharedParse> {
+    let bytes = fs::read(path)?;
+    Ok(parse_shared_bytes(&bytes))
+}
+
+pub fn parse_shared_file_with_encoding(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+) -> io::Result<SharedParse> {
+    let bytes = fs::read(path)?;
+    Ok(parse_shared_bytes_with_encoding(&bytes, encoding))
 }
 
 pub fn parse_file(path: impl AsRef<Path>) -> io::Result<Parse> {
@@ -372,6 +407,27 @@ fn parse_decoded_source(decoded: decode::DecodedSource<'_>, options: ParseOption
         options,
     );
     remap_parse_ranges_with_mapper(
+        &mut parse,
+        &SourceMapRangeMapper {
+            source_map: &source_map,
+        },
+    );
+    parse
+}
+
+fn parse_shared_decoded_source(
+    decoded: decode::DecodedSource<'_>,
+    options: ParseOptions,
+) -> SharedParse {
+    let source_map = decoded.offset_map.source_map();
+    let mut parse = parse_shared_source_text(
+        Arc::from(decoded.text.into_owned()),
+        source_map.clone(),
+        decoded.encoding,
+        decoded.diagnostics,
+        options,
+    );
+    remap_shared_parse_ranges_with_mapper(
         &mut parse,
         &SourceMapRangeMapper {
             source_map: &source_map,

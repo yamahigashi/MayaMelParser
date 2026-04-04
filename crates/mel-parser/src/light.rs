@@ -386,14 +386,49 @@ pub fn parse_light_bytes(input: &[u8]) -> LightParse {
 }
 
 #[must_use]
+pub fn parse_light_shared_bytes(input: &[u8]) -> SharedLightParse {
+    let mut sink = CollectLightItems::default();
+    let report = scan_light_shared_bytes_with_options_and_sink(
+        input,
+        LightParseOptions::default(),
+        &mut sink,
+    );
+    SharedLightParse::from((sink.finish(), report))
+}
+
+#[must_use]
 pub fn parse_light_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> LightParse {
     let mut sink = CollectLightItems::default();
     let report = scan_light_bytes_with_encoding_and_sink(input, encoding, &mut sink);
     LightParse::from((sink.finish(), report))
 }
 
+#[must_use]
+pub fn parse_light_shared_bytes_with_encoding(
+    input: &[u8],
+    encoding: SourceEncoding,
+) -> SharedLightParse {
+    let mut sink = CollectLightItems::default();
+    let report = scan_light_shared_bytes_with_encoding_and_options_and_sink(
+        input,
+        encoding,
+        LightParseOptions::default(),
+        &mut sink,
+    );
+    SharedLightParse::from((sink.finish(), report))
+}
+
 pub fn scan_light_bytes_with_sink(input: &[u8], sink: &mut impl LightItemSink) -> LightScanReport {
     scan_light_bytes_with_options_and_sink(input, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_shared_bytes_with_options_and_sink(
+    input: &[u8],
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> SharedLightScanReport {
+    let decoded = decode_source_auto(input);
+    build_shared_light_scan(decoded, options, sink)
 }
 
 pub fn scan_light_bytes_with_options_and_sink(
@@ -418,6 +453,16 @@ pub fn scan_light_bytes_with_encoding_and_sink(
     )
 }
 
+pub fn scan_light_shared_bytes_with_encoding_and_options_and_sink(
+    input: &[u8],
+    encoding: SourceEncoding,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> SharedLightScanReport {
+    let decoded = decode_source_with_encoding(input, encoding);
+    build_shared_light_scan(decoded, options, sink)
+}
+
 pub fn scan_light_bytes_with_encoding_and_options_and_sink(
     input: &[u8],
     encoding: SourceEncoding,
@@ -433,6 +478,11 @@ pub fn parse_light_file(path: impl AsRef<Path>) -> io::Result<LightParse> {
     Ok(parse_light_bytes(&bytes))
 }
 
+pub fn parse_light_shared_file(path: impl AsRef<Path>) -> io::Result<SharedLightParse> {
+    let bytes = fs::read(path)?;
+    Ok(parse_light_shared_bytes(&bytes))
+}
+
 pub fn parse_light_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
@@ -441,11 +491,30 @@ pub fn parse_light_file_with_encoding(
     Ok(parse_light_bytes_with_encoding(&bytes, encoding))
 }
 
+pub fn parse_light_shared_file_with_encoding(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+) -> io::Result<SharedLightParse> {
+    let bytes = fs::read(path)?;
+    Ok(parse_light_shared_bytes_with_encoding(&bytes, encoding))
+}
+
 pub fn scan_light_file_with_sink(
     path: impl AsRef<Path>,
     sink: &mut impl LightItemSink,
 ) -> io::Result<LightScanReport> {
     scan_light_file_with_options_and_sink(path, LightParseOptions::default(), sink)
+}
+
+pub fn scan_light_shared_file_with_options_and_sink(
+    path: impl AsRef<Path>,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> io::Result<SharedLightScanReport> {
+    let bytes = fs::read(path)?;
+    Ok(scan_light_shared_bytes_with_options_and_sink(
+        &bytes, options, sink,
+    ))
 }
 
 pub fn scan_light_file_with_options_and_sink(
@@ -470,6 +539,18 @@ pub fn scan_light_file_with_encoding_and_sink(
         LightParseOptions::default(),
         sink,
     )
+}
+
+pub fn scan_light_shared_file_with_encoding_and_options_and_sink(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> io::Result<SharedLightScanReport> {
+    let bytes = fs::read(path)?;
+    Ok(scan_light_shared_bytes_with_encoding_and_options_and_sink(
+        &bytes, encoding, options, sink,
+    ))
 }
 
 pub fn scan_light_file_with_encoding_and_options_and_sink(
@@ -503,6 +584,33 @@ fn build_light_scan(
         })
         .collect();
     LightScanReport {
+        source_text,
+        source_map,
+        source_encoding: decoded.encoding,
+        decode_errors: decoded.diagnostics,
+        errors,
+    }
+}
+
+fn build_shared_light_scan(
+    decoded: crate::decode::DecodedSource<'_>,
+    options: LightParseOptions,
+    sink: &mut impl LightItemSink,
+) -> SharedLightScanReport {
+    let source_text: Arc<str> = Arc::from(decoded.text.into_owned());
+    let source_map = decoded.offset_map.source_map();
+    let source_view = SourceView::new(&source_text, &source_map);
+    let mut scanner = LightScanner::new(&source_text, options);
+    scanner.scan_with_sink(source_view, sink, Some(&decoded.offset_map));
+    let errors = scanner
+        .errors
+        .into_iter()
+        .map(|mut error| {
+            error.range = decoded.offset_map.map_range(error.range);
+            error
+        })
+        .collect();
+    SharedLightScanReport {
         source_text,
         source_map,
         source_encoding: decoded.encoding,
