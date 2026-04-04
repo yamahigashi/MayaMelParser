@@ -12,6 +12,7 @@ use crate::{
     },
 };
 use clap::{CommandFactory, error::ErrorKind};
+use maya_mel as mel_parser;
 use mel_parser::{
     LightParseOptions, ParseMode, ParseOptions, SourceEncoding, parse_bytes_with_encoding,
     parse_light_source_with_options, parse_source, parse_source_with_options,

@@ -6,6 +6,7 @@ use crate::{
         write_light_single_file_output_with_style, write_single_file_output_with_style,
     },
 };
+use maya_mel as mel_parser;
 use mel_parser::{
     ParseMode, ParseOptions, SourceEncoding, parse_file, parse_file_with_encoding,
     parse_light_file, parse_light_file_with_encoding, parse_source_with_options,

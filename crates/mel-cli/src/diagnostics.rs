@@ -1,5 +1,9 @@
 use crate::args::CliDiagnosticLevel;
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
+use maya_mel as mel_maya;
+use maya_mel as mel_parser;
+use maya_mel as mel_sema;
+use maya_mel as mel_syntax;
 use mel_parser::{LightParse, Parse};
 use mel_sema::{
     DiagnosticFilter, DiagnosticLabel, DiagnosticSeverity, analyze_diagnostics_with_registry,

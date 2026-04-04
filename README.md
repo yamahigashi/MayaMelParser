@@ -1,10 +1,15 @@
 # MayaMelParser
 
 `MayaMelParser` is a Rust workspace for parsing and analyzing Autodesk Maya MEL.
-It is being built as a foundation for MEL tooling rather than a one-off parser:
-syntax, diagnostics, semantic analysis, and Maya-specific command metadata are
-kept as separate layers so the workspace can support regression testing and
-future editor-facing tooling.
+It is being built as a foundation for MEL tooling rather than a one-off parser.
+The public library surface is a single crate, `maya-mel`, while syntax,
+diagnostics, semantic analysis, and Maya-specific command metadata remain
+separated as internal modules so the workspace can still support regression
+testing and future editor-facing tooling.
+
+The library is published as experimental `0.x`. Expect APIs to keep evolving
+while parser recovery, semantic coverage, and corpus automation continue to
+tighten.
 
 ## Current Status
 
@@ -22,21 +27,33 @@ Today the workspace already includes:
 - a Maya-specific metadata layer for builtin command registries and top-level command facts
 - a small local CLI for inspecting parse, diagnostics, and lightweight summaries
 
-The implementation is under active development, but the current crate layout and
-CLI workflow are already useful for day-to-day parser and sema iteration.
+The implementation is under active development, but the current library and CLI
+workflow are already useful for day-to-day parser and sema iteration.
 
 ## Getting Started
 
-`mel-inspect` is the local inspection CLI for parser and analysis output.
+Library:
 
 ```bash
-mel-inspect examples/basic.mel
-mel-inspect --inline '`ls -sl`;'
-mel-inspect --lightweight my-corpus
-mel-inspect --encoding cp932 my-corpus
+cargo add maya-mel
 ```
 
-Build from source:
+```rust
+use maya_mel::{analyze, collect_top_level_facts, parse_source};
+
+let parsed = parse_source("global proc hello() {}");
+let analysis = analyze(&parsed.syntax, parsed.source_view());
+let facts = collect_top_level_facts(&parsed);
+
+assert!(analysis.diagnostics.is_empty());
+assert!(!facts.items.is_empty());
+```
+
+CLI:
+
+`mel-inspect` is the local inspection CLI for parser and analysis output.
+Prebuilt binaries are distributed through GitHub Releases. For local work from
+this repository:
 
 ```bash
 cargo install --path crates/mel-cli
@@ -61,12 +78,12 @@ The workspace is organized around a generic MEL pipeline plus a Maya-specific la
 
 ```text
 source
-  -> mel-syntax
-  -> mel-lexer
-  -> mel-ast
-  -> mel-parser
-  -> mel-sema
-  -> mel-maya
+  -> maya-mel::syntax
+  -> maya-mel::lexer
+  -> maya-mel::ast
+  -> maya-mel::parser
+  -> maya-mel::sema
+  -> maya-mel::maya
   -> mel-cli
 ```
 
@@ -86,15 +103,18 @@ workspace surface.
 
 ## Workspace Layout
 
-- `crates/mel-syntax`: shared span, token, and syntax primitives
-- `crates/mel-lexer`: tokenization and lexical diagnostics
-- `crates/mel-ast`: typed AST shapes used by parser and sema
-- `crates/mel-parser`: parsing entry points, recovery, source decoding, and lightweight scanning
-- `crates/mel-sema`: generic semantic analysis, diagnostics, and registry-backed command normalization
-- `crates/mel-maya`: Maya builtin command metadata and top-level command collection helpers
+- `crates/maya-mel`: single public library crate with internal syntax/lexer/ast/parser/sema/maya modules
 - `crates/mel-cli`: local inspection CLI for parser, sema, and lightweight output
 - `tests/corpus`: public MEL fixtures and snapshot-oriented tests
 - `examples`: small sample MEL sources
+
+Published library crate:
+
+- `maya-mel`
+
+Release artifact:
+
+- `mel-inspect`
 
 ## MEL-Specific Design Principles
 
@@ -115,6 +135,10 @@ defers language-specific resolution to later passes.
 - Parser recovery, semantic coverage, and corpus automation are incomplete.
 - Maya-specific command specialization exists for selected workflows, not the full language surface.
 - This repository is not aiming to be a formatter, interpreter, or complete Maya runtime integration.
+
+## Release Notes
+
+See `CHANGELOG.md` for published release notes and initial crates.io rollout notes.
 
 ## Example MEL
 

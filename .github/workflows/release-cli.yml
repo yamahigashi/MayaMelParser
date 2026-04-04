@@ -1,0 +1,55 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_name: mel-inspect-x86_64-unknown-linux-gnu.tar.gz
+            binary_path: target/x86_64-unknown-linux-gnu/release/mel-inspect
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive_name: mel-inspect-x86_64-apple-darwin.tar.gz
+            binary_path: target/x86_64-apple-darwin/release/mel-inspect
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_name: mel-inspect-x86_64-pc-windows-msvc.zip
+            binary_path: target/x86_64-pc-windows-msvc/release/mel-inspect.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build mel-inspect
+        run: cargo build -p mel-cli --release --target ${{ matrix.target }}
+
+      - name: Archive Unix binary
+        if: runner.os != 'Windows'
+        run: tar -czf ${{ matrix.archive_name }} -C $(dirname ${{ matrix.binary_path }}) $(basename ${{ matrix.binary_path }})
+
+      - name: Archive Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path ${{ matrix.binary_path }} -DestinationPath ${{ matrix.archive_name }}
+
+      - name: Upload release artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive_name }}

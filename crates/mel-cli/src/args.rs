@@ -1,4 +1,5 @@
 use clap::{CommandFactory, Parser, ValueEnum};
+use maya_mel as mel_parser;
 use mel_parser::SourceEncoding;
 use std::{io, path::PathBuf};
 

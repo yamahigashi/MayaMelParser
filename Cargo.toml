@@ -1,11 +1,6 @@
 [workspace]
 members = [
-    "crates/mel-syntax",
-    "crates/mel-lexer",
-    "crates/mel-ast",
-    "crates/mel-parser",
-    "crates/mel-sema",
-    "crates/mel-maya",
+    "crates/maya-mel",
     "crates/mel-cli",
 ]
 resolver = "2"
@@ -14,7 +9,8 @@ resolver = "2"
 edition = "2024"
 version = "0.1.0"
 license = "MIT"
-publish = false
+repository = "https://github.com/yamahigashi/MayaMelParser"
+rust-version = "1.85"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
