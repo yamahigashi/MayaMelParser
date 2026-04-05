@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
-//! Minimal lexer scaffold for MEL.
+//! MEL lexer entry points.
 //!
-//! This implementation is intentionally small. It exists to anchor crate boundaries
-//! and test flow until a richer lexer is introduced.
+//! Most users do not need to call the lexer directly. Prefer [`crate::parse_source`]
+//! unless you specifically need token streams or lexical diagnostics.
 
 use mel_syntax::{LexDiagnostic, Lexed, Token, TokenKind, text_range};
 

@@ -1,5 +1,12 @@
-global proc string hello(string $name) {
-    print ("hello " + $name);
-}
+global proc string[] selected_transforms() {
+    string $nodes[] = `ls -sl -type "transform"`;
+    string $result[];
 
-`ls -sl`;
+    for ($node in $nodes) {
+        if (`objExists $node`) {
+            $result[size($result)] = $node;
+        }
+    }
+
+    return $result;
+}

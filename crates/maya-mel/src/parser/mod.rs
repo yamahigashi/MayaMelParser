@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
-//! Minimal parser scaffold.
+//! Full and lightweight MEL parsing entry points.
 //!
-//! This parser keeps the MEL surface intentionally small, but it now supports
-//! byte-safe file inputs, a Pratt expression layer, command-style invocations,
-//! indexing, and the first loop statements.
+//! Most users should start with [`parse_source`] or [`parse_file`]. Those APIs
+//! return a typed AST plus lexical, decoding, and parse diagnostics.
+//!
+//! Use the lightweight parse APIs such as [`parse_light_source`] when you need
+//! command-oriented scans over large sources without materializing the full AST.
 
 pub(crate) mod decode;
 mod engine;
@@ -50,18 +52,21 @@ use self::remap::{
 use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A diagnostic emitted while decoding non-UTF-8 source into display text.
 pub struct DecodeDiagnostic {
     pub message: Cow<'static, str>,
     pub range: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A parse error emitted after lexing succeeds.
 pub struct ParseError {
     pub message: &'static str,
     pub range: TextRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported source encodings for byte-oriented parse entry points.
 pub enum SourceEncoding {
     Utf8,
     Cp932,
@@ -69,6 +74,7 @@ pub enum SourceEncoding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Parser behavior toggles for strict and snippet-oriented entry points.
 pub enum ParseMode {
     #[default]
     Strict,
@@ -76,11 +82,13 @@ pub enum ParseMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Options shared by the full parse entry points.
 pub struct ParseOptions {
     pub mode: ParseMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Owned full-parse result for UTF-8 source text.
 pub struct Parse {
     pub syntax: mel_ast::SourceFile,
     pub source_text: String,
@@ -92,6 +100,7 @@ pub struct Parse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Shared full-parse result backed by `Arc<str>`.
 pub struct SharedParse {
     pub syntax: mel_ast::SourceFile,
     pub source_text: Arc<str>,
@@ -103,6 +112,7 @@ pub struct SharedParse {
 }
 
 #[derive(Debug, Clone)]
+/// Parse result for a source subrange produced from [`parse_source_view_range`].
 pub struct ParseSlice<'a> {
     pub syntax: mel_ast::SourceFile,
     pub source: SourceView<'a>,
@@ -195,11 +205,13 @@ impl From<SharedParse> for Parse {
 }
 
 #[must_use]
+/// Parse a UTF-8 source string into a full AST.
 pub fn parse_source(input: &str) -> Parse {
     parse_source_with_options(input, ParseOptions::default())
 }
 
 #[must_use]
+/// Parse a UTF-8 source string with explicit [`ParseOptions`].
 pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
     parse_owned_source(
         input.to_owned(),
@@ -211,11 +223,13 @@ pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
 }
 
 #[must_use]
+/// Parse shared UTF-8 source text into a full AST.
 pub fn parse_shared_source(input: Arc<str>) -> SharedParse {
     parse_shared_source_with_options(input, ParseOptions::default())
 }
 
 #[must_use]
+/// Parse shared UTF-8 source text with explicit [`ParseOptions`].
 pub fn parse_shared_source_with_options(input: Arc<str>, options: ParseOptions) -> SharedParse {
     let len = input.len();
     parse_shared_source_text(
@@ -228,11 +242,13 @@ pub fn parse_shared_source_with_options(input: Arc<str>, options: ParseOptions) 
 }
 
 #[must_use]
+/// Parse a range from an existing [`SourceView`] using default [`ParseOptions`].
 pub fn parse_source_view_range(source: SourceView<'_>, range: TextRange) -> ParseSlice<'_> {
     parse_source_view_range_with_options(source, range, ParseOptions::default())
 }
 
 #[must_use]
+/// Parse a range from an existing [`SourceView`] with explicit [`ParseOptions`].
 pub fn parse_source_view_range_with_options(
     source: SourceView<'_>,
     range: TextRange,
@@ -268,16 +284,19 @@ pub fn parse_source_view_range_with_options(
 }
 
 #[must_use]
+/// Decode and parse bytes using automatic encoding detection.
 pub fn parse_bytes(input: &[u8]) -> Parse {
     parse_decoded_source(decode_source_auto(input), ParseOptions::default())
 }
 
 #[must_use]
+/// Decode and parse bytes into a shared parse using automatic encoding detection.
 pub fn parse_shared_bytes(input: &[u8]) -> SharedParse {
     parse_shared_decoded_source(decode_source_auto(input), ParseOptions::default())
 }
 
 #[must_use]
+/// Decode and parse bytes with an explicit source encoding.
 pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Parse {
     parse_decoded_source(
         decode_source_with_encoding(input, encoding),
@@ -286,6 +305,7 @@ pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Pars
 }
 
 #[must_use]
+/// Decode and parse bytes into a shared parse with an explicit source encoding.
 pub fn parse_shared_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> SharedParse {
     parse_shared_decoded_source(
         decode_source_with_encoding(input, encoding),
@@ -293,11 +313,13 @@ pub fn parse_shared_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) 
     )
 }
 
+/// Read, decode, and parse a file using automatic encoding detection.
 pub fn parse_shared_file(path: impl AsRef<Path>) -> io::Result<SharedParse> {
     let bytes = fs::read(path)?;
     Ok(parse_shared_bytes(&bytes))
 }
 
+/// Read, decode, and parse a file into a shared parse with an explicit encoding.
 pub fn parse_shared_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
@@ -306,11 +328,13 @@ pub fn parse_shared_file_with_encoding(
     Ok(parse_shared_bytes_with_encoding(&bytes, encoding))
 }
 
+/// Read, decode, and parse a file using automatic encoding detection.
 pub fn parse_file(path: impl AsRef<Path>) -> io::Result<Parse> {
     let bytes = fs::read(path)?;
     Ok(parse_owned_bytes(bytes, ParseOptions::default()))
 }
 
+/// Read, decode, and parse a file with an explicit encoding.
 pub fn parse_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,

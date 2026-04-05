@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 //! Typed AST shapes used by the parser and semantic layers.
+//!
+//! Most users reach these types through [`crate::Parse::syntax`] or the
+//! `syntax` field on parse results.
 
 use mel_syntax::{TextRange, text_slice};
 

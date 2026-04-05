@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
-//! Shared syntax primitives for the MEL parser workspace.
+//! Shared spans, tokens, and source mapping primitives.
+//!
+//! These types are useful when consuming diagnostics or mapping byte ranges
+//! back to display text.
 
 use std::ops::Range;
 use std::sync::Arc;

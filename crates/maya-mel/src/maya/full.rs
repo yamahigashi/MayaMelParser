@@ -10,16 +10,19 @@ use mel_parser::{Parse, SharedParse};
 use mel_sema::{CommandRegistry, EmptyCommandRegistry};
 
 #[must_use]
+/// Collect Maya-oriented top-level facts from a full parse.
 pub fn collect_top_level_facts(parse: &Parse) -> MayaTopLevelFacts {
     collect_top_level_facts_with_registry(parse, &EmptyCommandRegistry)
 }
 
 #[must_use]
+/// Collect Maya-oriented top-level facts from a shared full parse.
 pub fn collect_top_level_facts_shared(parse: &SharedParse) -> MayaTopLevelFacts {
     collect_top_level_facts_shared_with_registry(parse, &EmptyCommandRegistry)
 }
 
 #[must_use]
+/// Collect Maya-oriented top-level facts using an additional command registry.
 pub fn collect_top_level_facts_with_registry<R>(parse: &Parse, registry: &R) -> MayaTopLevelFacts
 where
     R: CommandRegistry + ?Sized,
@@ -28,6 +31,7 @@ where
 }
 
 #[must_use]
+/// Collect Maya-oriented top-level facts from a shared parse with an additional registry.
 pub fn collect_top_level_facts_shared_with_registry<R>(
     parse: &SharedParse,
     registry: &R,

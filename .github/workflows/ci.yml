@@ -29,6 +29,12 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Doc tests
+        run: cargo test --doc -p maya-mel
+
+      - name: Build docs
+        run: cargo doc --no-deps -p maya-mel
+
       - name: Package crates
         run: |
           cargo package -p maya-mel --allow-dirty

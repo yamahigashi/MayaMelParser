@@ -6,10 +6,12 @@ use mel_sema::{
 use std::sync::OnceLock;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Builtin Maya command registry embedded in the crate.
 pub struct MayaCommandRegistry;
 
 impl MayaCommandRegistry {
     #[must_use]
+    /// Construct the builtin Maya command registry.
     pub const fn new() -> Self {
         Self
     }

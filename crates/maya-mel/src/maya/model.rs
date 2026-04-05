@@ -3,6 +3,7 @@ use mel_sema::{CommandKind, CommandMode};
 use mel_syntax::{SourceView, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Top-level Maya facts collected from a full parse.
 pub struct MayaTopLevelFacts {
     pub items: Vec<MayaTopLevelItem>,
 }
@@ -205,6 +206,7 @@ impl MayaPromotionDecider for NoopPromotionDecider {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A top-level item observed while collecting Maya facts from a full parse.
 pub enum MayaTopLevelItem {
     Command(Box<MayaTopLevelCommand>),
     Proc {
@@ -231,6 +233,7 @@ pub enum MayaLightTopLevelItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Maya-specific view of a top-level command statement.
 pub struct MayaTopLevelCommand {
     pub head: String,
     pub captured: bool,
@@ -252,6 +255,7 @@ pub struct MayaLightTopLevelCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Lossless raw shell item captured from a command-style invocation.
 pub struct MayaRawShellItem {
     /// Surface classification for this shell item.
     pub kind: MayaRawShellItemKind,
@@ -261,6 +265,7 @@ pub struct MayaRawShellItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Surface classification for a raw shell item.
 pub enum MayaRawShellItemKind {
     Flag,
     Numeric,
@@ -399,6 +404,7 @@ pub enum MayaNormalizedCommandItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Generic normalized command representation before Maya-specific specialization.
 pub struct MayaNormalizedCommand {
     pub head: String,
     pub(crate) head_range: TextRange,
@@ -410,6 +416,7 @@ pub struct MayaNormalizedCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Maya-specific structured command variants derived from a top-level command.
 pub enum MayaSpecializedCommand {
     Requires(MayaRequiresCommand),
     CurrentUnit(MayaCurrentUnitCommand),

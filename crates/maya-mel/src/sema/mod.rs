@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
-//! Minimal semantic analysis scaffold.
+//! Generic semantic analysis for MEL syntax trees.
+//!
+//! Most users should start with [`analyze`]. It resolves proc and variable
+//! usage, emits diagnostics, and optionally normalizes command-style invokes
+//! through a caller-provided [`CommandRegistry`].
 
 pub(crate) mod command_norm;
 pub(crate) mod command_schema;
@@ -29,18 +33,21 @@ use mel_ast::{SourceFile, Stmt};
 use mel_syntax::{SourceView, TextRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Diagnostic severity emitted by semantic analysis.
 pub enum DiagnosticSeverity {
     Error,
     Warning,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Filter used by diagnostics-only semantic entry points.
 pub enum DiagnosticFilter {
     All,
     ErrorsOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Semantic diagnostic with primary and secondary labels.
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub message: Arc<str>,
@@ -49,6 +56,7 @@ pub struct Diagnostic {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A labeled span attached to a [`Diagnostic`].
 pub struct DiagnosticLabel {
     pub range: TextRange,
     pub message: Arc<str>,
@@ -95,12 +103,15 @@ impl Diagnostic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Stable identifier for a collected lexical scope.
 pub struct ScopeId(pub(crate) usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Stable identifier for a collected proc symbol.
 pub struct ProcSymbolId(pub(crate) usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Stable identifier for a collected variable symbol.
 pub struct VariableSymbolId(pub(crate) usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +174,7 @@ pub struct IdentResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Full semantic analysis result.
 pub struct Analysis {
     pub diagnostics: Vec<Diagnostic>,
     pub proc_symbols: Vec<ProcSymbol>,
@@ -179,11 +191,13 @@ enum AnalysisMode {
 }
 
 #[must_use]
+/// Run semantic analysis without a command registry.
 pub fn analyze(syntax: &SourceFile, source: SourceView<'_>) -> Analysis {
     analyze_with_registry(syntax, source, &EmptyCommandRegistry)
 }
 
 #[must_use]
+/// Run semantic analysis with a caller-provided command registry.
 pub fn analyze_with_registry<R>(
     syntax: &SourceFile,
     source: SourceView<'_>,
@@ -202,6 +216,7 @@ where
 }
 
 #[must_use]
+/// Collect only diagnostics while still using a command registry.
 pub fn analyze_diagnostics_with_registry<R>(
     syntax: &SourceFile,
     source: SourceView<'_>,
@@ -214,6 +229,7 @@ where
 }
 
 #[must_use]
+/// Collect only diagnostics with an explicit [`DiagnosticFilter`].
 pub fn analyze_diagnostics_with_registry_filtered<R>(
     syntax: &SourceFile,
     source: SourceView<'_>,
