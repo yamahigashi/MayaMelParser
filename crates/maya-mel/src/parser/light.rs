@@ -1270,3 +1270,19 @@ fn looks_numeric_like(text: &str) -> bool {
                 .next()
                 .is_some_and(|ch| ch.is_ascii_digit()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_light_source;
+    use mel_syntax::text_range;
+
+    #[test]
+    fn unterminated_block_comment_reports_light_parse_error() {
+        let parse = parse_light_source("createNode file -n \"f\";\n/* hidden tail");
+
+        assert_eq!(parse.source.items.len(), 1);
+        assert_eq!(parse.errors.len(), 1);
+        assert_eq!(parse.errors[0].message, "unterminated block comment");
+        assert_eq!(parse.errors[0].range, text_range(24, 38));
+    }
+}
