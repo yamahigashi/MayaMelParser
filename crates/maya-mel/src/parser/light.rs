@@ -677,6 +677,7 @@ struct LightScanner<'a> {
     text: &'a str,
     options: LightParseOptions,
     errors: Vec<ParseError>,
+    reported_unterminated_block_comment: bool,
 }
 
 impl<'a> LightScanner<'a> {
@@ -685,6 +686,7 @@ impl<'a> LightScanner<'a> {
             text,
             options,
             errors: Vec::new(),
+            reported_unterminated_block_comment: false,
         }
     }
 
@@ -717,7 +719,8 @@ impl<'a> LightScanner<'a> {
             is_global = true;
             cursor = self.skip_trivia(after_global);
         }
-        cursor = self.skip_trivia(self.consume_keyword(cursor, "proc").unwrap_or(cursor));
+        let after_proc = self.consume_keyword(cursor, "proc").unwrap_or(cursor);
+        cursor = self.skip_trivia(after_proc);
 
         let first_word = self.scan_simple_word(cursor);
         let mut name_range = None;
@@ -1077,7 +1080,7 @@ impl<'a> LightScanner<'a> {
         self.text.len()
     }
 
-    fn scan_simple_word(&self, start: usize) -> Option<(usize, usize)> {
+    fn scan_simple_word(&mut self, start: usize) -> Option<(usize, usize)> {
         let start = self.skip_trivia(start);
         let end = self.scan_simple_word_until(start, self.text.len());
         (end > start).then_some((start, end))
@@ -1098,7 +1101,7 @@ impl<'a> LightScanner<'a> {
         cursor
     }
 
-    fn skip_trivia(&self, start: usize) -> usize {
+    fn skip_trivia(&mut self, start: usize) -> usize {
         let mut cursor = start;
         while cursor < self.text.len() {
             if self.starts_with(cursor, "//") {
@@ -1133,13 +1136,20 @@ impl<'a> LightScanner<'a> {
         self.text.len()
     }
 
-    fn skip_block_comment(&self, start: usize) -> usize {
+    fn skip_block_comment(&mut self, start: usize) -> usize {
         let mut cursor = start + 2;
         while cursor < self.text.len() {
             if self.starts_with(cursor, "*/") {
                 return cursor + 2;
             }
             cursor = self.next_offset(cursor);
+        }
+        if !self.reported_unterminated_block_comment {
+            self.errors.push(ParseError {
+                message: "unterminated block comment",
+                range: text_range(start as u32, self.text.len() as u32),
+            });
+            self.reported_unterminated_block_comment = true;
         }
         self.text.len()
     }
@@ -1171,17 +1181,18 @@ impl<'a> LightScanner<'a> {
         self.text.len()
     }
 
-    fn is_proc_start(&self, start: usize) -> bool {
-        self.consume_keyword(start, "proc").is_some()
-            || self
-                .consume_keyword(start, "global")
-                .and_then(|after_global| {
-                    self.consume_keyword(self.skip_trivia(after_global), "proc")
-                })
-                .is_some()
+    fn is_proc_start(&mut self, start: usize) -> bool {
+        if self.consume_keyword(start, "proc").is_some() {
+            return true;
+        }
+        let Some(after_global) = self.consume_keyword(start, "global") else {
+            return false;
+        };
+        let after_global = self.skip_trivia(after_global);
+        self.consume_keyword(after_global, "proc").is_some()
     }
 
-    fn consume_keyword(&self, start: usize, keyword: &str) -> Option<usize> {
+    fn consume_keyword(&mut self, start: usize, keyword: &str) -> Option<usize> {
         let cursor = self.skip_trivia(start);
         if !self.text[cursor..].starts_with(keyword) {
             return None;
