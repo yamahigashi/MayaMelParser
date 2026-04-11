@@ -48,6 +48,9 @@ pub enum DiagnosticFilter {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Semantic diagnostic with primary and secondary labels.
+///
+/// These diagnostics are produced by [`analyze`] and the diagnostics-only entry
+/// points in this module.
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub message: Arc<str>,
@@ -175,6 +178,9 @@ pub struct IdentResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 /// Full semantic analysis result.
+///
+/// This bundles semantic diagnostics together with proc, variable, and invoke
+/// resolution data so downstream tools can inspect more than just errors.
 pub struct Analysis {
     pub diagnostics: Vec<Diagnostic>,
     pub proc_symbols: Vec<ProcSymbol>,
@@ -192,12 +198,32 @@ enum AnalysisMode {
 
 #[must_use]
 /// Run semantic analysis without a command registry.
+///
+/// ```rust
+/// use maya_mel::{analyze, parse_source};
+///
+/// let parse = parse_source("global proc hello() {} hello();");
+/// let analysis = analyze(&parse.syntax, parse.source_view());
+///
+/// assert!(analysis.diagnostics.is_empty());
+/// assert_eq!(analysis.proc_symbols.len(), 1);
+/// ```
 pub fn analyze(syntax: &SourceFile, source: SourceView<'_>) -> Analysis {
     analyze_with_registry(syntax, source, &EmptyCommandRegistry)
 }
 
 #[must_use]
 /// Run semantic analysis with a caller-provided command registry.
+///
+/// ```rust
+/// use maya_mel::{MayaCommandRegistry, analyze_with_registry, parse_source};
+///
+/// let parse = parse_source("createNode transform -n \"root\";");
+/// let analysis = analyze_with_registry(&parse.syntax, parse.source_view(), &MayaCommandRegistry::new());
+///
+/// assert!(analysis.diagnostics.is_empty());
+/// assert!(!analysis.normalized_invokes.is_empty());
+/// ```
 pub fn analyze_with_registry<R>(
     syntax: &SourceFile,
     source: SourceView<'_>,

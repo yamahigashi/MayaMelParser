@@ -83,12 +83,20 @@ pub enum ParseMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 /// Options shared by the full parse entry points.
+///
+/// Most callers can use [`Default::default`]. Set [`ParseMode`] explicitly when
+/// parsing snippet-like source that may omit the final semicolon.
 pub struct ParseOptions {
     pub mode: ParseMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Owned full-parse result for UTF-8 source text.
+/// Owned full-parse result for source text plus all parser-side diagnostics.
+///
+/// This is the main result type returned by [`parse_source`], [`parse_bytes`],
+/// and [`parse_file`]. The typed MEL syntax tree is stored in [`Self::syntax`],
+/// while the original decoded text and source mapping remain available for
+/// diagnostics and source slicing.
 pub struct Parse {
     pub syntax: mel_ast::SourceFile,
     pub source_text: String,
@@ -101,6 +109,9 @@ pub struct Parse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Shared full-parse result backed by `Arc<str>`.
+///
+/// Use this when the decoded source text needs to be shared across multiple
+/// downstream consumers without cloning the full string.
 pub struct SharedParse {
     pub syntax: mel_ast::SourceFile,
     pub source_text: Arc<str>,
@@ -206,12 +217,33 @@ impl From<SharedParse> for Parse {
 
 #[must_use]
 /// Parse a UTF-8 source string into a full AST.
+///
+/// ```rust
+/// use maya_mel::parse_source;
+///
+/// let parse = parse_source("global proc hello() {}");
+/// assert!(parse.errors.is_empty());
+/// assert_eq!(parse.syntax.items.len(), 1);
+/// ```
 pub fn parse_source(input: &str) -> Parse {
     parse_source_with_options(input, ParseOptions::default())
 }
 
 #[must_use]
 /// Parse a UTF-8 source string with explicit [`ParseOptions`].
+///
+/// ```rust
+/// use maya_mel::{ParseMode, ParseOptions, parse_source_with_options};
+///
+/// let parse = parse_source_with_options(
+///     "print \"hello\"",
+///     ParseOptions {
+///         mode: ParseMode::AllowTrailingStmtWithoutSemi,
+///     },
+/// );
+///
+/// assert!(parse.errors.is_empty());
+/// ```
 pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
     parse_owned_source(
         input.to_owned(),
