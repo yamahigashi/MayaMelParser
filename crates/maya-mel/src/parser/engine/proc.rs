@@ -3,11 +3,19 @@ use super::*;
 impl<'a> Parser<'a> {
     pub(super) fn parse_item(&mut self) -> Option<Item> {
         if self.at_keyword("global") && self.peek_keyword() == Some("proc") {
-            return self.parse_proc_def().map(Box::new).map(Item::Proc);
+            let proc_def = self.parse_proc_def()?;
+            if !self.record_statement_budget(proc_def.range) {
+                return None;
+            }
+            return Some(Item::Proc(Box::new(proc_def)));
         }
 
         if self.at_keyword("proc") {
-            return self.parse_proc_def().map(Box::new).map(Item::Proc);
+            let proc_def = self.parse_proc_def()?;
+            if !self.record_statement_budget(proc_def.range) {
+                return None;
+            }
+            return Some(Item::Proc(Box::new(proc_def)));
         }
 
         self.parse_stmt(StmtContext::TopLevel)
@@ -69,7 +77,13 @@ impl<'a> Parser<'a> {
             self.error("expected '(' after proc name", range);
         }
 
-        let body = if let Some(stmt) = self.parse_block_stmt() {
+        let body = if self.at(TokenKind::LBrace) {
+            let body_start = self.current().range;
+            self.with_nesting(body_start, |parser| parser.parse_block_stmt())
+        } else {
+            self.parse_block_stmt()
+        };
+        let body = if let Some(stmt) = body {
             stmt
         } else {
             let range = self.current().range;

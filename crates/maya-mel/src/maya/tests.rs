@@ -819,6 +819,7 @@ fn light_collector_uses_opaque_tail_when_prefix_limit_hits() {
         mel_parser::LightParseOptions {
             max_prefix_words: 5,
             max_prefix_bytes: 32,
+            ..mel_parser::LightParseOptions::default()
         },
     );
     assert!(parse.errors.is_empty());
@@ -879,6 +880,7 @@ fn hybrid_collector_promotes_opaque_set_attr_tail_to_full_raw_items() {
         LightParseOptions {
             max_prefix_words: 5,
             max_prefix_bytes: 32,
+            ..LightParseOptions::default()
         },
     );
     let hybrid = collect_top_level_facts_hybrid(&parse).expect("hybrid facts");
@@ -979,6 +981,7 @@ fn opaque_tail_promotion_takes_precedence_over_custom_decider() {
         LightParseOptions {
             max_prefix_words: 5,
             max_prefix_bytes: 32,
+            ..LightParseOptions::default()
         },
     );
     let hybrid = collect_top_level_facts_hybrid_with_decider(
@@ -1004,6 +1007,7 @@ fn hybrid_promotes_data_reference_edits_tail() {
         LightParseOptions {
             max_prefix_words: 3,
             max_prefix_bytes: 24,
+            ..LightParseOptions::default()
         },
     );
     let mut flags = vec![FlagSchema {
@@ -1151,6 +1155,7 @@ fn hybrid_strict_options_forward_parse_mode_to_promotion() {
             policy: MayaPromotionPolicy::Always,
             parse_options: ParseOptions {
                 mode: mel_parser::ParseMode::AllowTrailingStmtWithoutSemi,
+                ..ParseOptions::default()
             },
         },
     )
@@ -1223,6 +1228,7 @@ fn selective_collector_keeps_opaque_set_attr_without_promotion() {
         LightParseOptions {
             max_prefix_words: 4,
             max_prefix_bytes: 24,
+            ..LightParseOptions::default()
         },
         &MayaSelectiveOptions::default(),
         &DefaultMayaSelectiveSetAttrSelector,

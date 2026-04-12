@@ -2,73 +2,48 @@ use super::*;
 
 impl<'a> Parser<'a> {
     pub(super) fn parse_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
-        if let Some(token) = self.eat(TokenKind::Semi) {
-            return Some(Stmt::Empty { range: token.range });
-        }
-
-        if self.at_keyword("global") && self.peek_keyword() == Some("proc") {
+        let stmt = if let Some(token) = self.eat(TokenKind::Semi) {
+            Some(Stmt::Empty { range: token.range })
+        } else if self.at_keyword("proc")
+            || (self.at_keyword("global") && self.peek_keyword() == Some("proc"))
+        {
             let proc_def = self.parse_proc_def()?;
             let range = proc_def.range;
-            return Some(Stmt::Proc {
+            Some(Stmt::Proc {
                 proc_def: Box::new(proc_def),
                 range,
-            });
-        }
+            })
+        } else if self.at(TokenKind::LBrace) {
+            let block_start = self.current().range;
+            self.with_nesting(block_start, |parser| parser.parse_block_stmt())
+        } else if self.at_keyword("if") {
+            self.parse_if_stmt()
+        } else if self.at_keyword("while") {
+            self.parse_while_stmt()
+        } else if self.at_keyword("do") {
+            self.parse_do_while_stmt()
+        } else if self.at_keyword("switch") {
+            self.parse_switch_stmt()
+        } else if self.at_keyword("for") {
+            self.parse_for_stmt()
+        } else if self.starts_var_decl() {
+            self.parse_var_decl_stmt(context)
+        } else if self.at_keyword("return") {
+            self.parse_return_stmt(context)
+        } else if self.at_keyword("break") {
+            self.parse_break_stmt(context)
+        } else if self.at_keyword("continue") {
+            self.parse_continue_stmt(context)
+        } else if self.starts_command_stmt() {
+            self.parse_command_stmt(context)
+        } else {
+            self.parse_expr_stmt(context)
+        }?;
 
-        if self.at_keyword("proc") {
-            let proc_def = self.parse_proc_def()?;
-            let range = proc_def.range;
-            return Some(Stmt::Proc {
-                proc_def: Box::new(proc_def),
-                range,
-            });
+        if !self.record_statement_budget(stmt_range(&stmt)) {
+            return None;
         }
-
-        if self.at(TokenKind::LBrace) {
-            return self.parse_block_stmt();
-        }
-
-        if self.at_keyword("if") {
-            return self.parse_if_stmt();
-        }
-
-        if self.at_keyword("while") {
-            return self.parse_while_stmt();
-        }
-
-        if self.at_keyword("do") {
-            return self.parse_do_while_stmt();
-        }
-
-        if self.at_keyword("switch") {
-            return self.parse_switch_stmt();
-        }
-
-        if self.at_keyword("for") {
-            return self.parse_for_stmt();
-        }
-
-        if self.starts_var_decl() {
-            return self.parse_var_decl_stmt(context);
-        }
-
-        if self.at_keyword("return") {
-            return self.parse_return_stmt(context);
-        }
-
-        if self.at_keyword("break") {
-            return self.parse_break_stmt(context);
-        }
-
-        if self.at_keyword("continue") {
-            return self.parse_continue_stmt(context);
-        }
-
-        if self.starts_command_stmt() {
-            return self.parse_command_stmt(context);
-        }
-
-        self.parse_expr_stmt(context)
+        Some(stmt)
     }
 
     pub(super) fn parse_block_stmt(&mut self) -> Option<Stmt> {
@@ -101,8 +76,9 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_if_stmt(&mut self) -> Option<Stmt> {
         let if_token = self.eat_keyword("if")?;
+        let paren_range = self.current().range;
         self.expect(TokenKind::LParen, "expected '(' after if")?;
-        let condition = self.parse_expr()?;
+        let condition = self.with_nesting(paren_range, |parser| parser.parse_expr())?;
 
         if self.eat(TokenKind::RParen).is_none() {
             let range = self.current().range;
@@ -132,6 +108,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_while_stmt(&mut self) -> Option<Stmt> {
         let while_token = self.eat_keyword("while")?;
+        let paren_range = self.current().range;
         self.expect(TokenKind::LParen, "expected '(' after while")?;
 
         let condition = if self.at(TokenKind::RParen) {
@@ -141,7 +118,7 @@ impl<'a> Parser<'a> {
                 name_range: range,
                 range,
             }
-        } else if let Some(expr) = self.parse_expr() {
+        } else if let Some(expr) = self.with_nesting(paren_range, |parser| parser.parse_expr()) {
             expr
         } else {
             let range = self.current().range;
@@ -199,6 +176,7 @@ impl<'a> Parser<'a> {
         };
 
         self.expect(TokenKind::LParen, "expected '(' after while")?;
+        let paren_range = self.previous_range();
 
         let condition = if self.at(TokenKind::RParen) {
             let range = self.current().range;
@@ -207,7 +185,7 @@ impl<'a> Parser<'a> {
                 name_range: range,
                 range,
             }
-        } else if let Some(expr) = self.parse_expr() {
+        } else if let Some(expr) = self.with_nesting(paren_range, |parser| parser.parse_expr()) {
             expr
         } else {
             let range = self.current().range;
@@ -244,6 +222,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_switch_stmt(&mut self) -> Option<Stmt> {
         let switch_token = self.eat_keyword("switch")?;
+        let paren_range = self.current().range;
         self.expect(TokenKind::LParen, "expected '(' after switch")?;
 
         let control = if self.at(TokenKind::RParen) {
@@ -253,7 +232,7 @@ impl<'a> Parser<'a> {
                 name_range: range,
                 range,
             }
-        } else if let Some(expr) = self.parse_expr() {
+        } else if let Some(expr) = self.with_nesting(paren_range, |parser| parser.parse_expr()) {
             expr
         } else {
             let range = self.current().range;
@@ -392,11 +371,12 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_for_stmt(&mut self) -> Option<Stmt> {
         let for_token = self.eat_keyword("for")?;
+        let paren_range = self.current().range;
         self.expect(TokenKind::LParen, "expected '(' after for")?;
 
         let checkpoint = self.pos;
         self.rewind_floor = Some(checkpoint);
-        if let Some(binding) = self.parse_expr()
+        if let Some(binding) = self.with_nesting(paren_range, |parser| parser.parse_expr())
             && self.eat_keyword("in").is_some()
         {
             self.rewind_floor = None;
@@ -426,7 +406,7 @@ impl<'a> Parser<'a> {
         let init = if self.at(TokenKind::Semi) {
             None
         } else {
-            self.parse_for_clause_exprs()
+            self.with_nesting(paren_range, |parser| parser.parse_for_clause_exprs())
         };
         self.expect(TokenKind::Semi, "expected ';' after for init")?;
 
@@ -440,7 +420,7 @@ impl<'a> Parser<'a> {
         let update = if self.at(TokenKind::RParen) {
             None
         } else {
-            self.parse_for_clause_exprs()
+            self.with_nesting(paren_range, |parser| parser.parse_for_clause_exprs())
         };
         let close = self.expect(TokenKind::RParen, "expected ')' after for clause")?;
         let body = self.parse_stmt(StmtContext::Nested)?;

@@ -6,6 +6,9 @@ impl<'a> Parser<'a> {
         message: &'static str,
         context: StmtContext,
     ) -> Option<u32> {
+        if self.is_halted() {
+            return Some(range_end(self.previous_significant_range()));
+        }
         if let Some(token) = self.eat(TokenKind::Semi) {
             Some(range_end(token.range))
         } else if self.can_omit_stmt_semi(context) {
@@ -29,6 +32,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn error(&mut self, message: &'static str, range: TextRange) {
+        if self.is_halted() {
+            return;
+        }
+        if self.tokens.has_budget_error() && self.current().kind == TokenKind::Eof {
+            return;
+        }
         self.errors.push(ParseError { message, range });
     }
 

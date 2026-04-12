@@ -4,6 +4,10 @@ use mel_syntax::{SourceView, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 /// Top-level Maya facts collected from a full parse.
+///
+/// The result is intentionally coarse-grained: each top-level item is either a
+/// proc, a command-style statement promoted into Maya-aware form, or an
+/// unclassified statement span.
 pub struct MayaTopLevelFacts {
     pub items: Vec<MayaTopLevelItem>,
 }
@@ -234,6 +238,9 @@ pub enum MayaLightTopLevelItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Maya-specific view of a top-level command statement.
+///
+/// This keeps the original shell-like surface in [`Self::raw_items`] while also
+/// attaching optional normalized and specialized forms.
 pub struct MayaTopLevelCommand {
     pub head: String,
     pub captured: bool,

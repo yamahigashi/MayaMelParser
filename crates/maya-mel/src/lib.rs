@@ -20,11 +20,22 @@
 //! assert!(!facts.items.is_empty());
 //! ```
 //!
+//! ```rust
+//! use maya_mel::{MayaCommandRegistry, collect_top_level_facts_with_registry, parse_source};
+//!
+//! let parsed = parse_source("createNode transform -n \"root\";");
+//! let facts = collect_top_level_facts_with_registry(&parsed, &MayaCommandRegistry::new());
+//!
+//! assert_eq!(facts.items.len(), 1);
+//! ```
+//!
 //! # Common Workflows
 //!
 //! - Use [`parse_source`] or [`parse_file`] to build a typed MEL syntax tree.
 //! - Use [`analyze`] to resolve generic MEL semantics and collect diagnostics.
 //! - Use [`collect_top_level_facts`] to gather Maya-specific command facts.
+//! - Use [`MayaCommandRegistry`] with [`analyze_with_registry`] or
+//!   [`collect_top_level_facts_with_registry`] when builtin Maya command metadata matters.
 //! - Use [`parser`], [`sema`], or [`maya`] directly for advanced workflows.
 //!
 //! # Module Guide
@@ -85,8 +96,8 @@ pub use maya::{
 };
 #[doc(inline)]
 pub use parser::{
-    DecodeDiagnostic, Parse, ParseError, ParseMode, ParseOptions, SharedParse, SourceEncoding,
-    parse_bytes, parse_bytes_with_encoding, parse_file, parse_file_with_encoding,
+    DecodeDiagnostic, Parse, ParseBudgets, ParseError, ParseMode, ParseOptions, SharedParse,
+    SourceEncoding, parse_bytes, parse_bytes_with_encoding, parse_file, parse_file_with_encoding,
     parse_shared_bytes, parse_shared_bytes_with_encoding, parse_shared_file,
     parse_shared_file_with_encoding, parse_shared_source, parse_shared_source_with_options,
     parse_source, parse_source_with_options,

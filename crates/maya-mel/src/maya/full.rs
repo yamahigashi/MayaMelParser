@@ -11,6 +11,15 @@ use mel_sema::{CommandRegistry, EmptyCommandRegistry};
 
 #[must_use]
 /// Collect Maya-oriented top-level facts from a full parse.
+///
+/// ```rust
+/// use maya_mel::{collect_top_level_facts, parse_source};
+///
+/// let parse = parse_source("createNode transform -n \"root\";");
+/// let facts = collect_top_level_facts(&parse);
+///
+/// assert_eq!(facts.items.len(), 1);
+/// ```
 pub fn collect_top_level_facts(parse: &Parse) -> MayaTopLevelFacts {
     collect_top_level_facts_with_registry(parse, &EmptyCommandRegistry)
 }
@@ -23,6 +32,15 @@ pub fn collect_top_level_facts_shared(parse: &SharedParse) -> MayaTopLevelFacts 
 
 #[must_use]
 /// Collect Maya-oriented top-level facts using an additional command registry.
+///
+/// ```rust
+/// use maya_mel::{MayaCommandRegistry, collect_top_level_facts_with_registry, parse_source};
+///
+/// let parse = parse_source("createNode transform -n \"root\";");
+/// let facts = collect_top_level_facts_with_registry(&parse, &MayaCommandRegistry::new());
+///
+/// assert_eq!(facts.items.len(), 1);
+/// ```
 pub fn collect_top_level_facts_with_registry<R>(parse: &Parse, registry: &R) -> MayaTopLevelFacts
 where
     R: CommandRegistry + ?Sized,

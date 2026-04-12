@@ -89,6 +89,7 @@ fn inline_mode_accepts_single_trailing_statement_without_semicolon() {
         r#"print "hello""#,
         ParseOptions {
             mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            ..ParseOptions::default()
         },
     );
     assert!(parse.errors.is_empty());
@@ -385,6 +386,7 @@ fn light_output_reports_opaque_tail_counts() {
         LightParseOptions {
             max_prefix_words: 5,
             max_prefix_bytes: 32,
+            ..LightParseOptions::default()
         },
     );
     let output = format_light_single_file_output("light-fixture", &parse, CliDiagnosticLevel::All)
