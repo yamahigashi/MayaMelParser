@@ -49,7 +49,13 @@ use self::remap::{
     remap_source_file_ranges,
 };
 
-use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange};
+use mel_syntax::{LexDiagnostic, SourceMap, SourceView, TextRange, text_range};
+
+const DEFAULT_MAX_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_MAX_NESTING_DEPTH: usize = 512;
+const DEFAULT_MAX_TOKENS: usize = 8_000_000;
+const DEFAULT_MAX_STATEMENTS: usize = 1_000_000;
+const DEFAULT_MAX_LITERAL_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A diagnostic emitted while decoding non-UTF-8 source into display text.
@@ -81,6 +87,45 @@ pub enum ParseMode {
     AllowTrailingStmtWithoutSemi,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Resource budgets enforced by full and lightweight parse entry points.
+///
+/// [`Default::default`] enables conservative hard limits intended to protect
+/// parser callers from hostile or unexpectedly large input. Use
+/// [`Self::unlimited`] only for trusted local workloads such as benchmarks.
+pub struct ParseBudgets {
+    pub max_bytes: usize,
+    pub max_nesting_depth: usize,
+    pub max_tokens: usize,
+    pub max_statements: usize,
+    pub max_literal_bytes: usize,
+}
+
+impl Default for ParseBudgets {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_MAX_BYTES,
+            max_nesting_depth: DEFAULT_MAX_NESTING_DEPTH,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            max_statements: DEFAULT_MAX_STATEMENTS,
+            max_literal_bytes: DEFAULT_MAX_LITERAL_BYTES,
+        }
+    }
+}
+
+impl ParseBudgets {
+    #[must_use]
+    pub const fn unlimited() -> Self {
+        Self {
+            max_bytes: usize::MAX,
+            max_nesting_depth: usize::MAX,
+            max_tokens: usize::MAX,
+            max_statements: usize::MAX,
+            max_literal_bytes: usize::MAX,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 /// Options shared by the full parse entry points.
 ///
@@ -88,6 +133,7 @@ pub enum ParseMode {
 /// parsing snippet-like source that may omit the final semicolon.
 pub struct ParseOptions {
     pub mode: ParseMode,
+    pub budgets: ParseBudgets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,12 +285,16 @@ pub fn parse_source(input: &str) -> Parse {
 ///     "print \"hello\"",
 ///     ParseOptions {
 ///         mode: ParseMode::AllowTrailingStmtWithoutSemi,
+///         ..ParseOptions::default()
 ///     },
 /// );
 ///
 /// assert!(parse.errors.is_empty());
 /// ```
 pub fn parse_source_with_options(input: &str, options: ParseOptions) -> Parse {
+    if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
+        return parse_budget_failure_for_source(input.to_owned(), error);
+    }
     parse_owned_source(
         input.to_owned(),
         SourceMap::identity(input.len()),
@@ -263,6 +313,9 @@ pub fn parse_shared_source(input: Arc<str>) -> SharedParse {
 #[must_use]
 /// Parse shared UTF-8 source text with explicit [`ParseOptions`].
 pub fn parse_shared_source_with_options(input: Arc<str>, options: ParseOptions) -> SharedParse {
+    if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
+        return shared_parse_budget_failure_for_source(input, error);
+    }
     let len = input.len();
     parse_shared_source_text(
         input,
@@ -288,6 +341,14 @@ pub fn parse_source_view_range_with_options(
 ) -> ParseSlice<'_> {
     let display_range = source.display_range(range);
     let input = &source.text()[display_range.clone()];
+    if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
+        return ParseSlice {
+            syntax: mel_ast::SourceFile { items: Vec::new() },
+            source,
+            lex_errors: Vec::new(),
+            errors: vec![error],
+        };
+    }
     let mut parse = parse_borrowed_source(
         input,
         SourceMap::identity(input.len()),
@@ -318,18 +379,27 @@ pub fn parse_source_view_range_with_options(
 #[must_use]
 /// Decode and parse bytes using automatic encoding detection.
 pub fn parse_bytes(input: &[u8]) -> Parse {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), ParseBudgets::default()) {
+        return parse_budget_failure_empty(error);
+    }
     parse_decoded_source(decode_source_auto(input), ParseOptions::default())
 }
 
 #[must_use]
 /// Decode and parse bytes into a shared parse using automatic encoding detection.
 pub fn parse_shared_bytes(input: &[u8]) -> SharedParse {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), ParseBudgets::default()) {
+        return shared_parse_budget_failure_empty(error);
+    }
     parse_shared_decoded_source(decode_source_auto(input), ParseOptions::default())
 }
 
 #[must_use]
 /// Decode and parse bytes with an explicit source encoding.
 pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Parse {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), ParseBudgets::default()) {
+        return parse_budget_failure_empty(error);
+    }
     parse_decoded_source(
         decode_source_with_encoding(input, encoding),
         ParseOptions::default(),
@@ -339,6 +409,9 @@ pub fn parse_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> Pars
 #[must_use]
 /// Decode and parse bytes into a shared parse with an explicit source encoding.
 pub fn parse_shared_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) -> SharedParse {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), ParseBudgets::default()) {
+        return shared_parse_budget_failure_empty(error);
+    }
     parse_shared_decoded_source(
         decode_source_with_encoding(input, encoding),
         ParseOptions::default(),
@@ -347,6 +420,9 @@ pub fn parse_shared_bytes_with_encoding(input: &[u8], encoding: SourceEncoding) 
 
 /// Read, decode, and parse a file using automatic encoding detection.
 pub fn parse_shared_file(path: impl AsRef<Path>) -> io::Result<SharedParse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), ParseBudgets::default())? {
+        return Ok(shared_parse_budget_failure_empty(error));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_shared_bytes(&bytes))
 }
@@ -356,12 +432,18 @@ pub fn parse_shared_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
 ) -> io::Result<SharedParse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), ParseBudgets::default())? {
+        return Ok(shared_parse_budget_failure_empty(error));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_shared_bytes_with_encoding(&bytes, encoding))
 }
 
 /// Read, decode, and parse a file using automatic encoding detection.
 pub fn parse_file(path: impl AsRef<Path>) -> io::Result<Parse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), ParseBudgets::default())? {
+        return Ok(parse_budget_failure_empty(error));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_owned_bytes(bytes, ParseOptions::default()))
 }
@@ -371,6 +453,9 @@ pub fn parse_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
 ) -> io::Result<Parse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), ParseBudgets::default())? {
+        return Ok(parse_budget_failure_empty(error));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_owned_bytes_with_encoding(
         bytes,
@@ -512,6 +597,9 @@ fn parse_owned_decoded_source(decoded: decode::DecodedOwnedSource, options: Pars
 }
 
 fn parse_owned_bytes(input: Vec<u8>, options: ParseOptions) -> Parse {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        return parse_budget_failure_empty(error);
+    }
     parse_owned_decoded_source(decode_owned_bytes_auto(input), options)
 }
 
@@ -520,5 +608,97 @@ fn parse_owned_bytes_with_encoding(
     encoding: SourceEncoding,
     options: ParseOptions,
 ) -> Parse {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        return parse_budget_failure_empty(error);
+    }
     parse_owned_decoded_source(decode_owned_bytes_with_encoding(input, encoding), options)
+}
+
+pub(crate) fn budget_error_message(limit: &'static str) -> &'static str {
+    match limit {
+        "max_bytes" => "source exceeds parse budget: max_bytes",
+        "max_tokens" => "source exceeds parse budget: max_tokens",
+        "max_statements" => "source exceeds parse budget: max_statements",
+        "max_nesting_depth" => "source exceeds parse budget: max_nesting_depth",
+        "max_literal_bytes" => "source exceeds parse budget: max_literal_bytes",
+        _ => "source exceeds parse budget",
+    }
+}
+
+pub(crate) fn budget_error(limit: &'static str, range: TextRange) -> ParseError {
+    ParseError {
+        message: budget_error_message(limit),
+        range,
+    }
+}
+
+fn max_bytes_error_for_text(len: usize, budgets: ParseBudgets) -> Option<ParseError> {
+    (len > budgets.max_bytes).then(|| budget_error("max_bytes", text_len_range(len)))
+}
+
+fn max_bytes_error_for_bytes(len: usize, budgets: ParseBudgets) -> Option<ParseError> {
+    (len > budgets.max_bytes).then(|| budget_error("max_bytes", text_range(0, 0)))
+}
+
+fn max_bytes_error_for_file(path: &Path, budgets: ParseBudgets) -> io::Result<Option<ParseError>> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.len() > budgets.max_bytes as u64 => {
+            Ok(Some(budget_error("max_bytes", text_range(0, 0))))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_budget_failure_for_source(source_text: String, error: ParseError) -> Parse {
+    Parse {
+        syntax: mel_ast::SourceFile { items: Vec::new() },
+        source_map: SourceMap::identity(source_text.len()),
+        source_text,
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        lex_errors: Vec::new(),
+        errors: vec![error],
+    }
+}
+
+fn shared_parse_budget_failure_for_source(source_text: Arc<str>, error: ParseError) -> SharedParse {
+    SharedParse {
+        syntax: mel_ast::SourceFile { items: Vec::new() },
+        source_map: SourceMap::identity(source_text.len()),
+        source_text,
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        lex_errors: Vec::new(),
+        errors: vec![error],
+    }
+}
+
+fn parse_budget_failure_empty(error: ParseError) -> Parse {
+    Parse {
+        syntax: mel_ast::SourceFile { items: Vec::new() },
+        source_text: String::new(),
+        source_map: SourceMap::identity(0),
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        lex_errors: Vec::new(),
+        errors: vec![error],
+    }
+}
+
+fn shared_parse_budget_failure_empty(error: ParseError) -> SharedParse {
+    SharedParse {
+        syntax: mel_ast::SourceFile { items: Vec::new() },
+        source_text: Arc::from(""),
+        source_map: SourceMap::identity(0),
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        lex_errors: Vec::new(),
+        errors: vec![error],
+    }
+}
+
+pub(crate) fn text_len_range(len: usize) -> TextRange {
+    text_range(0, len.min(u32::MAX as usize) as u32)
 }

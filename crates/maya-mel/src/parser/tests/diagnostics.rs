@@ -445,6 +445,7 @@ fn allows_trailing_top_level_statement_without_semicolon_in_lenient_mode() {
         ),
         ParseOptions {
             mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            ..ParseOptions::default()
         },
     );
     assert!(parse.errors.is_empty());
@@ -467,6 +468,7 @@ fn still_requires_semicolon_between_top_level_statements_in_lenient_mode() {
         "$x = 1\n$y = 2;",
         ParseOptions {
             mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            ..ParseOptions::default()
         },
     );
     assert!(!parse.errors.is_empty());
@@ -479,10 +481,113 @@ fn still_requires_semicolon_for_nested_statement_in_lenient_mode() {
         "if ($ready) print(\"hello\")",
         ParseOptions {
             mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            ..ParseOptions::default()
         },
     );
     assert!(!parse.errors.is_empty());
     assert_eq!(parse.errors[0].message, "expected ';' after statement");
+}
+
+#[test]
+fn reports_max_bytes_budget_before_full_parse_starts() {
+    let parse = parse_source_with_options(
+        "print \"hello\";\n",
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    );
+
+    assert!(parse.syntax.items.is_empty());
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_bytes"
+    );
+}
+
+#[test]
+fn reports_max_statements_budget_and_stops_after_first_item() {
+    let parse = parse_source_with_options(
+        "$a = 1;\n$b = 2;\n",
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_statements: 1,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.syntax.items.len(), 1);
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_statements"
+    );
+}
+
+#[test]
+fn reports_max_literal_bytes_budget_for_string_literal() {
+    let parse = parse_source_with_options(
+        "$name = \"abcdef\";\n",
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_literal_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_literal_bytes"
+    );
+}
+
+#[test]
+fn reports_max_nesting_depth_budget_for_grouped_expr() {
+    let parse = parse_source_with_options(
+        "$x = ((((1))));\n",
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_nesting_depth: 2,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_nesting_depth"
+    );
+}
+
+#[test]
+fn reports_max_tokens_budget_for_long_expression() {
+    let parse = parse_source_with_options(
+        "$x = 1 + 2 + 3 + 4;\n",
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_tokens: 5,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_tokens"
+    );
 }
 
 #[test]

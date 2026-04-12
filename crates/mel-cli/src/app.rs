@@ -40,6 +40,7 @@ pub(crate) fn run() -> Result<(), RunError> {
             &input,
             ParseOptions {
                 mode: ParseMode::AllowTrailingStmtWithoutSemi,
+                ..ParseOptions::default()
             },
         );
         print_parse_summary("inline", &parse);

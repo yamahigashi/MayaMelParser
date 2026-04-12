@@ -203,6 +203,7 @@ fn light_parse_tracks_multiline_command_tail_as_single_statement() {
         LightParseOptions {
             max_prefix_words: 4,
             max_prefix_bytes: 48,
+            ..LightParseOptions::default()
         },
     );
     assert!(parse.errors.is_empty());
@@ -225,6 +226,7 @@ fn light_parse_bounds_prefix_words_for_large_payloads() {
         LightParseOptions {
             max_prefix_words: 3,
             max_prefix_bytes: 24,
+            ..LightParseOptions::default()
         },
     );
     assert!(parse.errors.is_empty());
@@ -263,4 +265,140 @@ fn streaming_light_scan_bytes_preserves_safe_source_slices_for_non_utf8() {
     };
     assert_eq!(report.source_slice(command.head_range), "setAttr");
     assert_eq!(report.source_slice(command.words[0].range()), "\".名\"");
+}
+
+#[test]
+fn light_parse_reports_max_bytes_budget_before_scan_starts() {
+    let parse = parse_light_source_with_options(
+        "setAttr \".tx\" 1;\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert!(parse.source.items.is_empty());
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_bytes"
+    );
+}
+
+#[test]
+fn light_parse_reports_max_statements_budget_and_drops_tail_items() {
+    let parse = parse_light_source_with_options(
+        "setAttr \".tx\" 1;\nsetAttr \".ty\" 2;\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_statements: 1,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.source.items.len(), 1);
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_statements"
+    );
+}
+
+#[test]
+fn light_parse_reports_max_literal_bytes_budget_for_string_word() {
+    let parse = parse_light_source_with_options(
+        "setAttr \".tx\" \"abcdef\";\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_literal_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_literal_bytes"
+    );
+}
+
+#[test]
+fn light_parse_reports_max_nesting_depth_budget_for_grouped_expr() {
+    let parse = parse_light_source_with_options(
+        "file -command ((((\"x\"))));\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_nesting_depth: 2,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_nesting_depth"
+    );
+}
+
+#[test]
+fn light_parse_reports_max_tokens_budget_for_long_command() {
+    let parse = parse_light_source_with_options(
+        "setAttr \".pt\" 1 2 3 4 5 6;\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_tokens: 6,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_tokens"
+    );
+}
+
+#[test]
+fn light_parse_does_not_double_count_command_head_tokens_against_budget() {
+    let parse = parse_light_source_with_options(
+        "createNode -n foo;\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_tokens: 4,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.source.items.len(), 1);
+    assert!(parse.errors.is_empty());
+}
+
+#[test]
+fn light_parse_does_not_double_count_global_statement_proc_probe_tokens() {
+    let parse = parse_light_source_with_options(
+        "global int $x;\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_tokens: 4,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+    );
+
+    assert_eq!(parse.source.items.len(), 1);
+    assert!(parse.errors.is_empty());
 }

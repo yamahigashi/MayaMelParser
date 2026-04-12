@@ -49,7 +49,9 @@ impl<'a> Parser<'a> {
                 }
 
                 let open = self.bump();
-                let index = if let Some(expr) = self.parse_expr() {
+                let index = if let Some(expr) =
+                    self.with_nesting(open.range, |parser| parser.parse_expr())
+                {
                     expr
                 } else {
                     let range = self.current().range;
@@ -267,6 +269,9 @@ impl<'a> Parser<'a> {
             }
             TokenKind::StringLiteral => {
                 let token = self.bump();
+                if !self.check_literal_budget(token.range) {
+                    return None;
+                }
                 Some(Expr::String {
                     text: token.range,
                     range: token.range,
@@ -357,16 +362,17 @@ impl<'a> Parser<'a> {
         let ty = parse_type_name(self.token_text(type_token))?;
         let close = self.expect(TokenKind::RParen, "expected ')' after cast type")?;
 
-        let expr = if let Some(expr) = self.parse_expr_bp(80) {
-            expr
-        } else {
-            let range = self.current().range;
-            self.error("expected expression after cast", range);
-            Expr::Ident {
-                name_range: range,
-                range,
-            }
-        };
+        let expr =
+            if let Some(expr) = self.with_nesting(open.range, |parser| parser.parse_expr_bp(80)) {
+                expr
+            } else {
+                let range = self.current().range;
+                self.error("expected expression after cast", range);
+                Expr::Ident {
+                    name_range: range,
+                    range,
+                }
+            };
 
         Some(Expr::Cast {
             ty,
@@ -379,124 +385,140 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_grouped_expr(&mut self) -> Option<Expr> {
-        self.eat(TokenKind::LParen)?;
-        let expr = self.parse_expr()?;
-        if self.eat(TokenKind::RParen).is_none() {
-            let range = self.current().range;
-            self.error("expected ')' to close grouped expression", range);
-            self.recover_to_rparen_or_stmt_boundary();
-            let _ = self.eat(TokenKind::RParen);
-        }
-        Some(expr)
+        let open = self.eat(TokenKind::LParen)?;
+        self.with_nesting(open.range, |parser| {
+            let expr = parser.parse_expr()?;
+            let end = if let Some(close) = parser.eat(TokenKind::RParen) {
+                range_end(close.range)
+            } else {
+                let range = parser.current().range;
+                parser.error("expected ')' to close grouped expression", range);
+                parser.recover_to_rparen_or_stmt_boundary();
+                parser
+                    .eat(TokenKind::RParen)
+                    .map_or(range_end(range), |close| range_end(close.range))
+            };
+            let grouped_range = text_range(range_start(open.range), end);
+            if !parser.check_literal_budget(grouped_range) {
+                return None;
+            }
+            Some(expr)
+        })
     }
 
     pub(super) fn parse_brace_list_expr(&mut self) -> Option<Expr> {
         let open = self.eat(TokenKind::LBrace)?;
-        let mut elements = Vec::new();
+        self.with_nesting(open.range, |parser| {
+            let mut elements = Vec::new();
 
-        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            if let Some(expr) = self.parse_expr() {
-                elements.push(expr);
+            while !parser.at(TokenKind::RBrace) && !parser.at(TokenKind::Eof) {
+                if let Some(expr) = parser.parse_expr() {
+                    elements.push(expr);
+                } else {
+                    let range = parser.current().range;
+                    parser.error("expected expression inside brace list", range);
+                    parser.recover_to_brace_list_boundary();
+                }
+
+                if parser.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
+                break;
+            }
+
+            let end = if let Some(close) = parser.eat(TokenKind::RBrace) {
+                range_end(close.range)
             } else {
-                let range = self.current().range;
-                self.error("expected expression inside brace list", range);
-                self.recover_to_brace_list_boundary();
+                let range = parser.current().range;
+                parser.error("expected '}' to close brace list", range);
+                range_end(range).max(range_end(open.range))
+            };
+            let range = text_range(range_start(open.range), end);
+            if !parser.check_literal_budget(range) {
+                return None;
             }
-
-            if self.eat(TokenKind::Comma).is_some() {
-                continue;
-            }
-            break;
-        }
-
-        let end = if let Some(close) = self.eat(TokenKind::RBrace) {
-            range_end(close.range)
-        } else {
-            let range = self.current().range;
-            self.error("expected '}' to close brace list", range);
-            range_end(range).max(range_end(open.range))
-        };
-
-        Some(Expr::ArrayLiteral {
-            elements,
-            range: text_range(range_start(open.range), end),
+            Some(Expr::ArrayLiteral { elements, range })
         })
     }
 
     pub(super) fn parse_vector_literal_expr(&mut self) -> Option<Expr> {
         let open = self.eat(TokenKind::LtLt)?;
-        let mut elements = Vec::new();
+        self.with_nesting(open.range, |parser| {
+            let mut elements = Vec::new();
 
-        while !self.at(TokenKind::GtGt) && !self.at(TokenKind::Eof) {
-            if let Some(expr) = self.parse_expr() {
-                elements.push(expr);
+            while !parser.at(TokenKind::GtGt) && !parser.at(TokenKind::Eof) {
+                if let Some(expr) = parser.parse_expr() {
+                    elements.push(expr);
+                } else {
+                    let range = parser.current().range;
+                    parser.error("expected expression inside vector literal", range);
+                    parser.recover_to_vector_literal_boundary();
+                }
+
+                if parser.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
+                break;
+            }
+
+            let end = if let Some(close) = parser.eat(TokenKind::GtGt) {
+                range_end(close.range)
             } else {
-                let range = self.current().range;
-                self.error("expected expression inside vector literal", range);
-                self.recover_to_vector_literal_boundary();
+                let range = parser.current().range;
+                parser.error("expected '>>' to close vector literal", range);
+                range_end(range).max(range_end(open.range))
+            };
+            let range = text_range(range_start(open.range), end);
+            if !parser.check_literal_budget(range) {
+                return None;
             }
-
-            if self.eat(TokenKind::Comma).is_some() {
-                continue;
-            }
-            break;
-        }
-
-        let end = if let Some(close) = self.eat(TokenKind::GtGt) {
-            range_end(close.range)
-        } else {
-            let range = self.current().range;
-            self.error("expected '>>' to close vector literal", range);
-            range_end(range).max(range_end(open.range))
-        };
-
-        Some(Expr::VectorLiteral {
-            elements,
-            range: text_range(range_start(open.range), end),
+            Some(Expr::VectorLiteral { elements, range })
         })
     }
 
     pub(super) fn parse_function_invoke(&mut self) -> Option<InvokeExpr> {
         let name_token = self.eat(TokenKind::Ident)?;
-        let _open = self.eat(TokenKind::LParen)?;
+        let open = self.eat(TokenKind::LParen)?;
 
-        let mut args = Vec::new();
-        if !self.at(TokenKind::RParen) {
-            loop {
-                if let Some(expr) = self.parse_expr() {
-                    args.push(expr);
-                } else {
-                    let range = self.current().range;
-                    self.error("expected expression as function argument", range);
+        self.with_nesting(open.range, |parser| {
+            let mut args = Vec::new();
+            if !parser.at(TokenKind::RParen) {
+                loop {
+                    if let Some(expr) = parser.parse_expr() {
+                        args.push(expr);
+                    } else {
+                        let range = parser.current().range;
+                        parser.error("expected expression as function argument", range);
+                        break;
+                    }
+
+                    if parser.eat(TokenKind::Comma).is_some() {
+                        continue;
+                    }
                     break;
                 }
-
-                if self.eat(TokenKind::Comma).is_some() {
-                    continue;
-                }
-                break;
             }
-        }
 
-        let end = if let Some(close) = self.eat(TokenKind::RParen) {
-            range_end(close.range)
-        } else {
-            let range = self.current().range;
-            self.error("expected ')' to close function invocation", range);
-            self.recover_to_rparen_or_stmt_boundary();
-            if let Some(close) = self.eat(TokenKind::RParen) {
+            let end = if let Some(close) = parser.eat(TokenKind::RParen) {
                 range_end(close.range)
             } else {
-                range_end(self.previous_range()).max(range_end(range))
-            }
-        };
+                let range = parser.current().range;
+                parser.error("expected ')' to close function invocation", range);
+                parser.recover_to_rparen_or_stmt_boundary();
+                if let Some(close) = parser.eat(TokenKind::RParen) {
+                    range_end(close.range)
+                } else {
+                    range_end(parser.previous_range()).max(range_end(range))
+                }
+            };
 
-        Some(InvokeExpr {
-            surface: InvokeSurface::Function {
-                head_range: name_token.range,
-                args,
-            },
-            range: text_range(range_start(name_token.range), end),
+            Some(InvokeExpr {
+                surface: InvokeSurface::Function {
+                    head_range: name_token.range,
+                    args,
+                },
+                range: text_range(range_start(name_token.range), end),
+            })
         })
     }
 

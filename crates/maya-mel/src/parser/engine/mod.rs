@@ -6,7 +6,9 @@ use mel_ast::{
 use mel_lexer::{Lexer, significant_lexer};
 use mel_syntax::{SourceMap, TextRange, Token, TokenKind, range_end, range_start, text_range};
 
-use crate::{Parse, ParseError, ParseMode, ParseOptions, SourceEncoding};
+use crate::{
+    Parse, ParseBudgets, ParseError, ParseMode, ParseOptions, SourceEncoding, budget_error,
+};
 
 mod bareword;
 mod cursor;
@@ -30,6 +32,8 @@ pub(crate) struct Parser<'a> {
     token_cache: [Token; TOKEN_LOOKAHEAD],
     token_cache_base: usize,
     errors: Vec<ParseError>,
+    budget: BudgetTracker,
+    halted: bool,
 }
 
 struct TokenWindow<'a> {
@@ -37,6 +41,9 @@ struct TokenWindow<'a> {
     tokens: Vec<Token>,
     base_index: usize,
     eof_seen: bool,
+    remaining_tokens: usize,
+    budget_error: Option<ParseError>,
+    forced_eof_range: TextRange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,12 +57,14 @@ impl<'a> Parser<'a> {
         let mut parser = Self {
             input,
             options,
-            tokens: TokenWindow::new(input),
+            tokens: TokenWindow::new(input, options.budgets),
             pos: 0,
             rewind_floor: None,
             token_cache: [Token::new(TokenKind::Eof, text_range(0, 0)); TOKEN_LOOKAHEAD],
             token_cache_base: 0,
             errors: Vec::new(),
+            budget: BudgetTracker::new(options.budgets),
+            halted: false,
         };
         parser.refresh_token_cache();
         parser
@@ -63,15 +72,20 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse(mut self) -> Parse {
         let mut items = Vec::new();
-        while !self.at(TokenKind::Eof) {
+        while !self.at(TokenKind::Eof) && !self.is_halted() {
             if let Some(item) = self.parse_item() {
                 items.push(item);
             } else {
+                if self.is_halted() {
+                    break;
+                }
                 let range = self.current().range;
                 self.error("unexpected token while parsing item", range);
                 self.bump();
             }
         }
+
+        self.take_token_budget_error();
 
         Parse {
             syntax: SourceFile { items },
@@ -123,20 +137,77 @@ impl<'a> Parser<'a> {
             .unwrap_or_else(|| self.pos.saturating_sub(1));
         self.tokens.discard_before(keep_from);
     }
+
+    fn is_halted(&self) -> bool {
+        self.halted || self.budget.halted
+    }
+
+    fn halt(&mut self, error: ParseError) {
+        if self.halted {
+            return;
+        }
+        self.halted = true;
+        self.errors.push(error);
+        let range = self.current().range;
+        self.token_cache = [Token::new(TokenKind::Eof, range); TOKEN_LOOKAHEAD];
+        self.token_cache_base = self.pos;
+    }
+
+    fn take_token_budget_error(&mut self) {
+        if let Some(error) = self.tokens.take_budget_error() {
+            self.halt(error);
+        }
+    }
+
+    fn record_statement_budget(&mut self, range: TextRange) -> bool {
+        if !self.budget.record_statement() {
+            self.halt(budget_error("max_statements", range));
+            return false;
+        }
+        true
+    }
+
+    fn check_literal_budget(&mut self, range: TextRange) -> bool {
+        if !self.budget.check_literal(usize::from(range.len())) {
+            self.halt(budget_error("max_literal_bytes", range));
+            return false;
+        }
+        true
+    }
+
+    fn with_nesting<T>(
+        &mut self,
+        range: TextRange,
+        f: impl FnOnce(&mut Self) -> Option<T>,
+    ) -> Option<T> {
+        if !self.budget.enter_nesting() {
+            self.halt(budget_error("max_nesting_depth", range));
+            return None;
+        }
+        let result = f(self);
+        self.budget.exit_nesting();
+        result
+    }
 }
 
 impl<'a> TokenWindow<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, budgets: ParseBudgets) -> Self {
         Self {
             lexer: significant_lexer(input),
             tokens: Vec::new(),
             base_index: 0,
             eof_seen: false,
+            remaining_tokens: budgets.max_tokens,
+            budget_error: None,
+            forced_eof_range: text_range(0, 0),
         }
     }
 
     fn token_at(&mut self, index: usize) -> Token {
         self.ensure_loaded(index);
+        if self.budget_error.is_some() && index >= self.base_index + self.tokens.len() {
+            return Token::new(TokenKind::Eof, self.forced_eof_range);
+        }
         let relative = index.saturating_sub(self.base_index);
         self.tokens
             .get(relative)
@@ -175,7 +246,7 @@ impl<'a> TokenWindow<'a> {
     }
 
     fn finish_diagnostics(mut self) -> Vec<mel_syntax::LexDiagnostic> {
-        while !self.eof_seen {
+        while !self.eof_seen && self.budget_error.is_none() {
             self.ensure_loaded(self.base_index + self.tokens.len());
         }
         self.lexer.finish()
@@ -193,6 +264,13 @@ impl<'a> TokenWindow<'a> {
             let Some(token) = self.lexer.next() else {
                 break;
             };
+            if self.remaining_tokens == 0 {
+                self.forced_eof_range = token.range;
+                self.budget_error = Some(budget_error("max_tokens", token.range));
+                self.eof_seen = true;
+                break;
+            }
+            self.remaining_tokens -= 1;
             self.eof_seen = token.kind == TokenKind::Eof;
             self.tokens.push(token);
         }
@@ -202,5 +280,66 @@ impl<'a> TokenWindow<'a> {
             self.tokens
                 .push(Token::new(TokenKind::Eof, text_range(0, 0)));
         }
+    }
+
+    fn take_budget_error(&mut self) -> Option<ParseError> {
+        self.budget_error.take()
+    }
+
+    fn has_budget_error(&self) -> bool {
+        self.budget_error.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BudgetTracker {
+    max_nesting_depth: usize,
+    max_literal_bytes: usize,
+    remaining_statements: usize,
+    remaining_nesting: usize,
+    halted: bool,
+}
+
+impl BudgetTracker {
+    fn new(budgets: ParseBudgets) -> Self {
+        Self {
+            max_nesting_depth: budgets.max_nesting_depth,
+            max_literal_bytes: budgets.max_literal_bytes,
+            remaining_statements: budgets.max_statements,
+            remaining_nesting: budgets.max_nesting_depth,
+            halted: false,
+        }
+    }
+
+    fn record_statement(&mut self) -> bool {
+        if self.remaining_statements == 0 {
+            self.halted = true;
+            return false;
+        }
+        self.remaining_statements -= 1;
+        true
+    }
+
+    fn enter_nesting(&mut self) -> bool {
+        if self.remaining_nesting == 0 {
+            self.halted = true;
+            return false;
+        }
+        self.remaining_nesting -= 1;
+        true
+    }
+
+    fn exit_nesting(&mut self) {
+        if self.remaining_nesting < self.max_nesting_depth {
+            self.remaining_nesting += 1;
+        }
+    }
+
+    fn check_literal(&mut self, len: usize) -> bool {
+        if len > self.max_literal_bytes {
+            self.halted = true;
+            return false;
+        }
+        true
     }
 }

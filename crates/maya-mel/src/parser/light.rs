@@ -4,8 +4,9 @@ use std::{fs, io, ops::Range, path::Path};
 use mel_syntax::{SourceMap, SourceView, TextRange, text_range};
 
 use crate::{
-    DecodeDiagnostic, ParseError, SourceEncoding,
+    DecodeDiagnostic, ParseBudgets, ParseError, SourceEncoding, budget_error,
     decode::{OffsetMap, decode_source_auto, decode_source_with_encoding},
+    text_len_range,
 };
 
 const DEFAULT_MAX_PREFIX_WORDS: usize = 64;
@@ -15,6 +16,7 @@ const DEFAULT_MAX_PREFIX_BYTES: usize = 4096;
 pub struct LightParseOptions {
     pub max_prefix_words: usize,
     pub max_prefix_bytes: usize,
+    pub budgets: ParseBudgets,
 }
 
 impl Default for LightParseOptions {
@@ -22,6 +24,7 @@ impl Default for LightParseOptions {
         Self {
             max_prefix_words: DEFAULT_MAX_PREFIX_WORDS,
             max_prefix_bytes: DEFAULT_MAX_PREFIX_BYTES,
+            budgets: ParseBudgets::default(),
         }
     }
 }
@@ -346,6 +349,15 @@ pub fn scan_light_shared_source_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> SharedLightScanReport {
+    if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
+        return SharedLightScanReport {
+            source_text: input,
+            source_map: SourceMap::identity(0),
+            source_encoding: SourceEncoding::Utf8,
+            decode_errors: Vec::new(),
+            errors: vec![error],
+        };
+    }
     let source_map = SourceMap::identity(input.len());
     let source_view = SourceView::new(&input, &source_map);
     let mut scanner = LightScanner::new(&input, options);
@@ -365,6 +377,15 @@ pub fn scan_light_source_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> LightScanReport {
+    if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
+        return LightScanReport {
+            source_text: input.to_owned(),
+            source_map: SourceMap::identity(0),
+            source_encoding: SourceEncoding::Utf8,
+            decode_errors: Vec::new(),
+            errors: vec![error],
+        };
+    }
     let source_map = SourceMap::identity(input.len());
     let source_view = SourceView::new(input, &source_map);
     let mut scanner = LightScanner::new(input, options);
@@ -427,6 +448,9 @@ pub fn scan_light_shared_bytes_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> SharedLightScanReport {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        return empty_shared_light_scan_report(error);
+    }
     let decoded = decode_source_auto(input);
     build_shared_light_scan(decoded, options, sink)
 }
@@ -436,6 +460,9 @@ pub fn scan_light_bytes_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> LightScanReport {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        return empty_light_scan_report(error);
+    }
     let decoded = decode_source_auto(input);
     build_light_scan(decoded, options, sink)
 }
@@ -459,6 +486,9 @@ pub fn scan_light_shared_bytes_with_encoding_and_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> SharedLightScanReport {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        return empty_shared_light_scan_report(error);
+    }
     let decoded = decode_source_with_encoding(input, encoding);
     build_shared_light_scan(decoded, options, sink)
 }
@@ -469,16 +499,35 @@ pub fn scan_light_bytes_with_encoding_and_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> LightScanReport {
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        return empty_light_scan_report(error);
+    }
     let decoded = decode_source_with_encoding(input, encoding);
     build_light_scan(decoded, options, sink)
 }
 
 pub fn parse_light_file(path: impl AsRef<Path>) -> io::Result<LightParse> {
+    if let Some(error) =
+        max_bytes_error_for_file(path.as_ref(), LightParseOptions::default().budgets)?
+    {
+        return Ok(LightParse::from((
+            LightSourceFile::default(),
+            empty_light_scan_report(error),
+        )));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_light_bytes(&bytes))
 }
 
 pub fn parse_light_shared_file(path: impl AsRef<Path>) -> io::Result<SharedLightParse> {
+    if let Some(error) =
+        max_bytes_error_for_file(path.as_ref(), LightParseOptions::default().budgets)?
+    {
+        return Ok(SharedLightParse::from((
+            LightSourceFile::default(),
+            empty_shared_light_scan_report(error),
+        )));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_light_shared_bytes(&bytes))
 }
@@ -487,6 +536,14 @@ pub fn parse_light_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
 ) -> io::Result<LightParse> {
+    if let Some(error) =
+        max_bytes_error_for_file(path.as_ref(), LightParseOptions::default().budgets)?
+    {
+        return Ok(LightParse::from((
+            LightSourceFile::default(),
+            empty_light_scan_report(error),
+        )));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_light_bytes_with_encoding(&bytes, encoding))
 }
@@ -495,6 +552,14 @@ pub fn parse_light_shared_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
 ) -> io::Result<SharedLightParse> {
+    if let Some(error) =
+        max_bytes_error_for_file(path.as_ref(), LightParseOptions::default().budgets)?
+    {
+        return Ok(SharedLightParse::from((
+            LightSourceFile::default(),
+            empty_shared_light_scan_report(error),
+        )));
+    }
     let bytes = fs::read(path)?;
     Ok(parse_light_shared_bytes_with_encoding(&bytes, encoding))
 }
@@ -511,6 +576,9 @@ pub fn scan_light_shared_file_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> io::Result<SharedLightScanReport> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
+        return Ok(empty_shared_light_scan_report(error));
+    }
     let bytes = fs::read(path)?;
     Ok(scan_light_shared_bytes_with_options_and_sink(
         &bytes, options, sink,
@@ -522,6 +590,9 @@ pub fn scan_light_file_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> io::Result<LightScanReport> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
+        return Ok(empty_light_scan_report(error));
+    }
     let bytes = fs::read(path)?;
     Ok(scan_light_bytes_with_options_and_sink(
         &bytes, options, sink,
@@ -547,6 +618,9 @@ pub fn scan_light_shared_file_with_encoding_and_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> io::Result<SharedLightScanReport> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
+        return Ok(empty_shared_light_scan_report(error));
+    }
     let bytes = fs::read(path)?;
     Ok(scan_light_shared_bytes_with_encoding_and_options_and_sink(
         &bytes, encoding, options, sink,
@@ -559,6 +633,9 @@ pub fn scan_light_file_with_encoding_and_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> io::Result<LightScanReport> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
+        return Ok(empty_light_scan_report(error));
+    }
     let bytes = fs::read(path)?;
     Ok(scan_light_bytes_with_encoding_and_options_and_sink(
         &bytes, encoding, options, sink,
@@ -678,6 +755,8 @@ struct LightScanner<'a> {
     options: LightParseOptions,
     errors: Vec<ParseError>,
     reported_unterminated_block_comment: bool,
+    reported_budget_error: bool,
+    budget: LightBudgetTracker,
 }
 
 impl<'a> LightScanner<'a> {
@@ -687,6 +766,8 @@ impl<'a> LightScanner<'a> {
             options,
             errors: Vec::new(),
             reported_unterminated_block_comment: false,
+            reported_budget_error: false,
+            budget: LightBudgetTracker::new(options.budgets),
         }
     }
 
@@ -698,12 +779,18 @@ impl<'a> LightScanner<'a> {
     ) {
         let mut cursor = self.skip_trivia(0);
 
-        while cursor < self.text.len() {
+        while cursor < self.text.len() && !self.is_halted() {
             let (mut item, next_cursor) = if self.is_proc_start(cursor) {
                 self.scan_proc_item(cursor)
             } else {
                 self.scan_statement_item(cursor)
             };
+            if self.is_halted() {
+                break;
+            }
+            if !self.record_statement(start_range(&item)) {
+                break;
+            }
             if let Some(map) = remap {
                 remap_light_item(&mut item, map);
             }
@@ -724,16 +811,19 @@ impl<'a> LightScanner<'a> {
 
         let first_word = self.scan_simple_word(cursor);
         let mut name_range = None;
+        let mut body_scan_start = cursor;
         if let Some((first_start, first_end)) = first_word {
             let after_first = self.skip_trivia(first_end);
+            body_scan_start = after_first;
             if self.peek_byte(after_first) == Some(b'(') {
                 name_range = Some(text_range(first_start as u32, first_end as u32));
             } else if let Some((name_start, name_end)) = self.scan_simple_word(after_first) {
                 name_range = Some(text_range(name_start as u32, name_end as u32));
+                body_scan_start = self.skip_trivia(name_end);
             }
         }
 
-        let end = self.scan_until_matching_body_end(start);
+        let end = self.scan_until_matching_body_end(start, body_scan_start);
         (
             LightItem::Proc(LightProcSurface {
                 name_range,
@@ -745,9 +835,8 @@ impl<'a> LightScanner<'a> {
     }
 
     fn scan_statement_item(&mut self, start: usize) -> (LightItem, usize) {
-        let end = self.scan_statement_end(start);
-        let body_end = self.statement_body_end(start, end);
         let Some((head_start, head_end)) = self.scan_simple_word(start) else {
+            let end = self.scan_statement_tail(start);
             return (
                 LightItem::Other {
                     span: text_range(start as u32, end as u32),
@@ -756,9 +845,10 @@ impl<'a> LightScanner<'a> {
             );
         };
         let head_range = text_range(head_start as u32, head_end as u32);
-        let head_text = &self.text[head_start..head_end];
+        let head_is_non_command = is_non_command_head(&self.text[head_start..head_end]);
         let after_head = self.skip_trivia(head_end);
-        if self.peek_byte(after_head) == Some(b'(') || is_non_command_head(head_text) {
+        if self.peek_byte(after_head) == Some(b'(') || head_is_non_command {
+            let end = self.scan_statement_tail(after_head);
             return (
                 LightItem::Other {
                     span: text_range(start as u32, end as u32),
@@ -767,29 +857,8 @@ impl<'a> LightScanner<'a> {
             );
         }
 
-        let mut words = Vec::new();
-        let mut cursor = after_head;
-        let mut opaque_tail = None;
-        while cursor < body_end {
-            cursor = self.skip_trivia(cursor);
-            if cursor >= body_end {
-                break;
-            }
-            let consumed_bytes = cursor.saturating_sub(head_end);
-            if words.len() >= self.options.max_prefix_words
-                || consumed_bytes >= self.options.max_prefix_bytes
-            {
-                opaque_tail = Some(text_range(cursor as u32, body_end as u32));
-                break;
-            }
-
-            let Some((word, next_cursor)) = self.scan_word(cursor, body_end) else {
-                opaque_tail = Some(text_range(cursor as u32, body_end as u32));
-                break;
-            };
-            words.push(word);
-            cursor = next_cursor;
-        }
+        let (end, words, opaque_tail) =
+            self.scan_command_statement_tail(start, head_end, after_head);
 
         (
             LightItem::Command(LightCommandSurface {
@@ -803,7 +872,51 @@ impl<'a> LightScanner<'a> {
         )
     }
 
-    fn scan_statement_end(&mut self, start: usize) -> usize {
+    fn scan_command_statement_tail(
+        &mut self,
+        start: usize,
+        head_end: usize,
+        after_head: usize,
+    ) -> (usize, Vec<LightWord>, Option<TextRange>) {
+        let mut words = Vec::with_capacity(self.options.max_prefix_words.min(8));
+        let mut cursor = after_head;
+        loop {
+            cursor = self.skip_trivia(cursor);
+            if cursor >= self.text.len() {
+                return (self.text.len(), words, None);
+            }
+            if self.byte_at(cursor) == Some(b';') {
+                let _ = self.record_token(cursor, cursor + 1);
+                return (cursor + 1, words, None);
+            }
+
+            let consumed_bytes = cursor.saturating_sub(head_end);
+            if words.len() >= self.options.max_prefix_words
+                || consumed_bytes >= self.options.max_prefix_bytes
+            {
+                let end = self.scan_statement_tail(cursor);
+                let body_end = self.statement_body_end(start, end);
+                let opaque_tail =
+                    (cursor < body_end).then(|| text_range(cursor as u32, body_end as u32));
+                return (end, words, opaque_tail);
+            }
+
+            let Some((word, next_cursor)) = self.scan_word(cursor, self.text.len()) else {
+                if self.is_halted() {
+                    return (self.text.len(), words, None);
+                }
+                let end = self.scan_statement_tail(cursor);
+                let body_end = self.statement_body_end(start, end);
+                let opaque_tail =
+                    (cursor < body_end).then(|| text_range(cursor as u32, body_end as u32));
+                return (end, words, opaque_tail);
+            };
+            words.push(word);
+            cursor = next_cursor;
+        }
+    }
+
+    fn scan_statement_tail(&mut self, start: usize) -> usize {
         let mut cursor = start;
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
@@ -811,7 +924,7 @@ impl<'a> LightScanner<'a> {
         let mut in_string = false;
         let mut in_backquote = false;
 
-        while cursor < self.text.len() {
+        while cursor < self.text.len() && !self.is_halted() {
             if in_string {
                 cursor = self.advance_string_body(cursor);
                 in_string = false;
@@ -833,34 +946,73 @@ impl<'a> LightScanner<'a> {
 
             match self.byte_at(cursor) {
                 Some(b'"') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
                     in_string = true;
                     cursor += 1;
                 }
                 Some(b'`') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
                     in_backquote = true;
                     cursor += 1;
                 }
                 Some(b'(') => {
+                    if !self.record_token(cursor, cursor + 1)
+                        || !self.enter_nesting(cursor, cursor + 1)
+                    {
+                        return self.text.len();
+                    }
                     paren_depth += 1;
                     cursor += 1;
                 }
                 Some(b')') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    if paren_depth > 0 {
+                        self.exit_nesting();
+                    }
                     paren_depth = paren_depth.saturating_sub(1);
                     cursor += 1;
                 }
                 Some(b'[') => {
+                    if !self.record_token(cursor, cursor + 1)
+                        || !self.enter_nesting(cursor, cursor + 1)
+                    {
+                        return self.text.len();
+                    }
                     bracket_depth += 1;
                     cursor += 1;
                 }
                 Some(b']') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    if bracket_depth > 0 {
+                        self.exit_nesting();
+                    }
                     bracket_depth = bracket_depth.saturating_sub(1);
                     cursor += 1;
                 }
                 Some(b'{') => {
+                    if !self.record_token(cursor, cursor + 1)
+                        || !self.enter_nesting(cursor, cursor + 1)
+                    {
+                        return self.text.len();
+                    }
                     brace_depth += 1;
                     cursor += 1;
                 }
                 Some(b'}') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    if brace_depth > 0 {
+                        self.exit_nesting();
+                    }
                     brace_depth = brace_depth.saturating_sub(1);
                     cursor += 1;
                 }
@@ -871,9 +1023,24 @@ impl<'a> LightScanner<'a> {
                         && !in_string
                         && !in_backquote =>
                 {
+                    let _ = self.record_token(cursor, cursor + 1);
                     return cursor + 1;
                 }
-                Some(_) => cursor = self.next_offset(cursor),
+                Some(ch) if (ch as char).is_whitespace() => cursor = self.next_offset(cursor),
+                Some(_) => {
+                    let end = self.scan_simple_word_until(cursor, self.text.len());
+                    if end <= cursor {
+                        if !self.record_token(cursor, self.next_offset(cursor)) {
+                            return self.text.len();
+                        }
+                        cursor = self.next_offset(cursor);
+                    } else {
+                        if !self.record_token(cursor, end) {
+                            return self.text.len();
+                        }
+                        cursor = end;
+                    }
+                }
                 None => break,
             }
         }
@@ -905,6 +1072,9 @@ impl<'a> LightScanner<'a> {
         if self.byte_at(start) == Some(b'"') {
             let end = self.scan_quoted_string(start);
             let range = text_range(start as u32, end as u32);
+            if !self.check_literal(range) {
+                return None;
+            }
             return Some((LightWord::QuotedString { text: range, range }, end));
         }
         if self.byte_at(start) == Some(b'`') {
@@ -915,21 +1085,33 @@ impl<'a> LightScanner<'a> {
         if self.byte_at(start) == Some(b'{') {
             let end = self.scan_balanced(start, b'{', b'}');
             let range = text_range(start as u32, end as u32);
+            if !self.check_literal(range) {
+                return None;
+            }
             return Some((LightWord::BraceList { range }, end));
         }
         if self.starts_with(start, "<<") {
             let end = self.scan_vector_literal(start);
             let range = text_range(start as u32, end as u32);
+            if !self.check_literal(range) {
+                return None;
+            }
             return Some((LightWord::VectorLiteral { range }, end));
         }
         if self.byte_at(start) == Some(b'(') {
             let end = self.scan_balanced(start, b'(', b')');
             let range = text_range(start as u32, end as u32);
+            if !self.check_literal(range) {
+                return None;
+            }
             return Some((LightWord::GroupedExpr { range }, end));
         }
 
         let end = self.scan_simple_word_until(start, body_end);
         if end <= start {
+            return None;
+        }
+        if !self.record_token(start, end) {
             return None;
         }
         let range = text_range(start as u32, end as u32);
@@ -953,11 +1135,19 @@ impl<'a> LightScanner<'a> {
                 Some(b'\\') => {
                     cursor = self.next_offset(cursor + 1);
                 }
-                Some(b'"') => return cursor + 1,
+                Some(b'"') => {
+                    let end = cursor + 1;
+                    let _ = self.record_token(start, end);
+                    return end;
+                }
                 Some(_) => cursor = self.next_offset(cursor),
                 None => break,
             }
         }
+        if self.is_halted() {
+            return self.text.len();
+        }
+        let _ = self.record_token(start, self.text.len());
         self.errors.push(ParseError {
             message: "unterminated string literal in lightweight surface parse",
             range: text_range(start as u32, self.text.len() as u32),
@@ -972,12 +1162,20 @@ impl<'a> LightScanner<'a> {
                 Some(b'\\') => {
                     cursor = self.next_offset(cursor + 1);
                 }
-                Some(b'`') => return cursor + 1,
+                Some(b'`') => {
+                    let end = cursor + 1;
+                    let _ = self.record_token(start, end);
+                    return end;
+                }
                 Some(b'"') => cursor = self.scan_quoted_string(cursor),
                 Some(_) => cursor = self.next_offset(cursor),
                 None => break,
             }
         }
+        if self.is_halted() {
+            return self.text.len();
+        }
+        let _ = self.record_token(start, self.text.len());
         self.errors.push(ParseError {
             message: "unterminated backquote capture in lightweight surface parse",
             range: text_range(start as u32, self.text.len() as u32),
@@ -988,7 +1186,7 @@ impl<'a> LightScanner<'a> {
     fn scan_balanced(&mut self, start: usize, open: u8, close: u8) -> usize {
         let mut cursor = start;
         let mut depth = 0usize;
-        while cursor < self.text.len() {
+        while cursor < self.text.len() && !self.is_halted() {
             if self.starts_with(cursor, "//") {
                 cursor = self.skip_line_comment(cursor);
                 continue;
@@ -1001,19 +1199,53 @@ impl<'a> LightScanner<'a> {
                 Some(b'"') => cursor = self.scan_quoted_string(cursor),
                 Some(b'`') => cursor = self.scan_backquote(cursor),
                 Some(ch) if ch == open => {
+                    if !self.record_token(cursor, cursor + 1)
+                        || !self.enter_nesting(cursor, cursor + 1)
+                    {
+                        return self.text.len();
+                    }
                     depth += 1;
                     cursor += 1;
                 }
                 Some(ch) if ch == close => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    if depth > 0 {
+                        self.exit_nesting();
+                    }
                     depth = depth.saturating_sub(1);
                     cursor += 1;
                     if depth == 0 {
                         return cursor;
                     }
                 }
-                Some(_) => cursor = self.next_offset(cursor),
+                Some(b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    cursor += 1;
+                }
+                Some(ch) if (ch as char).is_whitespace() => cursor = self.next_offset(cursor),
+                Some(_) => {
+                    let end = self.scan_simple_word_until(cursor, self.text.len());
+                    if end <= cursor {
+                        if !self.record_token(cursor, self.next_offset(cursor)) {
+                            return self.text.len();
+                        }
+                        cursor = self.next_offset(cursor);
+                    } else {
+                        if !self.record_token(cursor, end) {
+                            return self.text.len();
+                        }
+                        cursor = end;
+                    }
+                }
                 None => break,
             }
+        }
+        if self.is_halted() {
+            return self.text.len();
         }
         self.errors.push(ParseError {
             message: "unterminated grouped surface in lightweight parse",
@@ -1024,15 +1256,42 @@ impl<'a> LightScanner<'a> {
 
     fn scan_vector_literal(&mut self, start: usize) -> usize {
         let mut cursor = start + 2;
-        while cursor < self.text.len() {
+        if !self.record_token(start, start + 2) || !self.enter_nesting(start, start + 2) {
+            return self.text.len();
+        }
+        while cursor < self.text.len() && !self.is_halted() {
             if self.starts_with(cursor, ">>") {
+                let _ = self.record_token(cursor, cursor + 2);
+                self.exit_nesting();
                 return cursor + 2;
             }
             if self.byte_at(cursor) == Some(b'"') {
                 cursor = self.scan_quoted_string(cursor);
                 continue;
             }
-            cursor = self.next_offset(cursor);
+            if self
+                .byte_at(cursor)
+                .is_some_and(|ch| (ch as char).is_whitespace())
+            {
+                cursor = self.next_offset(cursor);
+                continue;
+            }
+            let end = self.scan_simple_word_until(cursor, self.text.len());
+            if end <= cursor {
+                let next = self.next_offset(cursor);
+                if !self.record_token(cursor, next) {
+                    return self.text.len();
+                }
+                cursor = next;
+            } else {
+                if !self.record_token(cursor, end) {
+                    return self.text.len();
+                }
+                cursor = end;
+            }
+        }
+        if self.is_halted() {
+            return self.text.len();
         }
         self.errors.push(ParseError {
             message: "unterminated vector literal in lightweight parse",
@@ -1041,11 +1300,11 @@ impl<'a> LightScanner<'a> {
         self.text.len()
     }
 
-    fn scan_until_matching_body_end(&mut self, start: usize) -> usize {
-        let mut cursor = start;
+    fn scan_until_matching_body_end(&mut self, start: usize, cursor: usize) -> usize {
+        let mut cursor = cursor;
         let mut depth = 0usize;
         let mut saw_body = false;
-        while cursor < self.text.len() {
+        while cursor < self.text.len() && !self.is_halted() {
             if self.starts_with(cursor, "//") {
                 cursor = self.skip_line_comment(cursor);
                 continue;
@@ -1058,20 +1317,54 @@ impl<'a> LightScanner<'a> {
                 Some(b'"') => cursor = self.scan_quoted_string(cursor),
                 Some(b'`') => cursor = self.scan_backquote(cursor),
                 Some(b'{') => {
+                    if !self.record_token(cursor, cursor + 1)
+                        || !self.enter_nesting(cursor, cursor + 1)
+                    {
+                        return self.text.len();
+                    }
                     saw_body = true;
                     depth += 1;
                     cursor += 1;
                 }
                 Some(b'}') if saw_body => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    if depth > 0 {
+                        self.exit_nesting();
+                    }
                     depth = depth.saturating_sub(1);
                     cursor += 1;
                     if depth == 0 {
                         return cursor;
                     }
                 }
-                Some(_) => cursor = self.next_offset(cursor),
+                Some(b'(' | b')' | b'[' | b']' | b',' | b';') => {
+                    if !self.record_token(cursor, cursor + 1) {
+                        return self.text.len();
+                    }
+                    cursor += 1;
+                }
+                Some(ch) if (ch as char).is_whitespace() => cursor = self.next_offset(cursor),
+                Some(_) => {
+                    let end = self.scan_simple_word_until(cursor, self.text.len());
+                    if end <= cursor {
+                        if !self.record_token(cursor, self.next_offset(cursor)) {
+                            return self.text.len();
+                        }
+                        cursor = self.next_offset(cursor);
+                    } else {
+                        if !self.record_token(cursor, end) {
+                            return self.text.len();
+                        }
+                        cursor = end;
+                    }
+                }
                 None => break,
             }
+        }
+        if self.is_halted() {
+            return self.text.len();
         }
         self.errors.push(ParseError {
             message: "unterminated proc body in lightweight surface parse",
@@ -1083,6 +1376,9 @@ impl<'a> LightScanner<'a> {
     fn scan_simple_word(&mut self, start: usize) -> Option<(usize, usize)> {
         let start = self.skip_trivia(start);
         let end = self.scan_simple_word_until(start, self.text.len());
+        if end > start && !self.record_token(start, end) {
+            return None;
+        }
         (end > start).then_some((start, end))
     }
 
@@ -1110,6 +1406,32 @@ impl<'a> LightScanner<'a> {
             }
             if self.starts_with(cursor, "/*") {
                 cursor = self.skip_block_comment(cursor);
+                continue;
+            }
+            let Some(ch) = self.text[cursor..].chars().next() else {
+                break;
+            };
+            if ch.is_whitespace() {
+                cursor += ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+        cursor
+    }
+
+    fn skip_trivia_peek(&self, start: usize) -> usize {
+        let mut cursor = start;
+        while cursor < self.text.len() {
+            if self.starts_with(cursor, "//") {
+                cursor = self.skip_line_comment(cursor);
+                continue;
+            }
+            if self.starts_with(cursor, "/*") {
+                let Some(after_comment) = self.skip_block_comment_peek(cursor) else {
+                    return self.text.len();
+                };
+                cursor = after_comment;
                 continue;
             }
             let Some(ch) = self.text[cursor..].chars().next() else {
@@ -1154,6 +1476,17 @@ impl<'a> LightScanner<'a> {
         self.text.len()
     }
 
+    fn skip_block_comment_peek(&self, start: usize) -> Option<usize> {
+        let mut cursor = start + 2;
+        while cursor < self.text.len() {
+            if self.starts_with(cursor, "*/") {
+                return Some(cursor + 2);
+            }
+            cursor = self.next_offset(cursor);
+        }
+        None
+    }
+
     fn advance_string_body(&self, start: usize) -> usize {
         let mut cursor = start;
         while cursor < self.text.len() {
@@ -1182,14 +1515,27 @@ impl<'a> LightScanner<'a> {
     }
 
     fn is_proc_start(&mut self, start: usize) -> bool {
-        if self.consume_keyword(start, "proc").is_some() {
+        if self.peek_keyword_end(start, "proc").is_some() {
             return true;
         }
-        let Some(after_global) = self.consume_keyword(start, "global") else {
+        let Some(after_global) = self.peek_keyword_end(start, "global") else {
             return false;
         };
-        let after_global = self.skip_trivia(after_global);
-        self.consume_keyword(after_global, "proc").is_some()
+        let after_global = self.skip_trivia_peek(after_global);
+        self.peek_keyword_end(after_global, "proc").is_some()
+    }
+
+    fn peek_keyword_end(&self, start: usize, keyword: &str) -> Option<usize> {
+        let cursor = self.skip_trivia_peek(start);
+        if !self.text[cursor..].starts_with(keyword) {
+            return None;
+        }
+        let end = cursor + keyword.len();
+        let next = self.text[end..].chars().next();
+        if next.is_some_and(is_word_continue) {
+            return None;
+        }
+        Some(end)
     }
 
     fn consume_keyword(&mut self, start: usize, keyword: &str) -> Option<usize> {
@@ -1200,6 +1546,9 @@ impl<'a> LightScanner<'a> {
         let end = cursor + keyword.len();
         let next = self.text[end..].chars().next();
         if next.is_some_and(is_word_continue) {
+            return None;
+        }
+        if !self.record_token(cursor, end) {
             return None;
         }
         Some(end)
@@ -1230,6 +1579,168 @@ impl<'a> LightScanner<'a> {
             index = index.saturating_sub(1);
         }
         index
+    }
+
+    fn is_halted(&self) -> bool {
+        self.budget.halted
+    }
+
+    fn halt(&mut self, error: ParseError) {
+        if self.reported_budget_error {
+            return;
+        }
+        self.reported_budget_error = true;
+        self.budget.halted = true;
+        self.errors.push(error);
+    }
+
+    fn record_token(&mut self, start: usize, end: usize) -> bool {
+        let range = text_range(start as u32, end as u32);
+        if !self.budget.record_token() {
+            self.halt(budget_error("max_tokens", range));
+            return false;
+        }
+        true
+    }
+
+    fn record_statement(&mut self, range: TextRange) -> bool {
+        if !self.budget.record_statement() {
+            self.halt(budget_error("max_statements", range));
+            return false;
+        }
+        true
+    }
+
+    fn enter_nesting(&mut self, start: usize, end: usize) -> bool {
+        let range = text_range(start as u32, end as u32);
+        if !self.budget.enter_nesting() {
+            self.halt(budget_error("max_nesting_depth", range));
+            return false;
+        }
+        true
+    }
+
+    fn exit_nesting(&mut self) {
+        self.budget.exit_nesting();
+    }
+
+    fn check_literal(&mut self, range: TextRange) -> bool {
+        if !self.budget.check_literal(usize::from(range.len())) {
+            self.halt(budget_error("max_literal_bytes", range));
+            return false;
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LightBudgetTracker {
+    max_nesting_depth: usize,
+    max_literal_bytes: usize,
+    remaining_tokens: usize,
+    remaining_statements: usize,
+    remaining_nesting: usize,
+    halted: bool,
+}
+
+impl LightBudgetTracker {
+    fn new(budgets: ParseBudgets) -> Self {
+        Self {
+            max_nesting_depth: budgets.max_nesting_depth,
+            max_literal_bytes: budgets.max_literal_bytes,
+            remaining_tokens: budgets.max_tokens,
+            remaining_statements: budgets.max_statements,
+            remaining_nesting: budgets.max_nesting_depth,
+            halted: false,
+        }
+    }
+
+    fn record_token(&mut self) -> bool {
+        if self.remaining_tokens == 0 {
+            self.halted = true;
+            return false;
+        }
+        self.remaining_tokens -= 1;
+        true
+    }
+
+    fn record_statement(&mut self) -> bool {
+        if self.remaining_statements == 0 {
+            self.halted = true;
+            return false;
+        }
+        self.remaining_statements -= 1;
+        true
+    }
+
+    fn enter_nesting(&mut self) -> bool {
+        if self.remaining_nesting == 0 {
+            self.halted = true;
+            return false;
+        }
+        self.remaining_nesting -= 1;
+        true
+    }
+
+    fn exit_nesting(&mut self) {
+        if self.remaining_nesting < self.max_nesting_depth {
+            self.remaining_nesting += 1;
+        }
+    }
+
+    fn check_literal(&mut self, len: usize) -> bool {
+        if len > self.max_literal_bytes {
+            self.halted = true;
+            return false;
+        }
+        true
+    }
+}
+
+fn start_range(item: &LightItem) -> TextRange {
+    match item {
+        LightItem::Command(command) => command.span,
+        LightItem::Proc(proc_def) => proc_def.span,
+        LightItem::Other { span } => *span,
+    }
+}
+
+fn max_bytes_error_for_text(len: usize, budgets: ParseBudgets) -> Option<ParseError> {
+    (len > budgets.max_bytes).then(|| budget_error("max_bytes", text_len_range(len)))
+}
+
+fn max_bytes_error_for_bytes(len: usize, budgets: ParseBudgets) -> Option<ParseError> {
+    (len > budgets.max_bytes).then(|| budget_error("max_bytes", text_range(0, 0)))
+}
+
+fn max_bytes_error_for_file(path: &Path, budgets: ParseBudgets) -> io::Result<Option<ParseError>> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.len() > budgets.max_bytes as u64 => {
+            Ok(Some(budget_error("max_bytes", text_range(0, 0))))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+fn empty_light_scan_report(error: ParseError) -> LightScanReport {
+    LightScanReport {
+        source_text: String::new(),
+        source_map: SourceMap::identity(0),
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        errors: vec![error],
+    }
+}
+
+fn empty_shared_light_scan_report(error: ParseError) -> SharedLightScanReport {
+    SharedLightScanReport {
+        source_text: Arc::from(""),
+        source_map: SourceMap::identity(0),
+        source_encoding: SourceEncoding::Utf8,
+        decode_errors: Vec::new(),
+        errors: vec![error],
     }
 }
 
