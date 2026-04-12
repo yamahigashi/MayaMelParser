@@ -349,16 +349,17 @@ pub fn scan_light_shared_source_with_options_and_sink(
     options: LightParseOptions,
     sink: &mut impl LightItemSink,
 ) -> SharedLightScanReport {
-    if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
+    let input_len = input.len();
+    if let Some(error) = max_bytes_error_for_text(input_len, options.budgets) {
         return SharedLightScanReport {
             source_text: input,
-            source_map: SourceMap::identity(0),
+            source_map: SourceMap::identity(input_len),
             source_encoding: SourceEncoding::Utf8,
             decode_errors: Vec::new(),
             errors: vec![error],
         };
     }
-    let source_map = SourceMap::identity(input.len());
+    let source_map = SourceMap::identity(input_len);
     let source_view = SourceView::new(&input, &source_map);
     let mut scanner = LightScanner::new(&input, options);
     scanner.scan_with_sink(source_view, sink, None);
@@ -380,7 +381,7 @@ pub fn scan_light_source_with_options_and_sink(
     if let Some(error) = max_bytes_error_for_text(input.len(), options.budgets) {
         return LightScanReport {
             source_text: input.to_owned(),
-            source_map: SourceMap::identity(0),
+            source_map: SourceMap::identity(input.len()),
             source_encoding: SourceEncoding::Utf8,
             decode_errors: Vec::new(),
             errors: vec![error],
