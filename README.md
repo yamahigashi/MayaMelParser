@@ -1,16 +1,24 @@
 # MayaMelParser
 
 `MayaMelParser` is a Rust workspace for parsing and analyzing Autodesk Maya MEL.
-It is being built as a foundation for MEL tooling rather than a one-off parser.
-The main library entry point is the single crate `maya-mel`, which provides
-parsing, diagnostics, semantic analysis, and Maya command metadata through one
-dependency.
+The main library is [`maya-mel`](https://crates.io/crates/maya-mel), an
+experimental `0.x` crate for typed parsing, diagnostics, semantic analysis, and
+Maya-oriented top-level command facts.
 
-The library is published as experimental `0.x`. Expect APIs to keep evolving
-while parser recovery, semantic coverage, and corpus automation continue to
-tighten.
+Use it when you need to inspect MEL source, build diagnostics, or extract
+structured facts from Maya scripts. Do not treat it as a formatter,
+interpreter, or full Maya runtime integration.
 
-## Getting Started
+## What You Get Today
+
+- typed MEL parsing for core statement and expression surfaces
+- source spans, decode diagnostics, lex/parse diagnostics, and semantic diagnostics
+- semantic analysis for proc visibility, name resolution, and command normalization
+- Maya-oriented top-level fact collection backed by command metadata
+- lightweight parse/scan surfaces for inspection-oriented or large-input workflows
+- `mel-inspect`, a local CLI for single-file inspection and corpus summaries
+
+## Quick Start
 
 Add the library:
 
@@ -18,32 +26,42 @@ Add the library:
 cargo add maya-mel
 ```
 
-Parse source, run semantic analysis, and collect Maya-oriented facts:
+Parse source and run generic semantic analysis:
 
 ```rust
-use maya_mel::{analyze, collect_top_level_facts, parse_source};
+use maya_mel::{analyze, parse_source};
 
-let parsed = parse_source("global proc hello() {}");
+let parsed = parse_source("global proc hello() { print(\"hi\"); }");
 let analysis = analyze(&parsed.syntax, parsed.source_view());
-let facts = collect_top_level_facts(&parsed);
 
+assert!(parsed.errors.is_empty());
 assert!(analysis.diagnostics.is_empty());
-assert!(!facts.items.is_empty());
 ```
 
-The crate currently includes:
+Collect Maya-oriented facts when builtin command metadata matters:
 
-- parsing for core MEL statement and expression surfaces
-- source spans and diagnostics
-- semantic analysis for proc visibility and command normalization
-- Maya command metadata and top-level fact collection
-- a lightweight scan path for fast inspection-oriented workflows
+```rust
+use maya_mel::{
+    MayaCommandRegistry, collect_top_level_facts_with_registry, parse_source,
+};
+
+let parsed = parse_source("createNode transform -n \"root\";");
+let facts =
+    collect_top_level_facts_with_registry(&parsed, &MayaCommandRegistry::new());
+
+assert_eq!(facts.items.len(), 1);
+```
+
+Common entry points:
+
+- `parse_source` / `parse_file` for full typed parsing
+- `analyze` / `analyze_with_registry` for semantic diagnostics
+- `collect_top_level_facts` / `collect_top_level_facts_with_registry` for Maya-oriented extraction
+- `maya_mel::parser::parse_light_*` and `scan_light_*` for lightweight workflows
 
 ## CLI
 
-`mel-inspect` is the local inspection CLI for parser and analysis output.
-Prebuilt binaries are distributed through GitHub Releases. For local work from
-this repository:
+Install the local inspection CLI from this repository:
 
 ```bash
 cargo install --path crates/mel-cli
@@ -53,94 +71,77 @@ Current CLI surface:
 
 ```text
 mel-inspect [OPTIONS] [PATH]
-  --inline <SOURCE>
-  --lightweight
-  --max-bytes <MAX_BYTES>
   --encoding <auto|utf8|cp932|gbk>
+  --diagnostic-level <all|error|none>
+  --max-bytes <MAX_BYTES>
+  --lightweight
+  --inline <SOURCE>
 ```
+
+Inspect one file:
+
+```bash
+mel-inspect examples/basic.mel
+```
+
+Inspect with the lightweight path:
+
+```bash
+mel-inspect --lightweight examples/basic.mel
+```
+
+Pass inline source:
+
+```bash
+mel-inspect --inline 'createNode transform -n "root";'
+```
+
+If `PATH` is a directory, `mel-inspect` prints a corpus-style summary across
+the discovered MEL files.
 
 Example diagnostic output:
 
 ![Example `mel-inspect` diagnostic output](docs/images/inspect_example.png)
 
-## Status
+## Limits
 
-The project is already useful for parser and semantic-analysis experiments, but
-it is still an experimental `0.x` library. Expect API changes while parser
-recovery, semantic coverage, and corpus automation continue to improve.
-
-Current limitations:
-
-- Maya-specific specialization covers selected workflows, not the full language surface
-- parser recovery and semantic coverage are still being expanded
-- this repository is not aiming to be a formatter, interpreter, or full Maya runtime integration
-
-## Design Notes
-
-MEL looks close to C-family syntax in places, but several language features make
-it awkward to model with a parser-only design:
-
-- command syntax and function syntax coexist
-- command results can be captured with backquotes
-- command flags have command-specific meaning and arity
-- proc resolution depends on semantic context rather than parse shape alone
-
-Because of that, this project prefers surface-preserving parse output first and
-defers language-specific resolution to later passes.
+- coverage is useful today, but still incomplete for the full MEL language surface
+- parser recovery and semantic coverage are still expanding
+- Maya-specific specialization is selective rather than exhaustive
+- this repository is not targeting formatting, interpretation, or direct Maya runtime integration
 
 ## Architecture
 
-The workspace is organized around a generic MEL pipeline plus a Maya-specific layer:
+The current pipeline is AST-first and keeps parsing separate from semantic
+resolution:
 
 ```text
 source
-  -> maya-mel::syntax
-  -> maya-mel::lexer
-  -> maya-mel::ast
-  -> maya-mel::parser
-  -> maya-mel::sema
-  -> maya-mel::maya
+  -> syntax
+  -> lexer
+  -> ast
+  -> parser
+  -> sema
+  -> maya
   -> mel-cli
 ```
 
-The current implementation is intentionally AST-first. Parsing preserves MEL
-surface structure and does not try to fully resolve meaning too early. In
-particular:
+Important design choices:
 
-- parser output keeps command-style and function-style invocation surfaces
-- command, proc, and plugin-command resolution belongs to semantic analysis
-- Maya builtin catalogs and command specialization belong to the Maya layer
+- parser output preserves invocation surface instead of resolving commands too early
+- command, proc, and plugin-command resolution belong to semantic analysis
 - spans are carried through syntax and diagnostics
-- error recovery is treated as a first-class parser concern
+- a lightweight path exists alongside the full parse surface for large inputs
 
-A lossless CST may be added later if formatter, source-to-source rewrite, or
-incremental editor workflows require it, but it is not part of the current
-workspace surface.
+Design details live in [.agents/docs/architecture.md](.agents/docs/architecture.md).
 
 ## Repository Layout
 
-- `crates/maya-mel`: single public library crate with internal syntax/lexer/ast/parser/sema/maya modules
-- `crates/mel-cli`: local inspection CLI for parser, sema, and lightweight output
-- `tests/corpus`: public MEL fixtures and snapshot-oriented tests
-- `examples`: small sample MEL sources
+- `crates/maya-mel`: public library crate
+- `crates/mel-cli`: local inspection CLI
+- `tests/corpus`: public MEL fixtures
+- `examples`: sample MEL sources
 
-## Release Notes
+## Releases
 
-See `CHANGELOG.md` for release notes.
-
-## Example MEL
-
-```mel
-global proc string[] selected_transforms() {
-    string $nodes[] = `ls -sl -type "transform"`;
-    string $result[];
-
-    for ($node in $nodes) {
-        if (`objExists $node`) {
-            $result[size($result)] = $node;
-        }
-    }
-
-    return $result;
-}
-```
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
