@@ -118,6 +118,13 @@ pub struct SharedLightScanReport {
     pub errors: Vec<ParseError>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightScanSummary {
+    pub source_encoding: SourceEncoding,
+    pub decode_errors: Vec<DecodeDiagnostic>,
+    pub errors: Vec<ParseError>,
+}
+
 impl LightScanReport {
     #[must_use]
     pub fn source_view(&self) -> SourceView<'_> {
@@ -468,6 +475,31 @@ pub fn scan_light_bytes_with_options_and_sink(
     build_light_scan(decoded, options, sink)
 }
 
+pub fn scan_light_bytes_with_options_and_sink_and_then<S, T>(
+    input: &[u8],
+    options: LightParseOptions,
+    sink: &mut S,
+    then: impl for<'a> FnOnce(&mut S, SourceView<'a>, LightScanSummary) -> T,
+) -> T
+where
+    S: LightItemSink,
+{
+    if let Some(error) = max_bytes_error_for_bytes(input.len(), options.budgets) {
+        let source_map = SourceMap::identity(0);
+        return then(
+            sink,
+            SourceView::new("", &source_map),
+            LightScanSummary {
+                source_encoding: SourceEncoding::Utf8,
+                decode_errors: Vec::new(),
+                errors: vec![error],
+            },
+        );
+    }
+    let decoded = decode_source_auto(input);
+    build_light_scan_and_then(decoded, options, sink, then)
+}
+
 pub fn scan_light_bytes_with_encoding_and_sink(
     input: &[u8],
     encoding: SourceEncoding,
@@ -711,6 +743,39 @@ fn build_shared_light_scan(
         decode_errors: decoded.diagnostics,
         errors,
     }
+}
+
+fn build_light_scan_and_then<S, T>(
+    decoded: crate::decode::DecodedSource<'_>,
+    options: LightParseOptions,
+    sink: &mut S,
+    then: impl for<'a> FnOnce(&mut S, SourceView<'a>, LightScanSummary) -> T,
+) -> T
+where
+    S: LightItemSink,
+{
+    let source_map = decoded.offset_map.source_map();
+    let source_text = decoded.text;
+    let source_view = SourceView::new(source_text.as_ref(), &source_map);
+    let mut scanner = LightScanner::new(source_text.as_ref(), options);
+    scanner.scan_with_sink(source_view, sink, Some(&decoded.offset_map));
+    let errors = scanner
+        .errors
+        .into_iter()
+        .map(|mut error| {
+            error.range = decoded.offset_map.map_range(error.range);
+            error
+        })
+        .collect();
+    then(
+        sink,
+        SourceView::new(source_text.as_ref(), &source_map),
+        LightScanSummary {
+            source_encoding: decoded.encoding,
+            decode_errors: decoded.diagnostics,
+            errors,
+        },
+    )
 }
 
 #[derive(Default)]

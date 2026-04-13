@@ -333,6 +333,84 @@ fn streaming_light_scan_bytes_preserves_safe_source_slices_for_non_utf8() {
 }
 
 #[test]
+fn no_retain_light_scan_bytes_matches_retained_utf8_path() {
+    let source = b"global proc foo() { }\nsetAttr \".tx\" 1;\n";
+    let materialized = parse_light_bytes(source);
+    let streamed = RefCell::new(Vec::new());
+    let (head, summary) = scan_light_bytes_with_options_and_sink_and_then(
+        source,
+        LightParseOptions::default(),
+        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
+        |_, source: mel_syntax::SourceView<'_>, summary| {
+            let items = streamed.borrow();
+            let LightItem::Command(command) = &items[1] else {
+                panic!("expected command item");
+            };
+            (source.slice(command.head_range).to_string(), summary)
+        },
+    );
+
+    assert_eq!(streamed.into_inner(), materialized.source.items);
+    assert_eq!(summary.errors, materialized.errors);
+    assert_eq!(summary.decode_errors, materialized.decode_errors);
+    assert_eq!(summary.source_encoding, materialized.source_encoding);
+    assert_eq!(head, "setAttr");
+}
+
+#[test]
+fn no_retain_light_scan_bytes_preserves_non_utf8_source_slices() {
+    let (bytes, _, _) = SHIFT_JIS.encode("setAttr \".名\" -type \"string\" \"値\";\n");
+    let materialized = parse_light_bytes(bytes.as_ref());
+    let streamed = RefCell::new(Vec::new());
+    let (first_arg, summary) = scan_light_bytes_with_options_and_sink_and_then(
+        bytes.as_ref(),
+        LightParseOptions::default(),
+        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
+        |_, source: mel_syntax::SourceView<'_>, summary| {
+            let items = streamed.borrow();
+            let LightItem::Command(command) = &items[0] else {
+                panic!("expected command item");
+            };
+            (source.slice(command.words[0].range()).to_string(), summary)
+        },
+    );
+
+    assert_eq!(streamed.into_inner(), materialized.source.items);
+    assert_eq!(summary.errors, materialized.errors);
+    assert_eq!(summary.decode_errors, materialized.decode_errors);
+    assert_eq!(summary.source_encoding, materialized.source_encoding);
+    assert_eq!(first_arg, "\".名\"");
+}
+
+#[test]
+fn no_retain_light_scan_reports_budget_error_without_items() {
+    let streamed = RefCell::new(Vec::new());
+    let summary = scan_light_bytes_with_options_and_sink_and_then(
+        b"setAttr \".tx\" 1;\n",
+        LightParseOptions {
+            budgets: ParseBudgets {
+                max_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..LightParseOptions::default()
+        },
+        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
+        |_, source: mel_syntax::SourceView<'_>, summary| {
+            assert_eq!(source.text(), "");
+            summary
+        },
+    );
+
+    assert!(streamed.into_inner().is_empty());
+    assert_eq!(summary.decode_errors, Vec::<DecodeDiagnostic>::new());
+    assert_eq!(summary.errors.len(), 1);
+    assert_eq!(
+        summary.errors[0].message,
+        "source exceeds parse budget: max_bytes"
+    );
+}
+
+#[test]
 fn light_parse_reports_max_bytes_budget_before_scan_starts() {
     let parse = parse_light_source_with_options(
         "setAttr \".tx\" 1;\n",
