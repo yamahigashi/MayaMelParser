@@ -1,3 +1,8 @@
+//! Advanced command schema and registry contracts.
+//!
+//! Most users do not need this module directly unless they are providing their
+//! own command registry or inspecting normalized command semantics in detail.
+
 use std::{ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

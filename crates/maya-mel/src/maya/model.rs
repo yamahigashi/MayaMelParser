@@ -1,3 +1,10 @@
+//! Detailed Maya fact model types.
+//!
+//! Most users can stay on [`crate::maya`] entry points and inspect
+//! [`crate::maya::model::MayaTopLevelFacts`]. Reach for this module when you
+//! need the full set of Maya-specific item, hybrid, promotion, or
+//! selective-collection data types.
+
 use mel_parser::{LightCommandSurface, ParseOptions};
 use mel_sema::{CommandKind, CommandMode};
 use mel_syntax::{SourceView, TextRange};

@@ -1,18 +1,19 @@
+use super::model::*;
+use super::*;
 use crate::registry::{OverlayRegistry, push_synthetic_mode_flag};
-use crate::*;
 use encoding_rs::SHIFT_JIS;
 use std::path::Path;
 
-use mel_parser::{
-    LightParseOptions, ParseOptions, SourceEncoding, parse_bytes, parse_light_bytes_with_encoding,
-    parse_light_file, parse_light_shared_source, parse_light_source,
-    parse_light_source_with_options, parse_shared_source, parse_source,
+use crate::parser::{
+    LightParseOptions, LightWord, ParseMode, ParseOptions, SourceEncoding, parse_bytes,
+    parse_light_bytes_with_encoding, parse_light_file, parse_light_shared_source,
+    parse_light_source, parse_light_source_with_options, parse_shared_source, parse_source,
 };
-use mel_sema::{
+use crate::sema::command_schema::{
     CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSourceKind,
     EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, PositionalSchema,
-    PositionalSourcePolicy, PositionalTailSchema, ReturnBehavior, StaticCommandRegistry,
-    ValueShape,
+    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ReturnBehavior,
+    StaticCommandRegistry, ValueShape,
 };
 
 fn test_registry(commands: Vec<CommandSchema>) -> StaticCommandRegistry {
@@ -280,7 +281,7 @@ fn set_attr_data_reference_edits_is_specialized_losslessly() {
         },
         return_behavior: ReturnBehavior::Unknown,
         positionals: PositionalSchema {
-            prefix: &[mel_sema::PositionalSlotSchema {
+            prefix: &[PositionalSlotSchema {
                 value_shapes: &[ValueShape::String],
                 source_policy: PositionalSourcePolicy::ExplicitOnly,
             }],
@@ -814,12 +815,12 @@ fn light_collector_keeps_heavy_set_attr_tail_opaque() {
 
 #[test]
 fn light_collector_uses_opaque_tail_when_prefix_limit_hits() {
-    let parse = mel_parser::parse_light_source_with_options(
+    let parse = parse_light_source_with_options(
         "setAttr \".pt\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n",
-        mel_parser::LightParseOptions {
+        LightParseOptions {
             max_prefix_words: 5,
             max_prefix_bytes: 32,
-            ..mel_parser::LightParseOptions::default()
+            ..LightParseOptions::default()
         },
     );
     assert!(parse.errors.is_empty());
@@ -905,7 +906,7 @@ fn promoted_command_keeps_cp932_source_slices() {
             .encode("setAttr \".名\" -type \"string\" \"値\";\n")
             .0
             .as_ref(),
-        mel_parser::SourceEncoding::Cp932,
+        SourceEncoding::Cp932,
     );
     let hybrid = collect_top_level_facts_hybrid_with_registry(
         &parse,
@@ -955,7 +956,7 @@ fn hybrid_custom_decider_promotes_grouped_expr_command() {
             .command
             .words
             .iter()
-            .any(|word| matches!(word, mel_parser::LightWord::GroupedExpr { .. }))
+            .any(|word| matches!(word, LightWord::GroupedExpr { .. }))
     };
     let hybrid = collect_top_level_facts_hybrid_with_decider(
         &parse,
@@ -1040,7 +1041,7 @@ fn hybrid_promotes_data_reference_edits_tail() {
         },
         return_behavior: ReturnBehavior::Unknown,
         positionals: PositionalSchema {
-            prefix: &[mel_sema::PositionalSlotSchema {
+            prefix: &[PositionalSlotSchema {
                 value_shapes: &[ValueShape::String],
                 source_policy: PositionalSourcePolicy::ExplicitOnly,
             }],
@@ -1106,7 +1107,7 @@ fn hybrid_report_keeps_light_command_when_custom_decider_promotion_fails() {
                 .command
                 .words
                 .iter()
-                .any(|word| matches!(word, mel_parser::LightWord::GroupedExpr { .. }))
+                .any(|word| matches!(word, LightWord::GroupedExpr { .. }))
         },
     );
 
@@ -1154,7 +1155,7 @@ fn hybrid_strict_options_forward_parse_mode_to_promotion() {
         &MayaPromotionOptions {
             policy: MayaPromotionPolicy::Always,
             parse_options: ParseOptions {
-                mode: mel_parser::ParseMode::AllowTrailingStmtWithoutSemi,
+                mode: ParseMode::AllowTrailingStmtWithoutSemi,
                 ..ParseOptions::default()
             },
         },

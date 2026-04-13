@@ -41,9 +41,16 @@
 //! # Module Guide
 //!
 //! - [`parser`] exposes full and lightweight parse entry points.
-//! - [`sema`] exposes generic semantic analysis and command contracts.
-//! - [`maya`] exposes Maya-specific command registries and fact collection.
+//! - [`sema`] exposes generic semantic analysis at the module root, with
+//!   advanced command contracts under [`sema::command_schema`] and command
+//!   normalization data under [`sema::command_norm`].
+//! - [`maya`] exposes Maya-specific fact collection at the module root, with
+//!   detailed fact model types under [`maya::model`].
 //! - [`ast`], [`syntax`], and [`mod@lexer`] expose lower-level structures.
+//!
+//! There is intentionally no crate prelude. The crate root stays small and
+//! covers the common parse/analyze/fact-collection workflow, while explicit
+//! module paths carry the advanced surfaces.
 //!
 //! # Stability
 //!
@@ -75,33 +82,25 @@ pub(crate) use maya::{model, normalize, registry, specialize, validate};
 pub(crate) use parser::decode;
 pub(crate) use sema::{command_norm, command_schema, scope};
 
-#[doc(hidden)]
-pub use ast::*;
-#[doc(hidden)]
-pub use lexer::*;
-#[doc(hidden)]
-pub use maya::*;
-#[doc(hidden)]
-pub use parser::*;
-#[doc(hidden)]
-pub use sema::*;
-#[doc(hidden)]
-pub use syntax::*;
+pub(crate) use ast::*;
+pub(crate) use lexer::*;
+pub(crate) use parser::*;
+pub(crate) use sema::{command_norm::*, command_schema::*, *};
+pub(crate) use syntax::*;
 
 #[doc(inline)]
+pub use maya::model::MayaTopLevelFacts;
+#[doc(inline)]
 pub use maya::{
-    MayaCommandRegistry, MayaSpecializedCommand, MayaTopLevelCommand, MayaTopLevelFacts,
-    MayaTopLevelItem, collect_top_level_facts, collect_top_level_facts_shared,
+    MayaCommandRegistry, collect_top_level_facts, collect_top_level_facts_shared,
     collect_top_level_facts_shared_with_registry, collect_top_level_facts_with_registry,
 };
 #[doc(inline)]
 pub use parser::{
-    DecodeDiagnostic, Parse, ParseBudgets, ParseError, ParseMode, ParseOptions, SharedParse,
-    SourceEncoding, parse_bytes, parse_bytes_with_encoding, parse_file, parse_file_with_encoding,
-    parse_file_with_encoding_and_options, parse_file_with_options,
-    parse_light_file_with_encoding_and_options, parse_light_file_with_options, parse_shared_bytes,
-    parse_shared_bytes_with_encoding, parse_shared_file, parse_shared_file_with_encoding,
-    parse_shared_source, parse_shared_source_with_options, parse_source, parse_source_with_options,
+    DecodeDiagnostic, Parse, ParseBudgets, ParseError, ParseMode, ParseOptions, SourceEncoding,
+    parse_bytes, parse_bytes_with_encoding, parse_file, parse_file_with_encoding,
+    parse_file_with_encoding_and_options, parse_file_with_options, parse_source,
+    parse_source_with_options,
 };
 #[doc(inline)]
 pub use sema::{

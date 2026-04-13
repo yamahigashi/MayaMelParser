@@ -1,3 +1,9 @@
+//! Advanced normalized command data structures.
+//!
+//! This module is mainly useful for tools that need to inspect command-mode
+//! decisions, flag normalization, or positional argument classification after
+//! semantic analysis.
+
 use mel_ast::ShellWord;
 use mel_syntax::{SourceView, TextRange, range_end, range_start, text_range};
 use std::sync::Arc;

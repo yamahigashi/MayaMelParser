@@ -3,10 +3,14 @@
 //!
 //! Most users should start with [`analyze`]. It resolves proc and variable
 //! usage, emits diagnostics, and optionally normalizes command-style invokes
-//! through a caller-provided [`CommandRegistry`].
+//! through a caller-provided [`command_schema::CommandRegistry`]. Advanced
+//! command contracts live under [`command_schema`], and normalized command
+//! shapes live under [`command_norm`].
 
-pub(crate) mod command_norm;
-pub(crate) mod command_schema;
+/// Advanced command normalization data structures.
+pub mod command_norm;
+/// Advanced command schema and registry contracts.
+pub mod command_schema;
 mod flow;
 mod resolve;
 pub(crate) mod scope;
@@ -14,15 +18,8 @@ pub(crate) mod scope;
 #[cfg(test)]
 mod tests;
 
-pub use command_norm::{
-    CommandMode, NormalizedCommandInvoke, NormalizedCommandItem, NormalizedFlag, PositionalArg,
-};
-pub use command_schema::{
-    CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSchemaValidationError,
-    CommandSourceKind, EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema,
-    PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema,
-    ReturnBehavior, StaticCommandRegistry, ValidatedCommandSchema, ValueShape,
-};
+pub use command_norm::NormalizedCommandInvoke;
+use command_schema::{CommandRegistry, EmptyCommandRegistry};
 
 use flow::FlowLintAnalyzer;
 use resolve::Analyzer;

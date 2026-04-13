@@ -1,7 +1,5 @@
-use maya_mel as mel_lexer;
-use maya_mel as mel_syntax;
-use mel_lexer::{lex, lex_significant, lexer};
-use mel_syntax::TokenKind;
+use maya_mel::lexer::{lex, lex_significant, lexer};
+use maya_mel::syntax::TokenKind;
 
 #[test]
 fn streaming_lexer_matches_eager_lex_output() {

@@ -6,10 +6,10 @@ use crate::{
         filtered_sema_diagnostics, parse_diagnostic_counts, render_file_diagnostics_into,
     },
 };
-use maya_mel as mel_maya;
-use maya_mel as mel_parser;
-use mel_maya::{MayaLightSpecializedCommand, MayaLightTopLevelItem, collect_top_level_facts_light};
-use mel_parser::{LightParse, Parse};
+use maya_mel::Parse;
+use maya_mel::maya::collect_top_level_facts_light;
+use maya_mel::maya::model::{MayaLightSpecializedCommand, MayaLightTopLevelItem};
+use maya_mel::parser::LightParse;
 use std::{
     collections::HashMap,
     fmt::Write as FmtWrite,

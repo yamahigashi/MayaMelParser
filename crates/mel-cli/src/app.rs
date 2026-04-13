@@ -6,12 +6,12 @@ use crate::{
         write_light_single_file_output_with_style, write_single_file_output_with_style,
     },
 };
-use maya_mel as mel_parser;
-use mel_parser::{
-    LightParseOptions, ParseBudgets, ParseMode, ParseOptions, SourceEncoding,
-    parse_file_with_encoding_and_options, parse_file_with_options,
-    parse_light_file_with_encoding_and_options, parse_light_file_with_options,
-    parse_source_with_options,
+use maya_mel::parser::{
+    LightParseOptions, parse_light_file_with_encoding_and_options, parse_light_file_with_options,
+};
+use maya_mel::{
+    ParseBudgets, ParseMode, ParseOptions, SourceEncoding, parse_file_with_encoding_and_options,
+    parse_file_with_options, parse_source_with_options,
 };
 use std::{fs, io, io::IsTerminal, path::Path};
 

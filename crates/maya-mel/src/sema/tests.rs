@@ -1,9 +1,12 @@
+use super::command_norm::{CommandMode, NormalizedCommandItem, NormalizedFlag, PositionalArg};
+use super::command_schema::{
+    CommandKind, CommandModeMask, CommandRegistry, CommandSchema, CommandSchemaValidationError,
+    CommandSourceKind, EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema,
+    PositionalSchema, PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema,
+    ReturnBehavior, StaticCommandRegistry, ValueShape,
+};
 use super::{
-    CommandKind, CommandMode, CommandModeMask, CommandRegistry, CommandSchema,
-    CommandSchemaValidationError, CommandSourceKind, DiagnosticFilter, DiagnosticSeverity,
-    EmptyCommandRegistry, FlagArity, FlagArityByMode, FlagSchema, IdentTarget, PositionalSchema,
-    PositionalSlotSchema, PositionalSourcePolicy, PositionalTailSchema, ResolvedCallee,
-    ReturnBehavior, StaticCommandRegistry, ValueShape, VariableKind, analyze,
+    DiagnosticFilter, DiagnosticSeverity, IdentTarget, ResolvedCallee, VariableKind, analyze,
     analyze_diagnostics_with_registry, analyze_diagnostics_with_registry_filtered,
     analyze_with_registry,
 };
@@ -1213,7 +1216,7 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
     let items = &analysis.normalized_invokes[0].items;
     assert!(matches!(
         &items[1],
-        super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+        NormalizedCommandItem::Flag(NormalizedFlag {
             source_range,
             canonical_name: Some(name),
             args,
@@ -1222,7 +1225,7 @@ fn shell_like_command_query_mode_uses_query_specific_flag_arity() {
     ));
     assert!(matches!(
         &items[2],
-        super::NormalizedCommandItem::Positional(super::PositionalArg {
+        NormalizedCommandItem::Positional(PositionalArg {
             word: ShellWord::QuotedString { text, .. },
             ..
         }) if *text == text_range(26, 33)
@@ -1272,7 +1275,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_omitted() {
     let items = &analysis.normalized_invokes[0].items;
     assert!(matches!(
         &items[0],
-        super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+        NormalizedCommandItem::Flag(NormalizedFlag {
             canonical_name: Some(name),
             args,
             ..
@@ -1327,7 +1330,7 @@ fn shell_like_command_range_arity_allows_optional_second_arg_to_be_present() {
     let items = &analysis.normalized_invokes[0].items;
     assert!(matches!(
         &items[0],
-        super::NormalizedCommandItem::Flag(super::NormalizedFlag {
+        NormalizedCommandItem::Flag(NormalizedFlag {
             canonical_name: Some(name),
             args,
             ..

@@ -12,10 +12,11 @@ use crate::{
     },
 };
 use clap::{CommandFactory, error::ErrorKind};
-use maya_mel as mel_parser;
-use mel_parser::{
-    LightParseOptions, ParseBudgets, ParseMode, ParseOptions, SourceEncoding,
-    parse_bytes_with_encoding, parse_light_source_with_options, parse_source,
+use maya_mel::parser::{
+    LightParseOptions, parse_light_bytes_with_encoding, parse_light_source_with_options,
+};
+use maya_mel::{
+    ParseBudgets, ParseMode, ParseOptions, SourceEncoding, parse_bytes_with_encoding, parse_source,
     parse_source_with_options,
 };
 use std::{
@@ -74,7 +75,7 @@ fn format_single_file_output_handles_gbk_source_without_panicking() {
 
 #[test]
 fn format_light_single_file_output_handles_gbk_source_without_panicking() {
-    let parse = mel_parser::parse_light_bytes_with_encoding(
+    let parse = parse_light_bytes_with_encoding(
         b"setAttr \".\xB0\xB4\" -type \"string\" \"\xC5\xA5\";",
         SourceEncoding::Gbk,
     );
@@ -376,7 +377,7 @@ fn path_mode_reports_budget_parse_errors_for_files() {
         parse.expect("file output should render");
         format_single_file_output(
             &path.display().to_string(),
-            &mel_parser::parse_file_with_options(
+            &maya_mel::parse_file_with_options(
                 &path,
                 ParseOptions {
                     budgets: cli_parse_budgets(Some(4)),
@@ -400,7 +401,7 @@ fn corpus_summary_counts_budget_failures_as_parse_errors() {
     fs::create_dir_all(&root).expect("temp dir");
     fs::write(root.join("a.mel"), "print 1;\n").expect("mel file");
 
-    let parse = mel_parser::parse_file_with_options(
+    let parse = maya_mel::parse_file_with_options(
         root.join("a.mel"),
         ParseOptions {
             budgets: cli_parse_budgets(Some(4)),

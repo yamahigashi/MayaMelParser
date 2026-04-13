@@ -1,15 +1,11 @@
 use crate::args::CliDiagnosticLevel;
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
-use maya_mel as mel_maya;
-use maya_mel as mel_parser;
-use maya_mel as mel_sema;
-use maya_mel as mel_syntax;
-use mel_parser::{LightParse, Parse};
-use mel_sema::{
-    DiagnosticFilter, DiagnosticLabel, DiagnosticSeverity, analyze_diagnostics_with_registry,
-    analyze_diagnostics_with_registry_filtered,
+use maya_mel::parser::LightParse;
+use maya_mel::syntax::{SourceMap, TextRange, range_end, range_start, text_range};
+use maya_mel::{
+    Diagnostic, DiagnosticFilter, DiagnosticLabel, DiagnosticSeverity, MayaCommandRegistry, Parse,
+    analyze_diagnostics_with_registry, analyze_diagnostics_with_registry_filtered,
 };
-use mel_syntax::{SourceMap, TextRange, range_end, range_start, text_range};
 use std::{fmt::Write as FmtWrite, io, io::Write, sync::Arc};
 
 const DIAGNOSTIC_TAB_WIDTH: usize = 1;
@@ -217,7 +213,7 @@ pub(crate) fn append_compact_parse_diagnostics(
     output: &mut String,
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
-    sema_diagnostics: &[mel_sema::Diagnostic],
+    sema_diagnostics: &[Diagnostic],
 ) {
     if matches!(diagnostic_level, CliDiagnosticLevel::None) {
         return;
@@ -418,7 +414,7 @@ pub(crate) fn collect_diagnostics(
 pub(crate) fn filtered_sema_diagnostics(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
-) -> Vec<mel_sema::Diagnostic> {
+) -> Vec<Diagnostic> {
     match diagnostic_level {
         CliDiagnosticLevel::All => analyze_parse_diagnostics(parse, DiagnosticFilter::All),
         CliDiagnosticLevel::Error => analyze_parse_diagnostics(parse, DiagnosticFilter::ErrorsOnly),
@@ -429,7 +425,7 @@ pub(crate) fn filtered_sema_diagnostics(
 pub(crate) fn parse_diagnostic_counts(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
-    sema_diagnostics: &[mel_sema::Diagnostic],
+    sema_diagnostics: &[Diagnostic],
 ) -> DiagnosticCounts {
     match diagnostic_level {
         CliDiagnosticLevel::None => DiagnosticCounts::default(),
@@ -636,17 +632,17 @@ fn file_diagnostic_label(label: DiagnosticLabel) -> FileDiagnosticLabel<'static>
     }
 }
 
-fn analyze_parse_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<mel_sema::Diagnostic> {
+fn analyze_parse_diagnostics(parse: &Parse, filter: DiagnosticFilter) -> Vec<Diagnostic> {
     match filter {
         DiagnosticFilter::All => analyze_diagnostics_with_registry(
             &parse.syntax,
             parse.source_view(),
-            &mel_maya::MayaCommandRegistry::new(),
+            &MayaCommandRegistry::new(),
         ),
         DiagnosticFilter::ErrorsOnly => analyze_diagnostics_with_registry_filtered(
             &parse.syntax,
             parse.source_view(),
-            &mel_maya::MayaCommandRegistry::new(),
+            &MayaCommandRegistry::new(),
             DiagnosticFilter::ErrorsOnly,
         ),
     }

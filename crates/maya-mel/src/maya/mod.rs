@@ -3,12 +3,14 @@
 //!
 //! Most users should start with [`collect_top_level_facts`] after running a
 //! full parse. Use the `light`, `hybrid`, and `selective` entry points when you
-//! need lower-memory or streaming-oriented summaries.
+//! need lower-memory or streaming-oriented summaries. Detailed fact model types
+//! such as [`crate::maya::model::MayaTopLevelFacts`] live under [`model`].
 
 mod full;
 mod hybrid;
 mod light;
-pub(crate) mod model;
+/// Detailed Maya fact model types returned by advanced collection APIs.
+pub mod model;
 pub(crate) mod normalize;
 pub(crate) mod registry;
 mod selective;
@@ -53,8 +55,6 @@ pub use light::{
     collect_top_level_facts_light_shared_with_registry,
     collect_top_level_facts_light_with_registry,
 };
-/// Maya-specific data structures returned by the collection APIs.
-pub use model::*;
 /// Builtin Maya command registry implementation.
 pub use registry::MayaCommandRegistry;
 /// Streaming-oriented selective collection helpers.
