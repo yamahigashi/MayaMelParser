@@ -8,8 +8,10 @@ use crate::{
 };
 use maya_mel as mel_parser;
 use mel_parser::{
-    ParseMode, ParseOptions, SourceEncoding, parse_file, parse_file_with_encoding,
-    parse_light_file, parse_light_file_with_encoding, parse_source_with_options,
+    LightParseOptions, ParseBudgets, ParseMode, ParseOptions, SourceEncoding,
+    parse_file_with_encoding_and_options, parse_file_with_options,
+    parse_light_file_with_encoding_and_options, parse_light_file_with_options,
+    parse_source_with_options,
 };
 use std::{fs, io, io::IsTerminal, path::Path};
 
@@ -29,10 +31,17 @@ pub(crate) fn run() -> Result<(), RunError> {
 
     let selected_encoding = args.encoding.into_source_encoding();
     let diagnostic_level = args.diagnostic_level;
+    let budgets = cli_parse_budgets(args.max_bytes);
 
     if let Some(path) = args.path {
-        return print_path_output(&path, selected_encoding, args.lightweight, diagnostic_level)
-            .map_err(|error| RunError::Message(error.to_string()));
+        return print_path_output(
+            &path,
+            selected_encoding,
+            args.lightweight,
+            diagnostic_level,
+            budgets,
+        )
+        .map_err(|error| RunError::Message(error.to_string()));
     }
 
     if let Some(input) = args.inline_input {
@@ -40,7 +49,7 @@ pub(crate) fn run() -> Result<(), RunError> {
             &input,
             ParseOptions {
                 mode: ParseMode::AllowTrailingStmtWithoutSemi,
-                ..ParseOptions::default()
+                budgets,
             },
         );
         print_parse_summary("inline", &parse);
@@ -55,13 +64,14 @@ pub(crate) fn print_path_output(
     encoding: Option<SourceEncoding>,
     lightweight: bool,
     diagnostic_level: CliDiagnosticLevel,
+    budgets: ParseBudgets,
 ) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
 
     if metadata.is_dir() {
-        print_corpus_summary(path, encoding, lightweight, diagnostic_level)
+        print_corpus_summary(path, encoding, lightweight, diagnostic_level, budgets)
     } else if metadata.is_file() {
-        print_single_file(path, encoding, lightweight, diagnostic_level)
+        print_single_file(path, encoding, lightweight, diagnostic_level, budgets)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -78,14 +88,28 @@ fn print_single_file(
     encoding: Option<SourceEncoding>,
     lightweight: bool,
     diagnostic_level: CliDiagnosticLevel,
+    budgets: ParseBudgets,
 ) -> io::Result<()> {
     let label = path.display().to_string();
     let fancy_diagnostics = io::stdout().is_terminal();
     if lightweight {
         let parse = if let Some(encoding) = encoding {
-            parse_light_file_with_encoding(path, encoding)?
+            parse_light_file_with_encoding_and_options(
+                path,
+                encoding,
+                LightParseOptions {
+                    budgets,
+                    ..LightParseOptions::default()
+                },
+            )?
         } else {
-            parse_light_file(path)?
+            parse_light_file_with_options(
+                path,
+                LightParseOptions {
+                    budgets,
+                    ..LightParseOptions::default()
+                },
+            )?
         };
         write_light_single_file_output_with_style(
             io::stdout().lock(),
@@ -96,9 +120,22 @@ fn print_single_file(
         )?;
     } else {
         let parse = if let Some(encoding) = encoding {
-            parse_file_with_encoding(path, encoding)?
+            parse_file_with_encoding_and_options(
+                path,
+                encoding,
+                ParseOptions {
+                    budgets,
+                    ..ParseOptions::default()
+                },
+            )?
         } else {
-            parse_file(path)?
+            parse_file_with_options(
+                path,
+                ParseOptions {
+                    budgets,
+                    ..ParseOptions::default()
+                },
+            )?
         };
         write_single_file_output_with_style(
             io::stdout().lock(),
@@ -116,6 +153,7 @@ fn print_corpus_summary(
     encoding: Option<SourceEncoding>,
     lightweight: bool,
     diagnostic_level: CliDiagnosticLevel,
+    budgets: ParseBudgets,
 ) -> io::Result<()> {
     let files = collect_source_files(root, lightweight)?;
     if lightweight {
@@ -124,9 +162,25 @@ fn print_corpus_summary(
             summary.files += 1;
 
             match encoding
-                .map(|encoding| parse_light_file_with_encoding(&path, encoding))
-                .unwrap_or_else(|| parse_light_file(&path))
-            {
+                .map(|encoding| {
+                    parse_light_file_with_encoding_and_options(
+                        &path,
+                        encoding,
+                        LightParseOptions {
+                            budgets,
+                            ..LightParseOptions::default()
+                        },
+                    )
+                })
+                .unwrap_or_else(|| {
+                    parse_light_file_with_options(
+                        &path,
+                        LightParseOptions {
+                            budgets,
+                            ..LightParseOptions::default()
+                        },
+                    )
+                }) {
                 Ok(parse) => {
                     let diagnostics =
                         crate::diagnostics::filtered_light_diagnostics(&parse, diagnostic_level);
@@ -156,9 +210,25 @@ fn print_corpus_summary(
         summary.files += 1;
 
         match encoding
-            .map(|encoding| parse_file_with_encoding(&path, encoding))
-            .unwrap_or_else(|| parse_file(&path))
-        {
+            .map(|encoding| {
+                parse_file_with_encoding_and_options(
+                    &path,
+                    encoding,
+                    ParseOptions {
+                        budgets,
+                        ..ParseOptions::default()
+                    },
+                )
+            })
+            .unwrap_or_else(|| {
+                parse_file_with_options(
+                    &path,
+                    ParseOptions {
+                        budgets,
+                        ..ParseOptions::default()
+                    },
+                )
+            }) {
             Ok(parse) => {
                 let file_summary = summarize_parse_file(&path, &parse, diagnostic_level);
                 summary.record(file_summary);
@@ -212,4 +282,29 @@ fn print_corpus_summary(
     }
 
     Ok(())
+}
+
+pub(crate) fn cli_parse_budgets(max_bytes: Option<usize>) -> ParseBudgets {
+    let default = ParseBudgets::default();
+    let Some(max_bytes) = max_bytes else {
+        return default;
+    };
+    if max_bytes == default.max_bytes {
+        return default;
+    }
+
+    ParseBudgets {
+        max_bytes,
+        max_nesting_depth: scale_budget(default.max_nesting_depth, max_bytes, default.max_bytes),
+        max_tokens: scale_budget(default.max_tokens, max_bytes, default.max_bytes),
+        max_statements: scale_budget(default.max_statements, max_bytes, default.max_bytes),
+        max_literal_bytes: scale_budget(default.max_literal_bytes, max_bytes, default.max_bytes)
+            .min(max_bytes),
+    }
+}
+
+fn scale_budget(default_value: usize, max_bytes: usize, default_max_bytes: usize) -> usize {
+    ((((default_value as u128) * (max_bytes as u128)) / (default_max_bytes as u128))
+        .min(usize::MAX as u128) as usize)
+        .max(1)
 }

@@ -112,6 +112,37 @@ fn parse_file_reuses_owned_utf8_bytes_without_decode_diagnostics() {
 }
 
 #[test]
+fn parse_file_with_options_respects_max_bytes_budget() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-budget-file-{unique}.mel"));
+    fs::write(&path, "print \"hello\";\n").expect("temp fixture should be writable");
+
+    let parse = parse_file_with_options(
+        &path,
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    )
+    .expect("budgeted file parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert!(parse.syntax.items.is_empty());
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_bytes"
+    );
+}
+
+#[test]
 fn parse_shared_file_matches_owned_utf8_file_path() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -168,6 +199,38 @@ fn parse_file_with_explicit_cp932_ascii_keeps_identity_offsets() {
         panic!("expected shell-like invoke");
     };
     assert_eq!(parse.source_slice(*head_range), "setAttr");
+}
+
+#[test]
+fn parse_file_with_encoding_and_options_respects_max_bytes_budget() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("mel-parser-budget-file-encoding-{unique}.mel"));
+    fs::write(&path, b"setAttr \".tx\" 1;\n").expect("temp fixture should be writable");
+
+    let parse = parse_file_with_encoding_and_options(
+        &path,
+        SourceEncoding::Utf8,
+        ParseOptions {
+            budgets: ParseBudgets {
+                max_bytes: 4,
+                ..ParseBudgets::default()
+            },
+            ..ParseOptions::default()
+        },
+    )
+    .expect("budgeted encoded file parse should succeed");
+
+    fs::remove_file(&path).expect("temp fixture should be removable");
+
+    assert!(parse.syntax.items.is_empty());
+    assert_eq!(parse.errors.len(), 1);
+    assert_eq!(
+        parse.errors[0].message,
+        "source exceeds parse budget: max_bytes"
+    );
 }
 
 #[test]

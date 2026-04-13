@@ -508,16 +508,23 @@ pub fn scan_light_bytes_with_encoding_and_options_and_sink(
 }
 
 pub fn parse_light_file(path: impl AsRef<Path>) -> io::Result<LightParse> {
-    if let Some(error) =
-        max_bytes_error_for_file(path.as_ref(), LightParseOptions::default().budgets)?
-    {
+    parse_light_file_with_options(path, LightParseOptions::default())
+}
+
+pub fn parse_light_file_with_options(
+    path: impl AsRef<Path>,
+    options: LightParseOptions,
+) -> io::Result<LightParse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
         return Ok(LightParse::from((
             LightSourceFile::default(),
             empty_light_scan_report(error),
         )));
     }
     let bytes = fs::read(path)?;
-    Ok(parse_light_bytes(&bytes))
+    let mut sink = CollectLightItems::default();
+    let report = scan_light_bytes_with_options_and_sink(&bytes, options, &mut sink);
+    Ok(LightParse::from((sink.finish(), report)))
 }
 
 pub fn parse_light_shared_file(path: impl AsRef<Path>) -> io::Result<SharedLightParse> {
@@ -537,16 +544,25 @@ pub fn parse_light_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
 ) -> io::Result<LightParse> {
-    if let Some(error) =
-        max_bytes_error_for_file(path.as_ref(), LightParseOptions::default().budgets)?
-    {
+    parse_light_file_with_encoding_and_options(path, encoding, LightParseOptions::default())
+}
+
+pub fn parse_light_file_with_encoding_and_options(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+    options: LightParseOptions,
+) -> io::Result<LightParse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
         return Ok(LightParse::from((
             LightSourceFile::default(),
             empty_light_scan_report(error),
         )));
     }
     let bytes = fs::read(path)?;
-    Ok(parse_light_bytes_with_encoding(&bytes, encoding))
+    let mut sink = CollectLightItems::default();
+    let report =
+        scan_light_bytes_with_encoding_and_options_and_sink(&bytes, encoding, options, &mut sink);
+    Ok(LightParse::from((sink.finish(), report)))
 }
 
 pub fn parse_light_shared_file_with_encoding(

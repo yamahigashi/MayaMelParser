@@ -98,9 +98,10 @@ pub use maya::{
 pub use parser::{
     DecodeDiagnostic, Parse, ParseBudgets, ParseError, ParseMode, ParseOptions, SharedParse,
     SourceEncoding, parse_bytes, parse_bytes_with_encoding, parse_file, parse_file_with_encoding,
-    parse_shared_bytes, parse_shared_bytes_with_encoding, parse_shared_file,
-    parse_shared_file_with_encoding, parse_shared_source, parse_shared_source_with_options,
-    parse_source, parse_source_with_options,
+    parse_file_with_encoding_and_options, parse_file_with_options,
+    parse_light_file_with_encoding_and_options, parse_light_file_with_options, parse_shared_bytes,
+    parse_shared_bytes_with_encoding, parse_shared_file, parse_shared_file_with_encoding,
+    parse_shared_source, parse_shared_source_with_options, parse_source, parse_source_with_options,
 };
 #[doc(inline)]
 pub use sema::{

@@ -16,9 +16,13 @@ cargo install --path crates/mel-cli
 
 ```bash
 mel-inspect examples/basic.mel
+mel-inspect --max-bytes 1048576 examples/basic.mel
 mel-inspect --inline '`ls -sl`;'
 mel-inspect --lightweight my-corpus
 ```
+
+`--max-bytes` caps source bytes and scales the other parser budgets
+proportionally from their defaults.
 
 ## Stability
 

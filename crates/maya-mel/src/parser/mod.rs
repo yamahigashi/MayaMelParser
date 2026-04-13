@@ -29,7 +29,8 @@ pub use self::light::{
     LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightProcSurface,
     LightScanReport, LightSourceFile, LightWord, SharedLightParse, SharedLightScanReport,
     parse_light_bytes, parse_light_bytes_with_encoding, parse_light_file,
-    parse_light_file_with_encoding, parse_light_shared_bytes,
+    parse_light_file_with_encoding, parse_light_file_with_encoding_and_options,
+    parse_light_file_with_options, parse_light_shared_bytes,
     parse_light_shared_bytes_with_encoding, parse_light_shared_file,
     parse_light_shared_file_with_encoding, parse_light_shared_source,
     parse_light_shared_source_with_options, parse_light_source, parse_light_source_with_options,
@@ -441,11 +442,16 @@ pub fn parse_shared_file_with_encoding(
 
 /// Read, decode, and parse a file using automatic encoding detection.
 pub fn parse_file(path: impl AsRef<Path>) -> io::Result<Parse> {
-    if let Some(error) = max_bytes_error_for_file(path.as_ref(), ParseBudgets::default())? {
+    parse_file_with_options(path, ParseOptions::default())
+}
+
+/// Read, decode, and parse a file using explicit [`ParseOptions`].
+pub fn parse_file_with_options(path: impl AsRef<Path>, options: ParseOptions) -> io::Result<Parse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
         return Ok(parse_budget_failure_empty(error));
     }
     let bytes = fs::read(path)?;
-    Ok(parse_owned_bytes(bytes, ParseOptions::default()))
+    Ok(parse_owned_bytes(bytes, options))
 }
 
 /// Read, decode, and parse a file with an explicit encoding.
@@ -453,15 +459,20 @@ pub fn parse_file_with_encoding(
     path: impl AsRef<Path>,
     encoding: SourceEncoding,
 ) -> io::Result<Parse> {
-    if let Some(error) = max_bytes_error_for_file(path.as_ref(), ParseBudgets::default())? {
+    parse_file_with_encoding_and_options(path, encoding, ParseOptions::default())
+}
+
+/// Read, decode, and parse a file with an explicit encoding and [`ParseOptions`].
+pub fn parse_file_with_encoding_and_options(
+    path: impl AsRef<Path>,
+    encoding: SourceEncoding,
+    options: ParseOptions,
+) -> io::Result<Parse> {
+    if let Some(error) = max_bytes_error_for_file(path.as_ref(), options.budgets)? {
         return Ok(parse_budget_failure_empty(error));
     }
     let bytes = fs::read(path)?;
-    Ok(parse_owned_bytes_with_encoding(
-        bytes,
-        encoding,
-        ParseOptions::default(),
-    ))
+    Ok(parse_owned_bytes_with_encoding(bytes, encoding, options))
 }
 
 struct SourceViewRangeMapper<'a> {

@@ -55,6 +55,7 @@ Current CLI surface:
 mel-inspect [OPTIONS] [PATH]
   --inline <SOURCE>
   --lightweight
+  --max-bytes <MAX_BYTES>
   --encoding <auto|utf8|cp932|gbk>
 ```
 

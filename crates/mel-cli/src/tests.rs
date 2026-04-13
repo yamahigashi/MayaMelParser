@@ -1,5 +1,5 @@
 use crate::{
-    app::print_path_output,
+    app::{cli_parse_budgets, print_path_output},
     args::{Args, CliDiagnosticLevel, parse_cli_args},
     diagnostics::{
         compute_display_line_starts, compute_normalized_line_starts,
@@ -14,8 +14,9 @@ use crate::{
 use clap::{CommandFactory, error::ErrorKind};
 use maya_mel as mel_parser;
 use mel_parser::{
-    LightParseOptions, ParseMode, ParseOptions, SourceEncoding, parse_bytes_with_encoding,
-    parse_light_source_with_options, parse_source, parse_source_with_options,
+    LightParseOptions, ParseBudgets, ParseMode, ParseOptions, SourceEncoding,
+    parse_bytes_with_encoding, parse_light_source_with_options, parse_source,
+    parse_source_with_options,
 };
 use std::{
     fs,
@@ -122,6 +123,20 @@ fn cli_accepts_diagnostic_level_flag() {
 }
 
 #[test]
+fn cli_accepts_max_bytes_flag() {
+    let args =
+        parse_cli_args(["mel-inspect", "--max-bytes", "1024", "fixture.mel"]).expect("max bytes");
+    assert_eq!(args.max_bytes, Some(1024));
+}
+
+#[test]
+fn cli_rejects_zero_max_bytes() {
+    let error = parse_cli_args(["mel-inspect", "--max-bytes", "0", "fixture.mel"])
+        .expect_err("zero max bytes should fail");
+    assert_eq!(error.kind(), ErrorKind::ValueValidation);
+}
+
+#[test]
 fn cli_rejects_removed_file_flag() {
     let error = parse_cli_args(["mel-inspect", "--file", "a.mel"])
         .expect_err("removed file flag should fail");
@@ -185,7 +200,9 @@ fn help_mentions_directory_flag_and_encoding_values() {
     assert!(help.contains("[PATH]"));
     assert!(help.contains("--lightweight"));
     assert!(help.contains("--inline <SOURCE>"));
+    assert!(help.contains("--max-bytes <MAX_BYTES>"));
     assert!(help.contains("--diagnostic-level <DIAGNOSTIC_LEVEL>"));
+    assert!(help.contains("other parser budgets scale proportionally from defaults"));
     assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
 }
 
@@ -293,8 +310,14 @@ fn path_mode_rejects_non_file_non_directory() {
         use std::os::unix::net::UnixListener;
 
         let _listener = UnixListener::bind(&path).expect("socket should bind");
-        let error = print_path_output(&path, None, false, CliDiagnosticLevel::All)
-            .expect_err("socket path should fail");
+        let error = print_path_output(
+            &path,
+            None,
+            false,
+            CliDiagnosticLevel::All,
+            ParseBudgets::default(),
+        )
+        .expect_err("socket path should fail");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
@@ -307,6 +330,96 @@ fn path_mode_rejects_non_file_non_directory() {
     }
 
     cleanup_test_path(&path);
+}
+
+#[test]
+fn cli_parse_budgets_returns_defaults_without_override() {
+    assert_eq!(cli_parse_budgets(None), ParseBudgets::default());
+}
+
+#[test]
+fn cli_parse_budgets_scales_other_limits_from_max_bytes() {
+    let default = ParseBudgets::default();
+    let budgets = cli_parse_budgets(Some(default.max_bytes / 2));
+
+    assert_eq!(budgets.max_bytes, default.max_bytes / 2);
+    assert_eq!(budgets.max_tokens, default.max_tokens / 2);
+    assert_eq!(budgets.max_statements, default.max_statements / 2);
+    assert_eq!(budgets.max_nesting_depth, default.max_nesting_depth / 2);
+    assert_eq!(budgets.max_literal_bytes, default.max_literal_bytes / 2);
+}
+
+#[test]
+fn cli_parse_budgets_clamps_tiny_values_to_non_zero_limits() {
+    let budgets = cli_parse_budgets(Some(1));
+
+    assert_eq!(budgets.max_bytes, 1);
+    assert_eq!(budgets.max_tokens, 1);
+    assert_eq!(budgets.max_statements, 1);
+    assert_eq!(budgets.max_nesting_depth, 1);
+    assert_eq!(budgets.max_literal_bytes, 1);
+}
+
+#[test]
+fn path_mode_reports_budget_parse_errors_for_files() {
+    let path = unique_test_path("budget-file");
+    fs::write(&path, "print \"hello\";\n").expect("temp file");
+
+    let output = {
+        let parse = print_path_output(
+            &path,
+            None,
+            false,
+            CliDiagnosticLevel::All,
+            cli_parse_budgets(Some(4)),
+        );
+        parse.expect("file output should render");
+        format_single_file_output(
+            &path.display().to_string(),
+            &mel_parser::parse_file_with_options(
+                &path,
+                ParseOptions {
+                    budgets: cli_parse_budgets(Some(4)),
+                    ..ParseOptions::default()
+                },
+            )
+            .expect("parse"),
+            CliDiagnosticLevel::All,
+        )
+        .expect("formatted output")
+    };
+
+    cleanup_test_path(&path);
+
+    assert!(output.contains("source exceeds parse budget: max_bytes"));
+}
+
+#[test]
+fn corpus_summary_counts_budget_failures_as_parse_errors() {
+    let root = unique_test_path("budget-corpus");
+    fs::create_dir_all(&root).expect("temp dir");
+    fs::write(root.join("a.mel"), "print 1;\n").expect("mel file");
+
+    let parse = mel_parser::parse_file_with_options(
+        root.join("a.mel"),
+        ParseOptions {
+            budgets: cli_parse_budgets(Some(4)),
+            ..ParseOptions::default()
+        },
+    )
+    .expect("budgeted parse");
+
+    let file_summary =
+        crate::report::summarize_parse_file(&root.join("a.mel"), &parse, CliDiagnosticLevel::All);
+
+    cleanup_test_path(&root);
+
+    assert_eq!(file_summary.parse_errors, 1);
+    assert!(
+        file_summary
+            .parse_error_messages
+            .contains(&"source exceeds parse budget: max_bytes".to_owned())
+    );
 }
 
 #[test]
