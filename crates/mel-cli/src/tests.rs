@@ -1,19 +1,23 @@
 use crate::{
     app::{cli_parse_budgets, print_path_output},
-    args::{Args, CliDiagnosticLevel, parse_cli_args},
+    args::{Args, CliCommand, CliCorpusEngine, CliDiagnosticLevel, parse_cli_args},
     diagnostics::{
         compute_display_line_starts, compute_normalized_line_starts,
         normalize_diagnostic_source_text, normalized_line_col_for_offset,
     },
     report::{
-        CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary,
-        format_light_corpus_summary, format_light_single_file_output, format_single_file_output,
-        format_single_file_output_with_style, write_single_file_output,
+        CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary, LightSummarySink,
+        SelectiveSummarySink, format_light_corpus_summary, format_light_single_file_output,
+        format_selective_corpus_summary, format_single_file_output,
+        format_single_file_output_with_style, write_light_scan_single_file_output,
+        write_selective_single_file_output, write_single_file_output,
     },
 };
 use clap::{CommandFactory, error::ErrorKind};
+use maya_mel::maya::collect_selective_top_level_bytes_with_options_and_sink;
 use maya_mel::parser::{
     LightParseOptions, parse_light_bytes_with_encoding, parse_light_source_with_options,
+    scan_light_bytes_with_options_and_sink,
 };
 use maya_mel::{
     ParseBudgets, ParseMode, ParseOptions, SourceEncoding, parse_bytes_with_encoding, parse_source,
@@ -21,7 +25,7 @@ use maya_mel::{
 };
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -110,6 +114,42 @@ fn cli_accepts_lightweight_flag() {
 }
 
 #[test]
+fn cli_accepts_scan_subcommand() {
+    let args = parse_cli_args(["mel-inspect", "scan", "fixture.ma"]).expect("scan command");
+    let Some(CliCommand::Scan(command)) = args.command else {
+        panic!("expected scan command");
+    };
+    assert_eq!(command.path, PathBuf::from("fixture.ma"));
+}
+
+#[test]
+fn cli_accepts_selective_subcommand() {
+    let args =
+        parse_cli_args(["mel-inspect", "selective", "fixture.ma"]).expect("selective command");
+    let Some(CliCommand::Selective(command)) = args.command else {
+        panic!("expected selective command");
+    };
+    assert_eq!(command.path, PathBuf::from("fixture.ma"));
+}
+
+#[test]
+fn cli_accepts_corpus_engine() {
+    let args = parse_cli_args([
+        "mel-inspect",
+        "corpus",
+        "private-corpus",
+        "--engine",
+        "scan",
+    ])
+    .expect("corpus command");
+    let Some(CliCommand::Corpus(command)) = args.command else {
+        panic!("expected corpus command");
+    };
+    assert_eq!(command.root, PathBuf::from("private-corpus"));
+    assert_eq!(command.engine, CliCorpusEngine::Scan);
+}
+
+#[test]
 fn cli_accepts_inline_flag() {
     let args = parse_cli_args(["mel-inspect", "--inline", r#"print "hello""#])
         .expect("inline should parse");
@@ -128,6 +168,32 @@ fn cli_accepts_max_bytes_flag() {
     let args =
         parse_cli_args(["mel-inspect", "--max-bytes", "1024", "fixture.mel"]).expect("max bytes");
     assert_eq!(args.max_bytes, Some(1024));
+}
+
+#[test]
+fn cli_accepts_global_options_after_subcommand() {
+    let args = parse_cli_args([
+        "mel-inspect",
+        "scan",
+        "--max-bytes",
+        "1024",
+        "--encoding",
+        "cp932",
+        "--diagnostic-level",
+        "none",
+        "fixture.ma",
+    ])
+    .expect("global options should parse after subcommand");
+    assert_eq!(args.max_bytes, Some(1024));
+    assert_eq!(
+        args.encoding.into_source_encoding(),
+        Some(SourceEncoding::Cp932)
+    );
+    assert_eq!(args.diagnostic_level, CliDiagnosticLevel::None);
+    let Some(CliCommand::Scan(command)) = args.command else {
+        panic!("expected scan command");
+    };
+    assert_eq!(command.path, PathBuf::from("fixture.ma"));
 }
 
 #[test]
@@ -205,6 +271,10 @@ fn help_mentions_directory_flag_and_encoding_values() {
     assert!(help.contains("--diagnostic-level <DIAGNOSTIC_LEVEL>"));
     assert!(help.contains("other parser budgets scale proportionally from defaults"));
     assert!(help.contains("[possible values: auto, utf8, cp932, gbk]"));
+    assert!(help.contains("parse"));
+    assert!(help.contains("scan"));
+    assert!(help.contains("selective"));
+    assert!(help.contains("corpus"));
 }
 
 #[test]
@@ -510,6 +580,67 @@ fn light_output_reports_opaque_tail_counts() {
 }
 
 #[test]
+fn light_scan_output_reports_opaque_tail_counts_without_light_parse() {
+    let mut sink = LightSummarySink::default();
+    let report = scan_light_bytes_with_options_and_sink(
+        b"setAttr \".pt\" -type \"doubleArray\" 1 2 3 4 5 6 7 8 9 10;\n",
+        LightParseOptions {
+            max_prefix_words: 5,
+            max_prefix_bytes: 32,
+            ..LightParseOptions::default()
+        },
+        &mut sink,
+    );
+    let summary = sink.finish(Path::new("light-fixture"), &report, CliDiagnosticLevel::All);
+    let mut output = Vec::new();
+    write_light_scan_single_file_output(
+        &mut output,
+        "light-fixture",
+        &report,
+        &summary,
+        CliDiagnosticLevel::All,
+    )
+    .expect("scan output");
+    let output = String::from_utf8(output).expect("scan output should be utf8");
+    assert!(output.contains("mode: scan"));
+    assert!(output.contains("opaque-tail commands: 1"));
+    assert!(output.contains("setAttr with opaque tail: 1"));
+}
+
+#[test]
+fn selective_output_reports_target_command_counts() {
+    let mut sink = SelectiveSummarySink::default();
+    let report = collect_selective_top_level_bytes_with_options_and_sink(
+        b"requires maya \"2024\";\nfile -r \"asset.ma\";\ncreateNode transform -n \"x\";\nsetAttr \".b\" 1;\n",
+        LightParseOptions::default(),
+        &maya_mel::maya::model::MayaSelectiveOptions::default(),
+        &maya_mel::maya::model::DefaultMayaSelectiveSetAttrSelector,
+        &mut sink,
+    );
+    let summary = sink.finish(
+        Path::new("selective-fixture"),
+        &report,
+        CliDiagnosticLevel::All,
+    );
+    let mut output = Vec::new();
+    write_selective_single_file_output(
+        &mut output,
+        "selective-fixture",
+        &report,
+        &summary,
+        CliDiagnosticLevel::All,
+    )
+    .expect("selective output");
+    let output = String::from_utf8(output).expect("selective output should be utf8");
+    assert!(output.contains("mode: selective"));
+    assert!(output.contains("requires: 1"));
+    assert!(output.contains("file commands: 1"));
+    assert!(output.contains("createNode: 1"));
+    assert!(output.contains("setAttr: 1"));
+    assert!(output.contains("tracked setAttr: 1"));
+}
+
+#[test]
 fn light_none_diagnostic_level_zeroes_rendered_counts() {
     let parse =
         parse_light_source_with_options("setAttr \".tx\" -type;\n", LightParseOptions::default());
@@ -555,6 +686,28 @@ fn format_light_corpus_summary_reports_lightweight_counts() {
     assert!(output.contains("files with light parse errors: 0"));
     assert!(output.contains("total opaque-tail commands: 2"));
     assert!(output.contains("total light-specialized setAttr: 3"));
+}
+
+#[test]
+fn format_selective_corpus_summary_reports_selective_counts() {
+    let mut summary = crate::report::SelectiveCorpusSummary::default();
+    summary.record(crate::report::SelectiveFileSummary {
+        path: "a.ma".to_owned(),
+        decode_errors: 0,
+        light_parse_errors: 1,
+        total_items: 4,
+        requires: 1,
+        files: 1,
+        create_nodes: 1,
+        set_attrs: 1,
+        tracked_set_attrs: 1,
+        set_attr_with_opaque_tail: 0,
+        other_commands: 0,
+    });
+    let output = format_selective_corpus_summary(&summary);
+    assert!(output.contains("files with light parse errors: 1"));
+    assert!(output.contains("total selective items: 4"));
+    assert!(output.contains("total tracked setAttr: 1"));
 }
 
 #[test]

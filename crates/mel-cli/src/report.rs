@@ -1,15 +1,26 @@
+#[cfg(test)]
+use crate::diagnostics::append_compact_file_diagnostics;
+#[cfg(test)]
+use crate::diagnostics::filtered_light_diagnostics;
 use crate::{
     args::CliDiagnosticLevel,
     diagnostics::{
-        DiagnosticCounts, append_compact_file_diagnostics, append_compact_parse_diagnostics,
-        diagnostic_counts, filtered_light_diagnostics, filtered_parse_diagnostics,
-        filtered_sema_diagnostics, parse_diagnostic_counts, render_file_diagnostics_into,
+        DiagnosticCounts, append_compact_light_scan_diagnostics, append_compact_parse_diagnostics,
+        diagnostic_counts, filtered_parse_diagnostics, filtered_sema_diagnostics,
+        light_scan_diagnostic_counts, parse_diagnostic_counts, render_file_diagnostics_into,
     },
 };
 use maya_mel::Parse;
+#[cfg(test)]
 use maya_mel::maya::collect_top_level_facts_light;
+use maya_mel::maya::model::MayaSelectiveItem;
+#[cfg(test)]
 use maya_mel::maya::model::{MayaLightSpecializedCommand, MayaLightTopLevelItem};
+#[cfg(test)]
 use maya_mel::parser::LightParse;
+use maya_mel::parser::{
+    LightCommandSurface, LightItem, LightItemSink, LightScanReport, LightSourceView,
+};
 use std::{
     collections::HashMap,
     fmt::Write as FmtWrite,
@@ -128,6 +139,7 @@ pub(crate) fn format_light_single_file_output_with_style(
     String::from_utf8(output).map_err(io::Error::other)
 }
 
+#[cfg(test)]
 pub(crate) fn write_light_single_file_output_with_style(
     mut writer: impl Write,
     label: &str,
@@ -155,6 +167,7 @@ pub(crate) fn write_light_single_file_output_with_style(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn write_light_single_file_output(
     mut writer: impl Write,
     label: &str,
@@ -171,6 +184,32 @@ pub(crate) fn write_light_single_file_output(
         &parse.source_map,
         &diagnostics,
     );
+    writer.write_all(output.as_bytes())
+}
+
+pub(crate) fn write_light_scan_single_file_output(
+    mut writer: impl Write,
+    label: &str,
+    report: &LightScanReport,
+    summary: &LightFileSummary,
+    diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<()> {
+    let mut output = String::new();
+    append_light_scan_summary(&mut output, label, report, summary).expect("light scan summary");
+    append_compact_light_scan_diagnostics(&mut output, report, diagnostic_level);
+    writer.write_all(output.as_bytes())
+}
+
+pub(crate) fn write_selective_single_file_output(
+    mut writer: impl Write,
+    label: &str,
+    report: &LightScanReport,
+    summary: &SelectiveFileSummary,
+    diagnostic_level: CliDiagnosticLevel,
+) -> io::Result<()> {
+    let mut output = String::new();
+    append_selective_summary(&mut output, label, report, summary).expect("selective summary");
+    append_compact_light_scan_diagnostics(&mut output, report, diagnostic_level);
     writer.write_all(output.as_bytes())
 }
 
@@ -195,6 +234,7 @@ pub(crate) fn summarize_parse_file(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn light_file_summary(
     path: &Path,
     parse: &LightParse,
@@ -243,6 +283,121 @@ pub(crate) fn light_file_summary(
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct LightSummarySink {
+    items: usize,
+    command_items: usize,
+    proc_items: usize,
+    other_items: usize,
+    opaque_tail_commands: usize,
+    specialized_set_attr: usize,
+    set_attr_with_opaque_tail: usize,
+}
+
+impl LightSummarySink {
+    pub(crate) fn finish(
+        self,
+        path: &Path,
+        report: &LightScanReport,
+        diagnostic_level: CliDiagnosticLevel,
+    ) -> LightFileSummary {
+        let counts = light_scan_diagnostic_counts(report, diagnostic_level);
+        LightFileSummary {
+            path: path.display().to_string(),
+            decode_errors: counts.decode,
+            light_parse_errors: counts.light,
+            items: self.items,
+            command_items: self.command_items,
+            proc_items: self.proc_items,
+            other_items: self.other_items,
+            opaque_tail_commands: self.opaque_tail_commands,
+            specialized_set_attr: self.specialized_set_attr,
+            set_attr_with_opaque_tail: self.set_attr_with_opaque_tail,
+        }
+    }
+
+    fn record_command(&mut self, source: LightSourceView<'_>, command: &LightCommandSurface) {
+        self.command_items += 1;
+        if command.opaque_tail.is_some() {
+            self.opaque_tail_commands += 1;
+        }
+        if source.try_ascii_slice(command.head_range) == Some("setAttr") {
+            self.specialized_set_attr += 1;
+            if command.opaque_tail.is_some() {
+                self.set_attr_with_opaque_tail += 1;
+            }
+        }
+    }
+}
+
+impl LightItemSink for LightSummarySink {
+    fn on_item(&mut self, source: LightSourceView<'_>, item: LightItem) {
+        self.items += 1;
+        match item {
+            LightItem::Command(command) => self.record_command(source, &command),
+            LightItem::Proc(_) => self.proc_items += 1,
+            LightItem::Other { .. } => self.other_items += 1,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SelectiveSummarySink {
+    total_items: usize,
+    requires: usize,
+    files: usize,
+    create_nodes: usize,
+    set_attrs: usize,
+    tracked_set_attrs: usize,
+    set_attr_with_opaque_tail: usize,
+    other_commands: usize,
+}
+
+impl SelectiveSummarySink {
+    pub(crate) fn finish(
+        self,
+        path: &Path,
+        report: &LightScanReport,
+        diagnostic_level: CliDiagnosticLevel,
+    ) -> SelectiveFileSummary {
+        let counts = light_scan_diagnostic_counts(report, diagnostic_level);
+        SelectiveFileSummary {
+            path: path.display().to_string(),
+            decode_errors: counts.decode,
+            light_parse_errors: counts.light,
+            total_items: self.total_items,
+            requires: self.requires,
+            files: self.files,
+            create_nodes: self.create_nodes,
+            set_attrs: self.set_attrs,
+            tracked_set_attrs: self.tracked_set_attrs,
+            set_attr_with_opaque_tail: self.set_attr_with_opaque_tail,
+            other_commands: self.other_commands,
+        }
+    }
+}
+
+impl maya_mel::maya::model::MayaSelectiveItemSink for SelectiveSummarySink {
+    fn on_item(&mut self, item: MayaSelectiveItem) {
+        self.total_items += 1;
+        match item {
+            MayaSelectiveItem::Requires(_) => self.requires += 1,
+            MayaSelectiveItem::File(_) => self.files += 1,
+            MayaSelectiveItem::CreateNode(_) => self.create_nodes += 1,
+            MayaSelectiveItem::SetAttr(set_attr) => {
+                self.set_attrs += 1;
+                if set_attr.tracked_attr.is_some() {
+                    self.tracked_set_attrs += 1;
+                }
+                if set_attr.opaque_tail.is_some() {
+                    self.set_attr_with_opaque_tail += 1;
+                }
+            }
+            MayaSelectiveItem::OtherCommand { .. } => self.other_commands += 1,
+        }
+    }
+}
+
 pub(crate) fn format_light_corpus_summary(summary: &LightCorpusSummary) -> String {
     let mut output = format!(
         "corpus files: {}\nfiles with decode issues: {}\nfiles with light parse errors: {}\ntotal items: {}\ntotal command items: {}\ntotal proc items: {}\ntotal opaque-tail commands: {}\ntotal light-specialized setAttr: {}\ntotal setAttr with opaque tail: {}\nio errors: {}\n",
@@ -255,6 +410,35 @@ pub(crate) fn format_light_corpus_summary(summary: &LightCorpusSummary) -> Strin
         summary.total_opaque_tail_commands,
         summary.total_specialized_set_attr,
         summary.total_set_attr_with_opaque_tail,
+        summary.io_errors,
+    );
+
+    if !summary.samples.is_empty() {
+        output.push_str("sample issues:\n");
+        for sample in summary.samples.iter().take(10) {
+            output.push_str("  ");
+            output.push_str(sample);
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+pub(crate) fn format_selective_corpus_summary(summary: &SelectiveCorpusSummary) -> String {
+    let mut output = format!(
+        "corpus files: {}\nfiles with decode issues: {}\nfiles with light parse errors: {}\ntotal selective items: {}\ntotal requires: {}\ntotal file commands: {}\ntotal createNode: {}\ntotal setAttr: {}\ntotal tracked setAttr: {}\ntotal setAttr with opaque tail: {}\ntotal other commands: {}\nio errors: {}\n",
+        summary.files,
+        summary.files_with_decode_issues,
+        summary.files_with_light_parse_errors,
+        summary.total_items,
+        summary.total_requires,
+        summary.total_file_commands,
+        summary.total_create_nodes,
+        summary.total_set_attrs,
+        summary.total_tracked_set_attrs,
+        summary.total_set_attr_with_opaque_tail,
+        summary.total_other_commands,
         summary.io_errors,
     );
 
@@ -397,6 +581,49 @@ impl LightCorpusSummary {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct SelectiveCorpusSummary {
+    pub(crate) files: usize,
+    pub(crate) files_with_decode_issues: usize,
+    pub(crate) files_with_light_parse_errors: usize,
+    pub(crate) io_errors: usize,
+    pub(crate) total_items: usize,
+    pub(crate) total_requires: usize,
+    pub(crate) total_file_commands: usize,
+    pub(crate) total_create_nodes: usize,
+    pub(crate) total_set_attrs: usize,
+    pub(crate) total_tracked_set_attrs: usize,
+    pub(crate) total_set_attr_with_opaque_tail: usize,
+    pub(crate) total_other_commands: usize,
+    pub(crate) samples: Vec<String>,
+}
+
+impl SelectiveCorpusSummary {
+    pub(crate) fn record(&mut self, file: SelectiveFileSummary) {
+        if file.decode_errors > 0 {
+            self.files_with_decode_issues += 1;
+        }
+        if file.light_parse_errors > 0 {
+            self.files_with_light_parse_errors += 1;
+        }
+        self.total_items += file.total_items;
+        self.total_requires += file.requires;
+        self.total_file_commands += file.files;
+        self.total_create_nodes += file.create_nodes;
+        self.total_set_attrs += file.set_attrs;
+        self.total_tracked_set_attrs += file.tracked_set_attrs;
+        self.total_set_attr_with_opaque_tail += file.set_attr_with_opaque_tail;
+        self.total_other_commands += file.other_commands;
+
+        if self.samples.len() < 10 && (file.decode_errors > 0 || file.light_parse_errors > 0) {
+            self.samples.push(format!(
+                "{} decode={} light={} selective={}",
+                file.path, file.decode_errors, file.light_parse_errors, file.total_items
+            ));
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LightFileSummary {
     pub(crate) path: String,
@@ -409,6 +636,21 @@ pub(crate) struct LightFileSummary {
     pub(crate) opaque_tail_commands: usize,
     pub(crate) specialized_set_attr: usize,
     pub(crate) set_attr_with_opaque_tail: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct SelectiveFileSummary {
+    pub(crate) path: String,
+    pub(crate) decode_errors: usize,
+    pub(crate) light_parse_errors: usize,
+    pub(crate) total_items: usize,
+    pub(crate) requires: usize,
+    pub(crate) files: usize,
+    pub(crate) create_nodes: usize,
+    pub(crate) set_attrs: usize,
+    pub(crate) tracked_set_attrs: usize,
+    pub(crate) set_attr_with_opaque_tail: usize,
+    pub(crate) other_commands: usize,
 }
 
 fn collect_source_files_recursive(
@@ -459,6 +701,7 @@ fn append_parse_summary(
     )
 }
 
+#[cfg(test)]
 fn append_light_summary(
     output: &mut String,
     label: &str,
@@ -476,6 +719,51 @@ fn append_light_summary(
         summary.opaque_tail_commands,
         summary.specialized_set_attr,
         summary.set_attr_with_opaque_tail,
+        summary.decode_errors,
+        summary.light_parse_errors,
+    )
+}
+
+fn append_light_scan_summary(
+    output: &mut String,
+    label: &str,
+    report: &LightScanReport,
+    summary: &LightFileSummary,
+) -> std::fmt::Result {
+    write!(
+        output,
+        "source: {label}\nmode: scan\nencoding: {}\nitems: {}\ncommand items: {}\nproc items: {}\nother items: {}\nopaque-tail commands: {}\nlight specialized setAttr: {}\nsetAttr with opaque tail: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
+        report.source_encoding.label(),
+        summary.items,
+        summary.command_items,
+        summary.proc_items,
+        summary.other_items,
+        summary.opaque_tail_commands,
+        summary.specialized_set_attr,
+        summary.set_attr_with_opaque_tail,
+        summary.decode_errors,
+        summary.light_parse_errors,
+    )
+}
+
+fn append_selective_summary(
+    output: &mut String,
+    label: &str,
+    report: &LightScanReport,
+    summary: &SelectiveFileSummary,
+) -> std::fmt::Result {
+    write!(
+        output,
+        "source: {label}\nmode: selective\nencoding: {}\nselective items: {}\nrequires: {}\nfile commands: {}\ncreateNode: {}\nsetAttr: {}\ntracked setAttr: {}\nsetAttr with opaque tail: {}\nother commands: {}\ndecode diagnostics: {}\nlight parse errors: {}\n",
+        report.source_encoding.label(),
+        summary.total_items,
+        summary.requires,
+        summary.files,
+        summary.create_nodes,
+        summary.set_attrs,
+        summary.tracked_set_attrs,
+        summary.set_attr_with_opaque_tail,
+        summary.other_commands,
         summary.decode_errors,
         summary.light_parse_errors,
     )

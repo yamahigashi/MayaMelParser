@@ -1,6 +1,8 @@
 use crate::args::CliDiagnosticLevel;
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
+#[cfg(test)]
 use maya_mel::parser::LightParse;
+use maya_mel::parser::LightScanReport;
 use maya_mel::syntax::{SourceMap, TextRange, range_end, range_start, text_range};
 use maya_mel::{
     Diagnostic, DiagnosticFilter, DiagnosticLabel, DiagnosticSeverity, MayaCommandRegistry, Parse,
@@ -439,6 +441,7 @@ pub(crate) fn parse_diagnostic_counts(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn collect_light_diagnostics(parse: &LightParse) -> Vec<FileDiagnostic<'_>> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
@@ -478,6 +481,7 @@ pub(crate) fn filtered_parse_diagnostics(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn filtered_light_diagnostics(
     parse: &LightParse,
     diagnostic_level: CliDiagnosticLevel,
@@ -501,6 +505,49 @@ pub(crate) fn diagnostic_counts(diagnostics: &[FileDiagnostic<'_>]) -> Diagnosti
         }
     }
     counts
+}
+
+pub(crate) fn light_scan_diagnostic_counts(
+    report: &LightScanReport,
+    diagnostic_level: CliDiagnosticLevel,
+) -> DiagnosticCounts {
+    match diagnostic_level {
+        CliDiagnosticLevel::None => DiagnosticCounts::default(),
+        CliDiagnosticLevel::All | CliDiagnosticLevel::Error => DiagnosticCounts {
+            decode: report.decode_errors.len(),
+            light: report.errors.len(),
+            ..DiagnosticCounts::default()
+        },
+    }
+}
+
+pub(crate) fn append_compact_light_scan_diagnostics(
+    output: &mut String,
+    report: &LightScanReport,
+    diagnostic_level: CliDiagnosticLevel,
+) {
+    if matches!(diagnostic_level, CliDiagnosticLevel::None) {
+        return;
+    }
+
+    for diagnostic in &report.decode_errors {
+        writeln!(
+            output,
+            "Error: decode: {} @ byte {}",
+            diagnostic.message,
+            range_start(diagnostic.range)
+        )
+        .expect("light scan decode diagnostic append");
+    }
+    for diagnostic in &report.errors {
+        writeln!(
+            output,
+            "Error: light: {} @ byte {}",
+            diagnostic.message,
+            range_start(diagnostic.range)
+        )
+        .expect("light scan diagnostic append");
+    }
 }
 
 fn render_compact_file_diagnostics(
