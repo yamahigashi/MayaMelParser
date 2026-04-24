@@ -5,8 +5,8 @@ use encoding_rs::SHIFT_JIS;
 use std::path::Path;
 
 use crate::parser::{
-    LightParseOptions, LightWord, ParseMode, ParseOptions, SourceEncoding, parse_bytes,
-    parse_light_bytes_with_encoding, parse_light_file, parse_light_shared_source,
+    LightParseOptions, LightSourceView, LightWord, ParseMode, ParseOptions, SourceEncoding,
+    parse_bytes, parse_light_bytes_with_encoding, parse_light_file, parse_light_shared_source,
     parse_light_source, parse_light_source_with_options, parse_shared_source, parse_source,
 };
 use crate::sema::command_schema::{
@@ -1283,7 +1283,13 @@ fn selective_collector_preserves_cp932_source_slices() {
     assert_eq!(
         set_attr
             .attr_path_range
-            .map(|range| report.source_slice(range)),
-        Some("\".名\"")
+            .map(|range| LightSourceView::Bytes {
+                bytes: bytes.as_ref(),
+                encoding: report.source_encoding
+            }
+            .decode_slice(range)
+            .text
+            .into_owned()),
+        Some("\".名\"".to_owned())
     );
 }

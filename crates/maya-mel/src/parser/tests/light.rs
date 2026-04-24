@@ -1,5 +1,12 @@
 use super::*;
 
+fn source_text_from_stream(bytes: &[u8], encoding: SourceEncoding, range: TextRange) -> String {
+    LightSourceView::Bytes { bytes, encoding }
+        .decode_slice(range)
+        .text
+        .into_owned()
+}
+
 #[test]
 fn light_parse_keeps_proc_body_as_single_item() {
     let parse =
@@ -76,7 +83,7 @@ fn streaming_light_scan_matches_materialized_items() {
     let report = scan_light_source_with_options_and_sink(
         source,
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.push(item),
     );
 
     assert_eq!(streamed, materialized.source.items);
@@ -91,7 +98,7 @@ fn streaming_shared_light_scan_matches_materialized_items() {
     let report = scan_light_shared_source_with_options_and_sink(
         Arc::clone(&source),
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.push(item),
     );
 
     assert!(Arc::ptr_eq(&report.source_text, &source));
@@ -109,7 +116,7 @@ fn streaming_shared_light_scan_bytes_matches_materialized_items() {
         bytes.as_ref(),
         SourceEncoding::Cp932,
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.push(item),
     );
 
     assert_eq!(streamed, materialized.source.items);
@@ -117,7 +124,14 @@ fn streaming_shared_light_scan_bytes_matches_materialized_items() {
     let LightItem::Command(command) = &streamed[0] else {
         panic!("expected command item");
     };
-    assert_eq!(report.source_slice(command.words[0].range()), "\".名\"");
+    assert_eq!(
+        source_text_from_stream(
+            bytes.as_ref(),
+            report.source_encoding,
+            command.words[0].range()
+        ),
+        "\".名\""
+    );
 }
 
 #[test]
@@ -128,7 +142,7 @@ fn streaming_shared_light_scan_utf8_bytes_matches_materialized_items() {
     let report = scan_light_shared_bytes_with_options_and_sink(
         source,
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.push(item),
     );
 
     assert_eq!(streamed, materialized.source.items);
@@ -204,7 +218,7 @@ fn scan_light_shared_file_with_encoding_matches_owned_cp932_file_path() {
         &path,
         SourceEncoding::Cp932,
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| shared_items.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| shared_items.push(item),
     )
     .expect("shared light scan should succeed");
     let mut owned_items = Vec::new();
@@ -212,7 +226,7 @@ fn scan_light_shared_file_with_encoding_matches_owned_cp932_file_path() {
         &path,
         SourceEncoding::Cp932,
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| owned_items.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| owned_items.push(item),
     )
     .expect("owned light scan should succeed");
 
@@ -322,14 +336,43 @@ fn streaming_light_scan_bytes_preserves_safe_source_slices_for_non_utf8() {
     let mut streamed = Vec::new();
     let report = scan_light_bytes_with_sink(
         bytes.as_ref(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.push(item),
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.push(item),
     );
     assert!(report.errors.is_empty());
     let LightItem::Command(command) = &streamed[0] else {
         panic!("expected command item");
     };
-    assert_eq!(report.source_slice(command.head_range), "setAttr");
-    assert_eq!(report.source_slice(command.words[0].range()), "\".名\"");
+    assert_eq!(
+        source_text_from_stream(bytes.as_ref(), report.source_encoding, command.head_range),
+        "setAttr"
+    );
+    assert_eq!(
+        source_text_from_stream(
+            bytes.as_ref(),
+            report.source_encoding,
+            command.words[0].range()
+        ),
+        "\".名\""
+    );
+}
+
+#[test]
+fn byte_light_scan_does_not_treat_cp932_trail_backslash_as_escape() {
+    let bytes = b"setAttr \".st\" \"\x81\x5c\";\n";
+    let mut streamed = Vec::new();
+    let report = scan_light_bytes_with_encoding_and_options_and_sink(
+        bytes,
+        SourceEncoding::Cp932,
+        LightParseOptions::default(),
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.push(item),
+    );
+
+    assert!(report.errors.is_empty());
+    let LightItem::Command(command) = &streamed[0] else {
+        panic!("expected command item");
+    };
+    assert_eq!(command.words.len(), 2);
+    assert_eq!(command.span, text_range(0, bytes.len() as u32 - 1));
 }
 
 #[test]
@@ -340,13 +383,19 @@ fn no_retain_light_scan_bytes_matches_retained_utf8_path() {
     let (head, summary) = scan_light_bytes_with_options_and_sink_and_then(
         source,
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
-        |_, source: mel_syntax::SourceView<'_>, summary| {
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
+        |_, source: LightSourceView<'_>, summary| {
             let items = streamed.borrow();
             let LightItem::Command(command) = &items[1] else {
                 panic!("expected command item");
             };
-            (source.slice(command.head_range).to_string(), summary)
+            (
+                source
+                    .try_ascii_slice(command.head_range)
+                    .expect("ascii head")
+                    .to_string(),
+                summary,
+            )
         },
     );
 
@@ -365,13 +414,19 @@ fn no_retain_light_scan_bytes_preserves_non_utf8_source_slices() {
     let (first_arg, summary) = scan_light_bytes_with_options_and_sink_and_then(
         bytes.as_ref(),
         LightParseOptions::default(),
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
-        |_, source: mel_syntax::SourceView<'_>, summary| {
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
+        |_, source: LightSourceView<'_>, summary| {
             let items = streamed.borrow();
             let LightItem::Command(command) = &items[0] else {
                 panic!("expected command item");
             };
-            (source.slice(command.words[0].range()).to_string(), summary)
+            (
+                source
+                    .decode_slice(command.words[0].range())
+                    .text
+                    .into_owned(),
+                summary,
+            )
         },
     );
 
@@ -394,9 +449,9 @@ fn no_retain_light_scan_reports_budget_error_without_items() {
             },
             ..LightParseOptions::default()
         },
-        &mut |_: mel_syntax::SourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
-        |_, source: mel_syntax::SourceView<'_>, summary| {
-            assert_eq!(source.text(), "");
+        &mut |_: LightSourceView<'_>, item: LightItem| streamed.borrow_mut().push(item),
+        |_, source: LightSourceView<'_>, summary| {
+            assert!(source.is_empty());
             summary
         },
     );

@@ -26,12 +26,12 @@ use self::decode::{
 };
 use self::engine::Parser;
 pub use self::light::{
-    LightCommandSurface, LightItem, LightItemSink, LightParse, LightParseOptions, LightProcSurface,
-    LightScanReport, LightScanSummary, LightSourceFile, LightWord, SharedLightParse,
-    SharedLightScanReport, parse_light_bytes, parse_light_bytes_with_encoding, parse_light_file,
-    parse_light_file_with_encoding, parse_light_file_with_encoding_and_options,
-    parse_light_file_with_options, parse_light_shared_bytes,
-    parse_light_shared_bytes_with_encoding, parse_light_shared_file,
+    DecodedLightSlice, LightCommandSurface, LightItem, LightItemSink, LightParse,
+    LightParseOptions, LightProcSurface, LightScanReport, LightScanSummary, LightSourceFile,
+    LightSourceView, LightWord, SharedLightParse, SharedLightScanReport, parse_light_bytes,
+    parse_light_bytes_with_encoding, parse_light_file, parse_light_file_with_encoding,
+    parse_light_file_with_encoding_and_options, parse_light_file_with_options,
+    parse_light_shared_bytes, parse_light_shared_bytes_with_encoding, parse_light_shared_file,
     parse_light_shared_file_with_encoding, parse_light_shared_source,
     parse_light_shared_source_with_options, parse_light_source, parse_light_source_with_options,
     scan_light_bytes_with_encoding_and_options_and_sink, scan_light_bytes_with_encoding_and_sink,

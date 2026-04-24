@@ -4,12 +4,12 @@ use crate::model::{
     MayaSelectiveRequires, MayaSelectiveSetAttr, MayaSelectiveSetAttrSelector,
 };
 use mel_parser::{
-    LightParseOptions, LightScanReport, LightWord, SourceEncoding,
+    LightParseOptions, LightScanReport, LightSourceView, LightWord, SourceEncoding,
     scan_light_bytes_with_encoding_and_options_and_sink, scan_light_bytes_with_options_and_sink,
     scan_light_file_with_encoding_and_options_and_sink, scan_light_file_with_options_and_sink,
     scan_light_source_with_options_and_sink,
 };
-use mel_syntax::{SourceView, TextRange};
+use mel_syntax::TextRange;
 
 pub fn collect_selective_top_level_source_with_sink(
     input: &str,
@@ -176,7 +176,7 @@ where
     Sel: MayaSelectiveSetAttrSelector + ?Sized,
     Sink: MayaSelectiveItemSink + ?Sized,
 {
-    fn on_item(&mut self, source: SourceView<'_>, item: mel_parser::LightItem) {
+    fn on_item(&mut self, source: LightSourceView<'_>, item: mel_parser::LightItem) {
         let mel_parser::LightItem::Command(command) = item else {
             return;
         };
@@ -189,12 +189,12 @@ where
 }
 
 fn selective_item_from_command(
-    source: SourceView<'_>,
+    source: LightSourceView<'_>,
     command: &mel_parser::LightCommandSurface,
     options: &MayaSelectiveOptions,
     selector: &(impl MayaSelectiveSetAttrSelector + ?Sized),
 ) -> Option<MayaSelectiveItem> {
-    let head = source.slice(command.head_range);
+    let head = source.try_ascii_slice(command.head_range)?;
     match head {
         "requires" => Some(MayaSelectiveItem::Requires(MayaSelectiveRequires {
             head_range: command.head_range,
@@ -216,8 +216,10 @@ fn selective_item_from_command(
         "setAttr" => {
             let attr_path_range = first_non_flag_range(&command.words);
             let type_name_range = first_flag_arg_range(source, &command.words, &["type", "typ"]);
-            let tracked_attr = attr_path_range
-                .and_then(|range| selector.classify(strip_outer_quotes(source.slice(range))));
+            let tracked_attr = attr_path_range.and_then(|range| {
+                let decoded = source.decode_slice(range);
+                selector.classify(strip_outer_quotes(decoded.text.as_ref()))
+            });
             Some(MayaSelectiveItem::SetAttr(MayaSelectiveSetAttr {
                 head_range: command.head_range,
                 attr_path_range,
@@ -256,7 +258,7 @@ fn non_flag_range(word: &LightWord) -> Option<TextRange> {
 }
 
 fn first_flag_arg_range(
-    source: SourceView<'_>,
+    source: LightSourceView<'_>,
     words: &[LightWord],
     names: &[&str],
 ) -> Option<TextRange> {
@@ -266,7 +268,7 @@ fn first_flag_arg_range(
             index += 1;
             continue;
         };
-        let normalized = source.slice(*text).trim_start_matches('-');
+        let normalized = source.try_ascii_slice(*text)?.trim_start_matches('-');
         if names.contains(&normalized) {
             return words.get(index + 1).and_then(non_flag_range);
         }
