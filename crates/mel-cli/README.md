@@ -18,11 +18,16 @@ cargo install --path crates/mel-cli
 mel-inspect examples/basic.mel
 mel-inspect --max-bytes 1048576 examples/basic.mel
 mel-inspect --inline '`ls -sl`;'
+mel-inspect --expression --inline 'persp.translateY = frame'
 mel-inspect --lightweight my-corpus
 ```
 
 `--max-bytes` caps source bytes and scales the other parser budgets
 proportionally from their defaults.
+
+`--expression` selects Maya Expression Editor full-source parse mode for full
+file or inline parse input. It is intentionally not supported with
+`--lightweight`, `scan`, `selective`, or `corpus`.
 
 ## Stability
 

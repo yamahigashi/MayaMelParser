@@ -1,11 +1,12 @@
 use crate::{
     args::{CliCommand, CliCorpusEngine, CliDiagnosticLevel, parse_cli_args, print_help},
     report::{
-        CorpusSummary, LightCorpusSummary, LightSummarySink, SelectiveCorpusSummary,
-        SelectiveSummarySink, collect_source_files, format_light_corpus_summary,
-        format_selective_corpus_summary, print_parse_summary, summarize_parse_file,
+        CorpusSummary, LightCorpusSummary, LightSummarySink, ParseReportOptions,
+        SelectiveCorpusSummary, SelectiveSummarySink, collect_source_files,
+        format_light_corpus_summary, format_selective_corpus_summary,
+        print_parse_summary_with_options, summarize_parse_file,
         write_light_scan_single_file_output, write_selective_single_file_output,
-        write_single_file_output_with_style,
+        write_single_file_output_with_style_and_options,
     },
 };
 use maya_mel::maya::{
@@ -17,7 +18,7 @@ use maya_mel::parser::{
     scan_light_file_with_options_and_sink,
 };
 use maya_mel::{
-    ParseBudgets, ParseMode, ParseOptions, SourceEncoding, parse_file_with_encoding_and_options,
+    ParseBudgets, ParseOptions, SourceEncoding, parse_file_with_encoding_and_options,
     parse_file_with_options, parse_source_with_options,
 };
 use std::{fs, io, io::IsTerminal, path::Path};
@@ -41,8 +42,14 @@ pub(crate) fn run() -> Result<(), RunError> {
     let budgets = cli_parse_budgets(args.max_bytes);
 
     if let Some(command) = args.command {
-        return run_command(command, selected_encoding, diagnostic_level, budgets)
-            .map_err(|error| RunError::Message(error.to_string()));
+        return run_command(
+            command,
+            selected_encoding,
+            diagnostic_level,
+            budgets,
+            args.expression,
+        )
+        .map_err(|error| RunError::Message(error.to_string()));
     }
 
     if let Some(path) = args.path {
@@ -52,62 +59,67 @@ pub(crate) fn run() -> Result<(), RunError> {
             args.lightweight,
             diagnostic_level,
             budgets,
+            args.expression,
         )
         .map_err(|error| RunError::Message(error.to_string()));
     }
 
     if let Some(input) = args.inline_input {
-        let parse = parse_source_with_options(
-            &input,
-            ParseOptions {
-                mode: ParseMode::AllowTrailingStmtWithoutSemi,
-                budgets,
-            },
+        let parse =
+            parse_source_with_options(&input, cli_parse_options(args.expression, true, budgets));
+        print_parse_summary_with_options(
+            "inline",
+            &parse,
+            cli_parse_report_options(args.expression, CliDiagnosticLevel::All),
         );
-        print_parse_summary("inline", &parse);
         return Ok(());
     }
 
     Ok(())
 }
 
-fn run_command(
+pub(crate) fn run_command(
     command: CliCommand,
     encoding: Option<SourceEncoding>,
     diagnostic_level: CliDiagnosticLevel,
     budgets: ParseBudgets,
+    expression: bool,
 ) -> io::Result<()> {
     match command {
         CliCommand::Parse(command) => {
             if let Some(input) = command.inline_input {
-                let parse = parse_source_with_options(
-                    &input,
-                    ParseOptions {
-                        mode: ParseMode::AllowTrailingStmtWithoutSemi,
-                        budgets,
-                    },
+                let parse =
+                    parse_source_with_options(&input, cli_parse_options(expression, true, budgets));
+                print_parse_summary_with_options(
+                    "inline",
+                    &parse,
+                    cli_parse_report_options(expression, CliDiagnosticLevel::All),
                 );
-                print_parse_summary("inline", &parse);
                 Ok(())
             } else if let Some(path) = command.path {
-                print_single_file_parse(&path, encoding, diagnostic_level, budgets)
+                print_single_file_parse(&path, encoding, diagnostic_level, budgets, expression)
             } else {
                 print_help().map_err(io::Error::other)
             }
         }
         CliCommand::Scan(command) => {
+            reject_expression_for_non_parse(expression, "scan")?;
             print_single_file_scan(&command.path, encoding, diagnostic_level, budgets)
         }
         CliCommand::Selective(command) => {
+            reject_expression_for_non_parse(expression, "selective")?;
             print_single_file_selective(&command.path, encoding, diagnostic_level, budgets)
         }
-        CliCommand::Corpus(command) => print_corpus_summary_with_engine(
-            &command.root,
-            encoding,
-            command.engine,
-            diagnostic_level,
-            budgets,
-        ),
+        CliCommand::Corpus(command) => {
+            reject_expression_for_non_parse(expression, "corpus")?;
+            print_corpus_summary_with_engine(
+                &command.root,
+                encoding,
+                command.engine,
+                diagnostic_level,
+                budgets,
+            )
+        }
     }
 }
 
@@ -117,13 +129,34 @@ pub(crate) fn print_path_output(
     lightweight: bool,
     diagnostic_level: CliDiagnosticLevel,
     budgets: ParseBudgets,
+    expression: bool,
 ) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
 
+    if expression && lightweight {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--expression cannot be used with --lightweight",
+        ));
+    }
+
     if metadata.is_dir() {
+        if expression {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--expression can only be used with full single-file or inline parse input",
+            ));
+        }
         print_corpus_summary(path, encoding, lightweight, diagnostic_level, budgets)
     } else if metadata.is_file() {
-        print_single_file(path, encoding, lightweight, diagnostic_level, budgets)
+        print_single_file(
+            path,
+            encoding,
+            lightweight,
+            diagnostic_level,
+            budgets,
+            expression,
+        )
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -141,11 +174,12 @@ fn print_single_file(
     lightweight: bool,
     diagnostic_level: CliDiagnosticLevel,
     budgets: ParseBudgets,
+    expression: bool,
 ) -> io::Result<()> {
     if lightweight {
         print_single_file_scan(path, encoding, diagnostic_level, budgets)?;
     } else {
-        print_single_file_parse(path, encoding, diagnostic_level, budgets)?;
+        print_single_file_parse(path, encoding, diagnostic_level, budgets, expression)?;
     }
     Ok(())
 }
@@ -155,32 +189,21 @@ fn print_single_file_parse(
     encoding: Option<SourceEncoding>,
     diagnostic_level: CliDiagnosticLevel,
     budgets: ParseBudgets,
+    expression: bool,
 ) -> io::Result<()> {
     let label = path.display().to_string();
     let fancy_diagnostics = io::stdout().is_terminal();
+    let options = cli_parse_options(expression, false, budgets);
     let parse = if let Some(encoding) = encoding {
-        parse_file_with_encoding_and_options(
-            path,
-            encoding,
-            ParseOptions {
-                budgets,
-                ..ParseOptions::default()
-            },
-        )?
+        parse_file_with_encoding_and_options(path, encoding, options)?
     } else {
-        parse_file_with_options(
-            path,
-            ParseOptions {
-                budgets,
-                ..ParseOptions::default()
-            },
-        )?
+        parse_file_with_options(path, options)?
     };
-    write_single_file_output_with_style(
+    write_single_file_output_with_style_and_options(
         io::stdout().lock(),
         &label,
         &parse,
-        diagnostic_level,
+        cli_parse_report_options(expression, diagnostic_level),
         fancy_diagnostics,
     )
 }
@@ -484,4 +507,36 @@ fn scale_budget(default_value: usize, max_bytes: usize, default_max_bytes: usize
     ((((default_value as u128) * (max_bytes as u128)) / (default_max_bytes as u128))
         .min(usize::MAX as u128) as usize)
         .max(1)
+}
+
+fn cli_parse_options(expression: bool, inline: bool, budgets: ParseBudgets) -> ParseOptions {
+    let mut options = match (expression, inline) {
+        (false, false) => ParseOptions::strict(),
+        (false, true) => ParseOptions::inline(),
+        (true, false) => ParseOptions::expression(),
+        (true, true) => ParseOptions::inline_expression(),
+    };
+    options.budgets = budgets;
+    options
+}
+
+fn cli_parse_report_options(
+    expression: bool,
+    diagnostic_level: CliDiagnosticLevel,
+) -> ParseReportOptions {
+    if expression {
+        ParseReportOptions::expression(diagnostic_level)
+    } else {
+        ParseReportOptions::mel(diagnostic_level)
+    }
+}
+
+fn reject_expression_for_non_parse(expression: bool, command: &str) -> io::Result<()> {
+    if expression {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--expression can only be used with full parse input, not {command}"),
+        ));
+    }
+    Ok(())
 }

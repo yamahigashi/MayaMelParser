@@ -861,3 +861,29 @@ fn parse_helpers_slice_and_unquote_string_literals() {
         _ => panic!("expected statement"),
     }
 }
+
+#[test]
+fn expression_mode_rejects_block_comments_without_changing_mel_mode() {
+    let parse = parse_source("/* ok */ print \"hello\";");
+    assert!(parse.lex_errors.is_empty());
+
+    let parse = parse_source_with_options("/* nope */ time;", ParseOptions::expression());
+    assert_eq!(parse.lex_errors.len(), 1);
+    assert_eq!(
+        parse.lex_errors[0].message,
+        "block comments are not allowed in expression mode"
+    );
+    assert!(parse.errors.is_empty());
+}
+
+#[test]
+fn expression_mode_keeps_unterminated_block_comment_diagnostic() {
+    let parse = parse_source_with_options("/* nope", ParseOptions::expression());
+    let messages = parse
+        .lex_errors
+        .iter()
+        .map(|diagnostic| diagnostic.message)
+        .collect::<Vec<_>>();
+    assert!(messages.contains(&"block comments are not allowed in expression mode"));
+    assert!(messages.contains(&"unterminated block comment"));
+}

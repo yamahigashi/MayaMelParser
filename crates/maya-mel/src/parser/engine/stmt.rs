@@ -34,10 +34,8 @@ impl<'a> Parser<'a> {
             self.parse_break_stmt(context)
         } else if self.at_keyword("continue") {
             self.parse_continue_stmt(context)
-        } else if self.starts_command_stmt() {
-            self.parse_command_stmt(context)
         } else {
-            self.parse_expr_stmt(context)
+            self.parse_invocation_or_expr_stmt(context)
         }?;
 
         if !self.record_statement_budget(stmt_range(&stmt)) {
@@ -506,6 +504,18 @@ impl<'a> Parser<'a> {
         })
     }
 
+    pub(super) fn parse_invocation_or_expr_stmt(&mut self, context: StmtContext) -> Option<Stmt> {
+        if self.policy.expression_syntax && self.starts_expression_stmt_in_expression_mode() {
+            return self.parse_expr_stmt(context);
+        }
+
+        if self.starts_command_stmt() {
+            return self.parse_command_stmt(context);
+        }
+
+        self.parse_expr_stmt(context)
+    }
+
     pub(super) fn starts_var_decl(&mut self) -> bool {
         if self.at_keyword("global") {
             if self.peek_keyword() == Some("proc") {
@@ -521,6 +531,46 @@ impl<'a> Parser<'a> {
 
     pub(super) fn starts_command_stmt(&mut self) -> bool {
         self.at(TokenKind::Ident) && !self.starts_function_stmt()
+    }
+
+    pub(super) fn starts_expression_stmt_in_expression_mode(&mut self) -> bool {
+        if !self.at(TokenKind::Ident) {
+            return true;
+        }
+
+        let head_index = self.current_index();
+        let next_index = self.next_significant_index(head_index + 1);
+        matches!(
+            self.token_at(next_index).kind,
+            TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::Dot
+                | TokenKind::Question
+                | TokenKind::Semi
+                | TokenKind::RBrace
+                | TokenKind::Eof
+                | TokenKind::PlusPlus
+                | TokenKind::MinusMinus
+                | TokenKind::Assign
+                | TokenKind::PlusEq
+                | TokenKind::MinusEq
+                | TokenKind::StarEq
+                | TokenKind::SlashEq
+                | TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Caret
+                | TokenKind::Lt
+                | TokenKind::Le
+                | TokenKind::Gt
+                | TokenKind::Ge
+                | TokenKind::EqEq
+                | TokenKind::NotEq
+                | TokenKind::AndAnd
+                | TokenKind::OrOr
+        )
     }
 
     pub(super) fn starts_function_stmt(&mut self) -> bool {

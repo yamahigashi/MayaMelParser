@@ -1,5 +1,5 @@
 use crate::{
-    app::{cli_parse_budgets, print_path_output},
+    app::{cli_parse_budgets, print_path_output, run_command},
     args::{Args, CliCommand, CliCorpusEngine, CliDiagnosticLevel, parse_cli_args},
     diagnostics::{
         compute_display_line_starts, compute_normalized_line_starts,
@@ -7,10 +7,11 @@ use crate::{
     },
     report::{
         CorpusSummary, FileSummary, LightCorpusSummary, LightFileSummary, LightSummarySink,
-        SelectiveSummarySink, format_light_corpus_summary, format_light_single_file_output,
-        format_selective_corpus_summary, format_single_file_output,
-        format_single_file_output_with_style, write_light_scan_single_file_output,
-        write_selective_single_file_output, write_single_file_output,
+        ParseReportOptions, SelectiveSummarySink, format_light_corpus_summary,
+        format_light_single_file_output, format_selective_corpus_summary,
+        format_single_file_output, format_single_file_output_with_style,
+        write_light_scan_single_file_output, write_selective_single_file_output,
+        write_single_file_output, write_single_file_output_with_style_and_options,
     },
 };
 use clap::{CommandFactory, error::ErrorKind};
@@ -157,6 +158,31 @@ fn cli_accepts_inline_flag() {
 }
 
 #[test]
+fn cli_accepts_expression_flag_for_full_parse_inputs() {
+    let args = parse_cli_args(["mel-inspect", "--expression", "fixture.mel"])
+        .expect("expression file should parse");
+    assert!(args.expression);
+    assert_eq!(args.path, Some(PathBuf::from("fixture.mel")));
+
+    let args = parse_cli_args([
+        "mel-inspect",
+        "parse",
+        "--expression",
+        "--inline",
+        "persp.translateY = frame",
+    ])
+    .expect("expression inline parse command should parse");
+    assert!(args.expression);
+    let Some(CliCommand::Parse(command)) = args.command else {
+        panic!("expected parse command");
+    };
+    assert_eq!(
+        command.inline_input.as_deref(),
+        Some("persp.translateY = frame")
+    );
+}
+
+#[test]
 fn cli_accepts_diagnostic_level_flag() {
     let args = parse_cli_args(["mel-inspect", "--diagnostic-level", "error", "fixture.mel"])
         .expect("diagnostic level should parse");
@@ -241,6 +267,79 @@ fn cli_rejects_lightweight_with_inline() {
     let error = parse_cli_args(["mel-inspect", "--lightweight", "--inline", "print 1"])
         .expect_err("lightweight inline should fail");
     assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn app_rejects_expression_for_non_full_parse_modes() {
+    let root = unique_test_path("expression-directory");
+    fs::create_dir_all(&root).expect("temp dir");
+    let error = print_path_output(
+        &root,
+        None,
+        false,
+        CliDiagnosticLevel::All,
+        ParseBudgets::default(),
+        true,
+    )
+    .expect_err("expression directory should fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    cleanup_test_path(&root);
+
+    let file = unique_test_path("expression-lightweight-file.mel");
+    fs::write(&file, "print \"hello\";").expect("temp file");
+    let error = print_path_output(
+        &file,
+        None,
+        true,
+        CliDiagnosticLevel::All,
+        ParseBudgets::default(),
+        true,
+    )
+    .expect_err("expression lightweight should fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    cleanup_test_path(&file);
+
+    for command in [
+        CliCommand::Scan(crate::args::CliPathCommand {
+            path: PathBuf::from("fixture.ma"),
+        }),
+        CliCommand::Selective(crate::args::CliPathCommand {
+            path: PathBuf::from("fixture.ma"),
+        }),
+        CliCommand::Corpus(crate::args::CliCorpusCommand {
+            root: PathBuf::from("tests/corpus"),
+            engine: CliCorpusEngine::Full,
+        }),
+    ] {
+        let error = run_command(
+            command,
+            None,
+            CliDiagnosticLevel::All,
+            ParseBudgets::default(),
+            true,
+        )
+        .expect_err("expression non-parse command should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[test]
+fn expression_output_skips_sema_diagnostics() {
+    let parse = parse_source_with_options("persp.translateY = frame;", ParseOptions::expression());
+    let mut output = Vec::new();
+    write_single_file_output_with_style_and_options(
+        &mut output,
+        "expression",
+        &parse,
+        ParseReportOptions::expression(CliDiagnosticLevel::All),
+        false,
+    )
+    .expect("expression output should render");
+    let output = String::from_utf8(output).expect("output should stay utf8");
+
+    assert!(output.contains("mode: expression"));
+    assert!(output.contains("semantic diagnostics: 0"));
+    assert!(!output.contains("unresolved variable"));
 }
 
 #[test]
@@ -387,6 +486,7 @@ fn path_mode_rejects_non_file_non_directory() {
             false,
             CliDiagnosticLevel::All,
             ParseBudgets::default(),
+            false,
         )
         .expect_err("socket path should fail");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -443,6 +543,7 @@ fn path_mode_reports_budget_parse_errors_for_files() {
             false,
             CliDiagnosticLevel::All,
             cli_parse_budgets(Some(4)),
+            false,
         );
         parse.expect("file output should render");
         format_single_file_output(

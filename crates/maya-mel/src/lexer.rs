@@ -13,6 +13,12 @@ pub struct Lexer<'a> {
     emitted_eof: bool,
     diagnostics: Vec<LexDiagnostic>,
     significant_only: bool,
+    reject_block_comments: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LexerPolicy {
+    pub(crate) reject_block_comments: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -26,7 +32,20 @@ impl<'a> Lexer<'a> {
         Self::with_options(input, true)
     }
 
+    #[must_use]
+    pub(crate) fn significant_with_policy(input: &'a str, policy: LexerPolicy) -> Self {
+        Self::with_options_and_policy(input, true, policy)
+    }
+
     fn with_options(input: &'a str, significant_only: bool) -> Self {
+        Self::with_options_and_policy(input, significant_only, LexerPolicy::default())
+    }
+
+    fn with_options_and_policy(
+        input: &'a str,
+        significant_only: bool,
+        policy: LexerPolicy,
+    ) -> Self {
         Self {
             input,
             bytes: input.as_bytes(),
@@ -34,6 +53,7 @@ impl<'a> Lexer<'a> {
             emitted_eof: false,
             diagnostics: Vec::new(),
             significant_only,
+            reject_block_comments: policy.reject_block_comments,
         }
     }
 
@@ -71,6 +91,12 @@ impl<'a> Lexer<'a> {
                     let start = i;
                     let (end, terminated) = lex_block_comment(bytes, i);
                     i = end;
+                    if self.reject_block_comments {
+                        self.diagnostics.push(LexDiagnostic::new(
+                            "block comments are not allowed in expression mode",
+                            text_range(start as u32, end as u32),
+                        ));
+                    }
                     if !terminated {
                         self.diagnostics.push(LexDiagnostic::new(
                             "unterminated block comment",

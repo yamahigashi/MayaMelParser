@@ -26,7 +26,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn can_omit_stmt_semi(&mut self, context: StmtContext) -> bool {
-        matches!(self.options.mode, ParseMode::AllowTrailingStmtWithoutSemi)
+        self.policy.allow_trailing_top_level_stmt_without_semi
             && matches!(context, StmtContext::TopLevel)
             && self.at(TokenKind::Eof)
     }

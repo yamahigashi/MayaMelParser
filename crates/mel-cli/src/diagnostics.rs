@@ -361,9 +361,10 @@ pub(crate) fn compute_display_line_starts(source_text: &str) -> Vec<usize> {
     starts
 }
 
-pub(crate) fn collect_diagnostics(
+pub(crate) fn collect_diagnostics_with_sema(
     parse: &Parse,
     filter: DiagnosticFilter,
+    run_sema: bool,
 ) -> Vec<FileDiagnostic<'_>> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.decode_errors.iter().map(|diagnostic| FileDiagnostic {
@@ -396,20 +397,22 @@ pub(crate) fn collect_diagnostics(
             is_primary: true,
         }],
     }));
-    diagnostics.extend(
-        analyze_parse_diagnostics(parse, filter)
-            .into_iter()
-            .map(|diagnostic| FileDiagnostic {
-                stage: "sema",
-                severity: diagnostic.severity,
-                message: FileDiagnosticText::Shared(diagnostic.message),
-                labels: diagnostic
-                    .labels
-                    .into_iter()
-                    .map(file_diagnostic_label)
-                    .collect(),
-            }),
-    );
+    if run_sema {
+        diagnostics.extend(analyze_parse_diagnostics(parse, filter).into_iter().map(
+            |diagnostic| {
+                FileDiagnostic {
+                    stage: "sema",
+                    severity: diagnostic.severity,
+                    message: FileDiagnosticText::Shared(diagnostic.message),
+                    labels: diagnostic
+                        .labels
+                        .into_iter()
+                        .map(file_diagnostic_label)
+                        .collect(),
+                }
+            },
+        ));
+    }
     diagnostics
 }
 
@@ -471,10 +474,20 @@ pub(crate) fn filtered_parse_diagnostics(
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
 ) -> Vec<FileDiagnostic<'_>> {
+    filtered_parse_diagnostics_with_sema(parse, diagnostic_level, true)
+}
+
+pub(crate) fn filtered_parse_diagnostics_with_sema(
+    parse: &Parse,
+    diagnostic_level: CliDiagnosticLevel,
+    run_sema: bool,
+) -> Vec<FileDiagnostic<'_>> {
     match diagnostic_level {
-        CliDiagnosticLevel::All => collect_diagnostics(parse, DiagnosticFilter::All),
+        CliDiagnosticLevel::All => {
+            collect_diagnostics_with_sema(parse, DiagnosticFilter::All, run_sema)
+        }
         CliDiagnosticLevel::Error => filter_diagnostics(
-            collect_diagnostics(parse, DiagnosticFilter::ErrorsOnly),
+            collect_diagnostics_with_sema(parse, DiagnosticFilter::ErrorsOnly, run_sema),
             diagnostic_level,
         ),
         CliDiagnosticLevel::None => Vec::new(),

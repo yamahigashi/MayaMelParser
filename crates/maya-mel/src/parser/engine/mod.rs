@@ -3,7 +3,7 @@ use mel_ast::{
     ProcReturnType, ShellWord, SourceFile, Stmt, SwitchClause, SwitchLabel, TypeName, UnaryOp,
     UpdateOp, VarDecl, VectorComponent,
 };
-use mel_lexer::{Lexer, significant_lexer};
+use mel_lexer::{Lexer, LexerPolicy};
 use mel_syntax::{SourceMap, TextRange, Token, TokenKind, range_end, range_start, text_range};
 
 use crate::{
@@ -25,7 +25,7 @@ const TOKEN_LOOKAHEAD: usize = 4;
 
 pub(crate) struct Parser<'a> {
     input: &'a str,
-    options: ParseOptions,
+    policy: ParserPolicy,
     tokens: TokenWindow<'a>,
     pos: usize,
     rewind_floor: Option<usize>,
@@ -34,6 +34,30 @@ pub(crate) struct Parser<'a> {
     errors: Vec<ParseError>,
     budget: BudgetTracker,
     halted: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ParserPolicy {
+    expression_syntax: bool,
+    allow_trailing_top_level_stmt_without_semi: bool,
+    reject_block_comments: bool,
+}
+
+impl ParserPolicy {
+    fn new(mode: ParseMode) -> Self {
+        Self {
+            expression_syntax: mode.is_expression_syntax(),
+            allow_trailing_top_level_stmt_without_semi: mode
+                .allows_trailing_top_level_stmt_without_semi(),
+            reject_block_comments: mode.is_expression_syntax(),
+        }
+    }
+
+    fn lexer_policy(self) -> LexerPolicy {
+        LexerPolicy {
+            reject_block_comments: self.reject_block_comments,
+        }
+    }
 }
 
 struct TokenWindow<'a> {
@@ -54,10 +78,11 @@ enum StmtContext {
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(input: &'a str, options: ParseOptions) -> Self {
+        let policy = ParserPolicy::new(options.mode);
         let mut parser = Self {
             input,
-            options,
-            tokens: TokenWindow::new(input, options.budgets),
+            policy,
+            tokens: TokenWindow::new(input, options.budgets, policy.lexer_policy()),
             pos: 0,
             rewind_floor: None,
             token_cache: [Token::new(TokenKind::Eof, text_range(0, 0)); TOKEN_LOOKAHEAD],
@@ -191,9 +216,9 @@ impl<'a> Parser<'a> {
 }
 
 impl<'a> TokenWindow<'a> {
-    fn new(input: &'a str, budgets: ParseBudgets) -> Self {
+    fn new(input: &'a str, budgets: ParseBudgets, lexer_policy: LexerPolicy) -> Self {
         Self {
-            lexer: significant_lexer(input),
+            lexer: Lexer::significant_with_policy(input, lexer_policy),
             tokens: Vec::new(),
             base_index: 0,
             eof_seen: false,

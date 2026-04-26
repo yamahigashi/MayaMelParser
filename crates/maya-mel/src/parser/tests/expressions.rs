@@ -856,3 +856,86 @@ fn parses_inline_path_like_bareword_expression_with_trailing_pipe() {
     };
     assert_eq!(parse.source_slice(*text), "AA_Bar*|mdl|_XXa0|");
 }
+
+#[test]
+fn expression_mode_parses_direct_attribute_assignment_as_expression() {
+    let parse = parse_source_with_options("persp.translateX = 23.2;", ParseOptions::expression());
+    assert!(parse.errors.is_empty());
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement");
+    };
+    let Stmt::Expr { expr, .. } = &**stmt else {
+        panic!("expected expression statement");
+    };
+    let Expr::Assign { lhs, rhs, .. } = expr else {
+        panic!("expected assignment");
+    };
+    assert!(matches!(**lhs, Expr::MemberAccess { .. }));
+    assert!(matches!(**rhs, Expr::Float { .. }));
+}
+
+#[test]
+fn expression_mode_parses_particle_attribute_assignment() {
+    let parse = parse_source_with_options("position = <<2, 1, 0>>;", ParseOptions::expression());
+    assert!(parse.errors.is_empty());
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement");
+    };
+    let Stmt::Expr { expr, .. } = &**stmt else {
+        panic!("expected expression statement");
+    };
+    let Expr::Assign { lhs, rhs, .. } = expr else {
+        panic!("expected assignment");
+    };
+    assert!(matches!(**lhs, Expr::Ident { .. }));
+    assert!(matches!(**rhs, Expr::VectorLiteral { .. }));
+}
+
+#[test]
+fn expression_mode_parses_time_and_frame_identifiers() {
+    let parse = parse_source_with_options(
+        "persp.rotateY = time;\npersp.translateY = frame;",
+        ParseOptions::expression(),
+    );
+    assert!(parse.errors.is_empty());
+    assert_eq!(parse.syntax.items.len(), 2);
+}
+
+#[test]
+fn expression_mode_keeps_obvious_command_statement_fallback() {
+    let parse = parse_source_with_options(r#"print "hello";"#, ParseOptions::expression());
+    assert!(parse.errors.is_empty());
+
+    let Item::Stmt(stmt) = &parse.syntax.items[0] else {
+        panic!("expected statement");
+    };
+    assert!(matches!(
+        &**stmt,
+        Stmt::Expr {
+            expr: Expr::Invoke(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn inline_expression_mode_allows_only_top_level_trailing_statement() {
+    let parse = parse_source_with_options("persp.translateY = frame", ParseOptions::expression());
+    assert!(!parse.errors.is_empty());
+    assert_eq!(parse.errors[0].message, "expected ';' after statement");
+
+    let parse = parse_source_with_options(
+        "persp.translateY = frame",
+        ParseOptions::inline_expression(),
+    );
+    assert!(parse.errors.is_empty());
+
+    let parse = parse_source_with_options(
+        "if (ready) persp.translateY = frame",
+        ParseOptions::inline_expression(),
+    );
+    assert!(!parse.errors.is_empty());
+    assert_eq!(parse.errors[0].message, "expected ';' after statement");
+}

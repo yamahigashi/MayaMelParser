@@ -23,6 +23,8 @@ pub(crate) struct Args {
         global = true
     )]
     pub(crate) max_bytes: Option<usize>,
+    #[arg(long, global = true)]
+    pub(crate) expression: bool,
     #[arg(long, conflicts_with = "inline_input")]
     pub(crate) lightweight: bool,
     #[arg(value_name = "PATH", conflicts_with = "inline_input")]

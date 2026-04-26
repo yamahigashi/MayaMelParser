@@ -6,8 +6,9 @@ use crate::{
     args::CliDiagnosticLevel,
     diagnostics::{
         DiagnosticCounts, append_compact_light_scan_diagnostics, append_compact_parse_diagnostics,
-        diagnostic_counts, filtered_parse_diagnostics, filtered_sema_diagnostics,
-        light_scan_diagnostic_counts, parse_diagnostic_counts, render_file_diagnostics_into,
+        diagnostic_counts, filtered_parse_diagnostics, filtered_parse_diagnostics_with_sema,
+        filtered_sema_diagnostics, light_scan_diagnostic_counts, parse_diagnostic_counts,
+        render_file_diagnostics_into,
     },
 };
 use maya_mel::Parse;
@@ -31,6 +32,31 @@ use std::{
 
 const TOP_RANK_LIMIT: usize = 10;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ParseReportOptions {
+    pub(crate) diagnostic_level: CliDiagnosticLevel,
+    pub(crate) run_sema: bool,
+    pub(crate) mode_label: Option<&'static str>,
+}
+
+impl ParseReportOptions {
+    pub(crate) const fn mel(diagnostic_level: CliDiagnosticLevel) -> Self {
+        Self {
+            diagnostic_level,
+            run_sema: true,
+            mode_label: None,
+        }
+    }
+
+    pub(crate) const fn expression(diagnostic_level: CliDiagnosticLevel) -> Self {
+        Self {
+            diagnostic_level,
+            run_sema: false,
+            mode_label: Some("expression"),
+        }
+    }
+}
+
 pub(crate) fn collect_source_files(root: &Path, lightweight: bool) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_source_files_recursive(root, &mut files, lightweight)?;
@@ -38,11 +64,16 @@ pub(crate) fn collect_source_files(root: &Path, lightweight: bool) -> io::Result
     Ok(files)
 }
 
-pub(crate) fn print_parse_summary(label: &str, parse: &Parse) {
-    let diagnostics = filtered_parse_diagnostics(parse, CliDiagnosticLevel::All);
+pub(crate) fn print_parse_summary_with_options(
+    label: &str,
+    parse: &Parse,
+    options: ParseReportOptions,
+) {
+    let diagnostics =
+        filtered_parse_diagnostics_with_sema(parse, options.diagnostic_level, options.run_sema);
     print!(
         "{}",
-        format_parse_summary(label, parse, diagnostic_counts(&diagnostics))
+        format_parse_summary_with_options(label, parse, diagnostic_counts(&diagnostics), options)
     );
 }
 
@@ -73,16 +104,39 @@ pub(crate) fn format_single_file_output_with_style(
     String::from_utf8(output).map_err(io::Error::other)
 }
 
+#[cfg(test)]
 pub(crate) fn write_single_file_output_with_style(
-    mut writer: impl Write,
+    writer: impl Write,
     label: &str,
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
     fancy_diagnostics: bool,
 ) -> io::Result<()> {
+    write_single_file_output_with_style_and_options(
+        writer,
+        label,
+        parse,
+        ParseReportOptions::mel(diagnostic_level),
+        fancy_diagnostics,
+    )
+}
+
+pub(crate) fn write_single_file_output_with_style_and_options(
+    mut writer: impl Write,
+    label: &str,
+    parse: &Parse,
+    options: ParseReportOptions,
+    fancy_diagnostics: bool,
+) -> io::Result<()> {
     if fancy_diagnostics {
-        let diagnostics = filtered_parse_diagnostics(parse, diagnostic_level);
-        let mut output = format_parse_summary(label, parse, diagnostic_counts(&diagnostics));
+        let diagnostics =
+            filtered_parse_diagnostics_with_sema(parse, options.diagnostic_level, options.run_sema);
+        let mut output = format_parse_summary_with_options(
+            label,
+            parse,
+            diagnostic_counts(&diagnostics),
+            options,
+        );
         writer.write_all(output.as_bytes())?;
         output.clear();
         render_file_diagnostics_into(
@@ -94,21 +148,46 @@ pub(crate) fn write_single_file_output_with_style(
             true,
         )
     } else {
-        write_single_file_output(writer, label, parse, diagnostic_level)
+        write_single_file_output_with_options(writer, label, parse, options)
     }
 }
 
+#[cfg(test)]
 pub(crate) fn write_single_file_output(
-    mut writer: impl Write,
+    writer: impl Write,
     label: &str,
     parse: &Parse,
     diagnostic_level: CliDiagnosticLevel,
 ) -> io::Result<()> {
-    let sema_diagnostics = filtered_sema_diagnostics(parse, diagnostic_level);
-    let counts = parse_diagnostic_counts(parse, diagnostic_level, &sema_diagnostics);
+    write_single_file_output_with_options(
+        writer,
+        label,
+        parse,
+        ParseReportOptions::mel(diagnostic_level),
+    )
+}
+
+pub(crate) fn write_single_file_output_with_options(
+    mut writer: impl Write,
+    label: &str,
+    parse: &Parse,
+    options: ParseReportOptions,
+) -> io::Result<()> {
+    let sema_diagnostics = if options.run_sema {
+        filtered_sema_diagnostics(parse, options.diagnostic_level)
+    } else {
+        Vec::new()
+    };
+    let counts = parse_diagnostic_counts(parse, options.diagnostic_level, &sema_diagnostics);
     let mut output = String::new();
-    append_parse_summary(&mut output, label, parse, counts).expect("summary append");
-    append_compact_parse_diagnostics(&mut output, parse, diagnostic_level, &sema_diagnostics);
+    append_parse_summary_with_options(&mut output, label, parse, counts, options)
+        .expect("summary append");
+    append_compact_parse_diagnostics(
+        &mut output,
+        parse,
+        options.diagnostic_level,
+        &sema_diagnostics,
+    );
     writer.write_all(output.as_bytes())
 }
 
@@ -676,19 +755,37 @@ fn collect_source_files_recursive(
     Ok(())
 }
 
-fn format_parse_summary(label: &str, parse: &Parse, counts: DiagnosticCounts) -> String {
+fn format_parse_summary_with_options(
+    label: &str,
+    parse: &Parse,
+    counts: DiagnosticCounts,
+    options: ParseReportOptions,
+) -> String {
     let mut output = String::new();
-    append_parse_summary(&mut output, label, parse, counts)
+    append_parse_summary_with_options(&mut output, label, parse, counts, options)
         .expect("formatting parse summary should not fail");
     output
 }
 
-fn append_parse_summary(
+fn append_parse_summary_with_options(
     output: &mut String,
     label: &str,
     parse: &Parse,
     counts: DiagnosticCounts,
+    options: ParseReportOptions,
 ) -> std::fmt::Result {
+    if let Some(mode_label) = options.mode_label {
+        writeln!(output, "source: {label}")?;
+        writeln!(output, "mode: {mode_label}")?;
+        writeln!(output, "encoding: {}", parse.source_encoding.label())?;
+        writeln!(output, "items: {}", parse.syntax.items.len())?;
+        writeln!(output, "decode diagnostics: {}", counts.decode)?;
+        writeln!(output, "lexical diagnostics: {}", counts.lex)?;
+        writeln!(output, "parse errors: {}", counts.parse)?;
+        writeln!(output, "semantic diagnostics: {}", counts.sema)?;
+        return Ok(());
+    }
+
     write!(
         output,
         "source: {label}\nencoding: {}\nitems: {}\ndecode diagnostics: {}\nlexical diagnostics: {}\nparse errors: {}\nsemantic diagnostics: {}\n",

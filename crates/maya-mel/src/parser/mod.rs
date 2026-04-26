@@ -57,6 +57,13 @@ const DEFAULT_MAX_NESTING_DEPTH: usize = 512;
 const DEFAULT_MAX_TOKENS: usize = 8_000_000;
 const DEFAULT_MAX_STATEMENTS: usize = 1_000_000;
 const DEFAULT_MAX_LITERAL_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_PARSE_BUDGETS: ParseBudgets = ParseBudgets {
+    max_bytes: DEFAULT_MAX_BYTES,
+    max_nesting_depth: DEFAULT_MAX_NESTING_DEPTH,
+    max_tokens: DEFAULT_MAX_TOKENS,
+    max_statements: DEFAULT_MAX_STATEMENTS,
+    max_literal_bytes: DEFAULT_MAX_LITERAL_BYTES,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A diagnostic emitted while decoding non-UTF-8 source into display text.
@@ -81,11 +88,35 @@ pub enum SourceEncoding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-/// Parser behavior toggles for strict and snippet-oriented entry points.
+/// Parser behavior presets for MEL files, snippets, and Maya Expression Editor source.
 pub enum ParseMode {
     #[default]
+    /// Standard MEL parsing with required statement semicolons.
     Strict,
+    /// Standard MEL parsing that accepts one top-level EOF trailing statement without `;`.
     AllowTrailingStmtWithoutSemi,
+    /// Maya Expression Editor full-source parsing with required statement semicolons.
+    Expression,
+    /// Maya Expression Editor full-source parsing with one top-level EOF trailing statement allowed.
+    ExpressionAllowTrailingStmtWithoutSemi,
+}
+
+impl ParseMode {
+    #[must_use]
+    pub const fn is_expression_syntax(self) -> bool {
+        matches!(
+            self,
+            Self::Expression | Self::ExpressionAllowTrailingStmtWithoutSemi
+        )
+    }
+
+    #[must_use]
+    pub const fn allows_trailing_top_level_stmt_without_semi(self) -> bool {
+        matches!(
+            self,
+            Self::AllowTrailingStmtWithoutSemi | Self::ExpressionAllowTrailingStmtWithoutSemi
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,13 +135,7 @@ pub struct ParseBudgets {
 
 impl Default for ParseBudgets {
     fn default() -> Self {
-        Self {
-            max_bytes: DEFAULT_MAX_BYTES,
-            max_nesting_depth: DEFAULT_MAX_NESTING_DEPTH,
-            max_tokens: DEFAULT_MAX_TOKENS,
-            max_statements: DEFAULT_MAX_STATEMENTS,
-            max_literal_bytes: DEFAULT_MAX_LITERAL_BYTES,
-        }
+        DEFAULT_PARSE_BUDGETS
     }
 }
 
@@ -131,10 +156,45 @@ impl ParseBudgets {
 /// Options shared by the full parse entry points.
 ///
 /// Most callers can use [`Default::default`]. Set [`ParseMode`] explicitly when
-/// parsing snippet-like source that may omit the final semicolon.
+/// parsing snippet-like source that may omit the final semicolon or Maya
+/// Expression Editor source that uses direct attribute access.
 pub struct ParseOptions {
     pub mode: ParseMode,
     pub budgets: ParseBudgets,
+}
+
+impl ParseOptions {
+    #[must_use]
+    pub const fn strict() -> Self {
+        Self {
+            mode: ParseMode::Strict,
+            budgets: DEFAULT_PARSE_BUDGETS,
+        }
+    }
+
+    #[must_use]
+    pub const fn inline() -> Self {
+        Self {
+            mode: ParseMode::AllowTrailingStmtWithoutSemi,
+            budgets: DEFAULT_PARSE_BUDGETS,
+        }
+    }
+
+    #[must_use]
+    pub const fn expression() -> Self {
+        Self {
+            mode: ParseMode::Expression,
+            budgets: DEFAULT_PARSE_BUDGETS,
+        }
+    }
+
+    #[must_use]
+    pub const fn inline_expression() -> Self {
+        Self {
+            mode: ParseMode::ExpressionAllowTrailingStmtWithoutSemi,
+            budgets: DEFAULT_PARSE_BUDGETS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
