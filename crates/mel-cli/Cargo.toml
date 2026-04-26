@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 ariadne = "0.5"
 clap = { version = "4.5", features = ["derive"] }
-maya-mel = { version = "0.1.3", path = "../maya-mel" }
+maya-mel = { version = "0.1.4", path = "../maya-mel" }
 
 [dev-dependencies]
 insta = "1"
